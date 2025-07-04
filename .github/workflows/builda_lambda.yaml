@@ -1,0 +1,156 @@
+name: Deploy to AWS Lambda
+
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build-lambda-base:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{secrets.AWS_REGION}} 
+          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
+          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v1
+        
+      - name: Build lambda-base image
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          docker build -t lambda-base -f lambda-base/dependencies.dockerfile .
+          docker tag lambda-base $ECR_REPO:lambda-base
+          docker push $ECR_REPO:lambda-base
+    
+  build-lambda-images:
+    needs: build-lambda-base
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ["pdf_extractor-latest|extract_data_pdf/extract_data_pdf.dockerfile", "pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{secrets.AWS_REGION}} 
+          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
+          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v1
+        
+      - name: Extract tag and dockerfile
+        id: extract
+        run: |
+          IFS='|' read -r IMAGE_TAG DOCKERFILE <<< "${{ matrix.image }}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "DOCKERFILE=$DOCKERFILE" >> $GITHUB_ENV
+
+      - name: Pull remote image
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          docker pull $ECR_REPO:$IMAGE_TAG || echo "No previous image"
+
+      - name: Build Docker image
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          docker build \
+            --build-arg aws_account_id=${{ secrets.AWS_ACCOUNT_ID }} \
+            --build-arg github_secret=${{ secrets.GITHUB_API_SECRET }} \
+            -t local-build:$IMAGE_TAG \
+            -f $DOCKERFILE .
+        
+      - name: Get local image ID
+        id: local_image
+        run: |
+          IMAGE_ID=$(docker images --no-trunc --quiet local-build:$IMAGE_TAG)
+          echo "LOCAL_IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
+
+      - name: Check remote image
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          REMOTE_ID=$(docker inspect --format='{{.Id}}' $ECR_REPO:$IMAGE_TAG 2>/dev/null || true)
+      
+          if [ -z "$REMOTE_ID" ]; then
+            echo "No remote image found for $IMAGE_TAG"
+          else
+            echo "REMOTE_IMAGE_ID=$REMOTE_ID" >> $GITHUB_ENV
+          fi
+
+      - name: Compare and push if different
+        if: env.LOCAL_IMAGE_ID != env.REMOTE_IMAGE_ID
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          docker tag local-build:$IMAGE_TAG $ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REPO:$IMAGE_TAG
+
+  terraform-deploy:
+  
+    needs: build-lambda-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{secrets.AWS_REGION}} 
+          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
+          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+  
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.6
+
+      - name: Trigger Terraform Apply
+        run: |
+          terraform init
+          
+          terraform import aws_ecr_repository.lambda_images etl-expenses
+          
+          terraform import aws_s3_bucket.market_tickets market-tickets
+          terraform import aws_s3_bucket.mp_reports mercadopago-reports
+
+          terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_lambda_policy
+          
+          terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace
+
+          terraform import aws_lambda_function.dispatcher dispatcher
+          terraform import aws_lambda_function.compensation_flow compensation-flow
+          terraform import aws_lambda_function.pdf_extractor pdf_extractor
+          terraform import aws_lambda_function.pdf_processor pdf_processor
+          terraform import aws_lambda_function.mp_report_extractor mp_report_extractor
+          terraform import aws_lambda_function.mp_report_processor mp_report_processor
+          terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf
+          
+          terraform import aws_iam_role.lambda_exec lambda_exec_role
+          terraform import aws_iam_role.step_function_role step_function_role
+          terraform import aws_iam_role.glue_service_role glue_service_role
+
+          terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:pdf-etl-flow
+          terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:mp-report-etl-flow
+
+          terraform import aws_glue_catalog_database.etl_database "${{ secrets.AWS_ACCOUNT_ID }}:etl_database"
+          terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler
+          terraform import aws_glue_crawler.mp_reports_crawler mp-reports-crawler
+
+          terraform import aws_redshiftserverless_workgroup.etl_workgroup pdf-etl-workgroup
+
+          terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs
+      
+          terraform apply -auto-approve
+        env:
+          TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+          TF_VAR_email: ${{ secrets.EMAIL }}
