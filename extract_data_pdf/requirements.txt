@@ -1,0 +1,9 @@
+# base64
+beautifulsoup4
+google-api-python-client
+google-auth.httplib2
+google-auth-oauthlib
+google.auth
+oauth2client
+openpyxl
+# hashlib

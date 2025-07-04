@@ -1,0 +1,8 @@
+# Importamos la variable de github secrets
+ARG aws_account_id
+
+# Referenciamos a la imagen de la lambda base con librerias comun entre todas las lambda
+FROM ${aws_account_id}.dkr.ecr.us-east-2.amazonaws.com/etl-expenses:lambda-base
+
+COPY transform_data_mp/transform_data_mp.py ${LAMBDA_TASK_ROOT}
+CMD ["transform_data_mp.lambda_handler"]
