@@ -46,6 +46,7 @@ El despliegue de los servicios utilizados de AWS lo realicé con Terraform.
 ## Instalaciones requeridas
 
 1. Crear una app en el <a href="https://www.mercadopago.com.ar/developers/panel/app">Dev Center</a> de Mercado Pago.
+2. Crear una cuenta nominal en Google Cloud Platform, crear unas credenciales de Oauth2. Habilitar la API de Gmail, descagar las credenciales en formato JSON y ejecutar el script en bash "gcp_token_offline.sh" que lo que hace es generar un access token y un refresh token que luego se van a utilizar al intentar usar la API de Gmail. El script genera un file que lo almacenamos en Secrets Manager de AWS.
 
 
 ## Consideraciones de diseño
