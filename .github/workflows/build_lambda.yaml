@@ -66,6 +66,7 @@ jobs:
           docker build \
             --build-arg aws_account_id=${{ secrets.AWS_ACCOUNT_ID }} \
             --build-arg github_secret=${{ secrets.GITHUB_API_SECRET }} \
+            --build-arg TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }} \
             -t local-build:$IMAGE_TAG \
             -f $DOCKERFILE .
         
