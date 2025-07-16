@@ -77,6 +77,30 @@ resource "aws_ecr_repository" "lambda_images" {
   }
 }
 
+########### 4. API Gateway ###########
+# API Gateway para Telegram Webhook
+resource "aws_api_gateway_rest_api" "telegram_webhook" {
+  name = "telegram-redshift-bot"
+}
+
+resource "aws_api_gateway_resource" "webhook" {
+  path_part   = "webhook"
+  parent_id   = aws_api_gateway_rest_api.telegram_webhook.root_resource_id
+}
+
+resource "aws_api_gateway_method" "post" {
+  http_method   = "POST"
+  resource_id   = aws_api_gateway_resource.webhook.id
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "lambda" {
+  http_method = aws_api_gateway_method.post.http_method
+  resource_id = aws_api_gateway_resource.webhook.id
+  type        = "AWS_PROXY"
+  uri         = aws_lambda_function.telegram_redshift_bot.invoke_arn
+}
+
 ########### 4. Lambdas basadas en imágenes Docker ###########
 # 4.1 Lambda para extraer PDFs de Gmail
 resource "aws_lambda_function" "pdf_extractor" {
@@ -241,6 +265,25 @@ resource "aws_lambda_function" "redshift_to_bq" {
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
 }
+
+# 4.11 Lambda para procesar el agente de IA y resolver las consultas sobre los datos en Redshift
+resource "aws_lambda_function" "ai_agent" {
+  function_name = "ai-agent"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:ai_agent-latest"
+  
+  memory_size = 1024  # Ajustar según necesidades
+  timeout     = 900   # Máximo 15 minutos
+
+  environment {
+    variables = {
+      REDSHIFT_WORKGROUP = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
+      REDSHIFT_DATABASE  = "dev"
+    }
+  }
+}
+
 
 ###########  5. Permisos IAM Roles ###########
 # IAM role para Lambda execution
@@ -613,6 +656,25 @@ resource "aws_iam_role_policy" "step_function_logging" {
           "logs:DescribeLogGroups"
         ]
         Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "lambda_redshift_data" {
+  role = aws_iam_role.lambda_exec.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action   = ["redshift-data:*"],
+        Effect   = "Allow",
+        Resource = "*"
+      },
+      {
+        Action   = ["bedrock:InvokeModel"],
+        Effect   = "Allow",
+        Resource = "arn:aws:bedrock:*::foundation-model/anthropic.claude-v2"
       }
     ]
   })
