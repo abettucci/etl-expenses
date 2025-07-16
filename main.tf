@@ -556,34 +556,39 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
 }
 
 # Policy para la Step Function para que se pueda ejecutar Glue Crawler en el ultimo step del job
-resource "aws_iam_role_policy" "step_function_glue_permissions" {
-  name = "step_function_glue_permissions"
+resource "aws_iam_role_policy" "step_function_glue" {
+  name = "step_function_glue"
   role = aws_iam_role.step_function_role.id
 
   policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Action = [
-          "glue:StartCrawler"
-        ],
-        Resource = [
-          aws_glue_crawler.market_tickets_crawler.arn,
-          aws_glue_crawler.mp_reports_crawler.arn,
-          aws_glue_crawler.bank_payments_crawler.arn
-        ]
-      },
-      {
-        Effect = "Allow",
-        Action = "states:StartExecution",
-        Resource = [
-          aws_sfn_state_machine.pdf_etl_flow.arn,
-          aws_sfn_state_machine.mp_report_etl_flow.arn,
-          aws_sfn_state_machine.bank_payments_etl_flow.arn
-        ]
-      }
-    ]
+    Statement = [{
+      Effect   = "Allow",
+      Action   = ["glue:StartCrawler"],
+      Resource = [
+        aws_glue_crawler.market_tickets_crawler.arn,
+        aws_glue_crawler.mp_reports_crawler.arn,
+        aws_glue_crawler.bank_payments_crawler.arn
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "step_function_start_execution" {
+  name = "step_function_start_execution"
+  role = aws_iam_role.step_function_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = "states:StartExecution",
+      Resource = [
+        aws_sfn_state_machine.pdf_etl_flow.arn,
+        aws_sfn_state_machine.mp_report_etl_flow.arn,
+        aws_sfn_state_machine.bank_payments_etl_flow.arn
+      ]
+    }]
   })
 }
 
