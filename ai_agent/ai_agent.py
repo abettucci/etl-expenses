@@ -5,7 +5,8 @@ from telegram import Bot, Update
 from langchain_community.llms import Bedrock
 
 # Configuración inicial
-bot = Bot(token="7541715839:AAFaA1ZIwVSzEu6Y34coDSc5UjGDNm1rm8I")
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
 llm = Bedrock(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
 redshift_data = boto3.client('redshift-data')
 
@@ -45,7 +46,7 @@ def format_redshift_results(results: dict) -> str:
         "|-" * len(columns) + "\n" +
         "\n".join(rows)
     )
-    
+
 def generate_sql(question: str) -> str:
     # Versión simplificada sin FAISS
     prompt = f"""
