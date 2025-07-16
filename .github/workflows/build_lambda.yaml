@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: ["pdf_extractor-latest|extract_data_pdf/extract_data_pdf.dockerfile", "pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "bank_payments_extractor-latest|extract_data_bank_pay/extract_data_bank_pay.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile","redshift_to_bq-latest|redshift_to_bq/redshift_to_bq.dockerfile"]
+        image: ["pdf_extractor-latest|extract_data_pdf/extract_data_pdf.dockerfile", "pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "bank_payments_extractor-latest|extract_data_bank_pay/extract_data_bank_pay.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile","redshift_to_bq-latest|redshift_to_bq/redshift_to_bq.dockerfile","ai_agent-latest|ai_agent/ai_agent.dockerfile"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -135,7 +135,8 @@ jobs:
           terraform import aws_lambda_function.mp_report_processor mp_report_processor
           terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor
           terraform import aws_lambda_function.bank_payments_processor bank_payments_processor
-          # terraform import aws_lambda_function.redshift_to_bq redshift_to_bq
+          terraform import aws_lambda_function.redshift_to_bq redshift_to_bq
+          # terraform import aws_lambda_function.ai_agent ai_agent
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf
           
           terraform import aws_iam_role.lambda_exec lambda_exec_role
