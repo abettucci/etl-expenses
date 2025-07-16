@@ -135,6 +135,7 @@ jobs:
           terraform import aws_lambda_function.mp_report_processor mp_report_processor
           terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor
           terraform import aws_lambda_function.bank_payments_processor bank_payments_processor
+          terraform import aws_lambda_function.redshift_to_bq redshift_to_bq
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf
           
           terraform import aws_iam_role.lambda_exec lambda_exec_role
@@ -143,12 +144,12 @@ jobs:
 
           terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:pdf-etl-flow
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:mp-report-etl-flow
-          # terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:bank-payments-etl-flow
+          terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:bank-payments-etl-flow
 
           terraform import aws_glue_catalog_database.etl_database "${{ secrets.AWS_ACCOUNT_ID }}:etl_database"
           terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler
           terraform import aws_glue_crawler.mp_reports_crawler mp-reports-crawler
-          # terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler
+          terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler
 
           terraform import aws_redshiftserverless_workgroup.etl_workgroup pdf-etl-workgroup
 
