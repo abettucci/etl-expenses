@@ -231,6 +231,17 @@ resource "aws_lambda_function" "compensation_flow" {
   timeout     = 900   # Máximo 15 minutos
 }
 
+# 4.10 Lambda data load de redshift a big query para visualizar los datos
+resource "aws_lambda_function" "redshift_to_bq" {
+  function_name = "redshift-to-bq"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:redshift_to_bq-latest"
+  
+  memory_size = 1024  # Ajustar según necesidades
+  timeout     = 900   # Máximo 15 minutos
+}
+
 ###########  5. Permisos IAM Roles ###########
 # IAM role para Lambda execution
 resource "aws_iam_role" "lambda_exec" {
@@ -384,6 +395,7 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
             "load_report_and_pdf-latest",
             "webhook_mp_report-latest",
             "compensation_flow-latest",
+            "redshift_to_bq-latest",
             "lambda-base"
           ]
           countType   = "imageCountMoreThan"
@@ -525,7 +537,8 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
           aws_lambda_function.mp_report_processor.arn,
           aws_lambda_function.bank_payments_extractor.arn,
           aws_lambda_function.bank_payments_processor.arn,
-          aws_lambda_function.load_report_and_pdf.arn
+          aws_lambda_function.load_report_and_pdf.arn,
+          aws_lambda_function.redshift_to_bq.arn
         ]
       }
     ]
@@ -547,7 +560,8 @@ resource "aws_iam_role_policy" "step_function_glue_permissions" {
         ],
         Resource = [
           aws_glue_crawler.market_tickets_crawler.arn,
-          aws_glue_crawler.mp_reports_crawler.arn
+          aws_glue_crawler.mp_reports_crawler.arn,
+          aws_glue_crawler.bank_payments_etl_flow.arn
         ]
       },
       {
@@ -555,7 +569,8 @@ resource "aws_iam_role_policy" "step_function_glue_permissions" {
         Action = "states:StartExecution",
         Resource = [
           aws_sfn_state_machine.pdf_etl_flow.arn,
-          aws_sfn_state_machine.mp_report_etl_flow.arn
+          aws_sfn_state_machine.mp_report_etl_flow.arn,
+          aws_sfn_state_machine.bank_payments_etl_flow.arn
         ]
       }
     ]
@@ -635,7 +650,15 @@ resource "aws_cloudwatch_event_target" "trigger_pdf_etl" {
   role_arn  = aws_iam_role.step_function_role.arn
 }
 
-# 7.3 Creacion de grupo de logging de los ETLs
+# 7.3 Attachment de cron schedule de Cloudwatch a la Step Function de Gastos del banco de Gmail
+resource "aws_cloudwatch_event_target" "trigger_bank_payments_etl" {
+  rule      = aws_cloudwatch_event_rule.weekly_monday_schedule.name
+  target_id = "TriggerBankPaymentsETL"
+  arn       = aws_sfn_state_machine.bank_payments_etl_flow.arn
+  role_arn  = aws_iam_role.step_function_role.arn
+}
+
+# 7.4 Creacion de grupo de logging de los ETLs
 resource "aws_cloudwatch_log_group" "etl_logs" {
   name              = "/aws/vendedlogs/states/etl-logs"
   retention_in_days = 14
