@@ -63,9 +63,19 @@ def transform_mp_report_data():
         s3_report_file_name, report_id, report_date = format_report_file_name(s3_filename)
         move_to_processed(s3_client, xlsx_file, bucket_name)
 
+    return s3_report_file_name
+
 def lambda_handler(event,context):
     try:
-        transform_mp_report_data()
+        key = transform_mp_report_data()
+        return {
+            "statusCode": 200,
+            "body": {
+                "etl_flow": 'MP',
+                "bucket": 'mercadopago-reports',
+                "key": key
+            }
+        }
     except Exception as e:
         print("⚠️ Error:", str(e))
         return {
