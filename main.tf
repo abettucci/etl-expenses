@@ -380,9 +380,10 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
 
   policy = jsonencode({
     rules = [
+      # Regla 1: Primeros 10 tags
       {
         rulePriority = 1
-        description  = "Eliminar imágenes que no sean las últimas válidas"
+        description  = "Eliminar imágenes de los primeros 10 tags"
         selection = {
           tagStatus = "tagged"
           tagPrefixList = [
@@ -395,15 +396,24 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
             "load_report_and_pdf-latest",
             "webhook_mp_report-latest",
             "compensation_flow-latest",
-            "redshift_to_bq-latest",
-            "lambda-base"
+            "redshift_to_bq-latest"
           ]
           countType   = "imageCountMoreThan"
-          countNumber = 1 # Mantener solo la última versión de cada una
+          countNumber = 1
         }
-        action = {
-          type = "expire"
+        action = { type = "expire" }
+      },
+      # Regla 2: Tag restante
+      {
+        rulePriority = 2
+        description  = "Eliminar imágenes de lambda-base"
+        selection = {
+          tagStatus = "tagged"
+          tagPrefixList = ["lambda-base"]
+          countType   = "imageCountMoreThan"
+          countNumber = 1
         }
+        action = { type = "expire" }
       }
     ]
   })
