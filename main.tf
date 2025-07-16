@@ -561,7 +561,7 @@ resource "aws_iam_role_policy" "step_function_glue_permissions" {
         Resource = [
           aws_glue_crawler.market_tickets_crawler.arn,
           aws_glue_crawler.mp_reports_crawler.arn,
-          aws_glue_crawler.bank_payments_etl_flow.arn
+          aws_glue_crawler.bank_payments_crawler.arn
         ]
       },
       {
