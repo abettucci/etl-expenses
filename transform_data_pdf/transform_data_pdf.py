@@ -169,6 +169,8 @@ def parsear_pdf_a_rows(pdfs, s3, bucket, redshift_data):
             print(f"PDF movido con exito: {pdf_key} -> {new_key}")
         except Exception as e:
                 print(f"Error al mover {pdf_key}: {str(e)}")
+
+    return new_key
     
 def transform_pdfs_data():
     # Conexion a  S3 y PostgreSQL config
@@ -194,11 +196,21 @@ def transform_pdfs_data():
         Sql=sql
     )
 
-    parsear_pdf_a_rows(pdfs, s3, bucket, redshift_data)
- 
+    new_key = parsear_pdf_a_rows(pdfs, s3, bucket, redshift_data)
+
+    return new_key
+
 def lambda_handler(event,context):
     try:
-        transform_pdfs_data()
+        key = transform_pdfs_data()
+        return {
+            "statusCode": 200,
+            "body": {
+                "etl_flow": 'TICKET',
+                "bucket": 'market-tickets',
+                "key": key
+            }
+        }
     except Exception as e:
         print("⚠️ Error:", str(e))
         return {

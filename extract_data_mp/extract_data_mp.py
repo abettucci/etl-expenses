@@ -81,7 +81,7 @@ def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, ke
         print(f'Reporte {report_id} de fecha {report_date}, subido a S3')
     else:
         raise ValueError("Reporte no subido")
-
+    
 def format_report_file_name(s3_filename):
     base = s3_filename.rsplit('_', 1)[0]
     extension = s3_filename.split('.')[-1]

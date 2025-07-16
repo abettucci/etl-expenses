@@ -45,6 +45,12 @@ resource "aws_s3_bucket" "mp_reports" {
   force_destroy = true
 }
 
+# 1.3 Bucket para Gastos con tarjetas del banco
+resource "aws_s3_bucket" "bank_payments" {
+  bucket        = "bank-payments"
+  force_destroy = true
+}
+
 ########### 2. Redshift Serverless ###########
 # Creamos el namespace
 resource "aws_redshiftserverless_namespace" "etl_namespace" {
@@ -143,7 +149,43 @@ resource "aws_lambda_function" "mp_report_processor" {
   }
 }
 
-# 4.5 Lambda para cargar los dos ETLs a tablas productivas de Redshift (reportes de Mercado Pago y pdfs de Gmail)
+# 4.5 Lambda para extraer los gastos del banco a traves de avisos en Gmail
+resource "aws_lambda_function" "bank_payments_extractor" {
+  function_name = "bank_payments_extractor"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:bank_payments_extractor-latest"
+
+  memory_size = 1024  # Ajustar según necesidades
+  timeout     = 900   # Máximo 15 minutos
+
+  environment {
+    variables = {
+      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
+      BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
+    }
+  }
+}
+
+# 4.6 Lambda para procesar los gastos del banco
+resource "aws_lambda_function" "bank_payments_processor" {
+  function_name = "bank_payments_processor"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:bank_payments_processor-latest"
+
+  memory_size = 1024  # Ajustar según necesidades
+  timeout     = 900   # Máximo 15 minutos
+
+  environment {
+    variables = {
+      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
+      BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
+    }
+  }
+}
+
+# 4.7 Lambda para cargar los dos ETLs a tablas productivas de Redshift (reportes de Mercado Pago y pdfs de Gmail)
 resource "aws_lambda_function" "load_report_and_pdf" {
   function_name = "load_report_and_pdf"
   role          = aws_iam_role.lambda_exec.arn
@@ -161,7 +203,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
   }
 }
 
-# 4.6 Lambda Dispatcher que extrae los datos del body del POST request del webhook de reportes de MP y dispara el step function de MP
+# 4.8 Lambda Dispatcher que extrae los datos del body del POST request del webhook de reportes de MP y dispara el step function de MP
 resource "aws_lambda_function" "dispatcher" {
   function_name = "dispatcher"
   role          = aws_iam_role.lambda_exec.arn
@@ -178,7 +220,7 @@ resource "aws_lambda_function" "dispatcher" {
   }
 }
 
-# 4.7 Lambda Compensation flow que limpia archivos temporales y el envia marca de que el proceso fallo por mail
+# 4.9 Lambda Compensation flow que limpia archivos temporales y el envia marca de que el proceso fallo por mail
 resource "aws_lambda_function" "compensation_flow" {
   function_name = "compensation-flow"
   role          = aws_iam_role.lambda_exec.arn
@@ -255,13 +297,20 @@ resource "aws_iam_role_policy" "secrets_token_access" {
           "secretsmanager:GetSecretValue",
           "secretsmanager:UpdateSecret"
         ]
-        Resource = "arn:aws:secretsmanager:us-east-2:${var.aws_account_id}:secret:gcp_api_credentials-*"
+        Resource = [
+          "arn:aws:secretsmanager:us-east-2:${var.aws_account_id}:secret:gcp_api_credentials-*",
+          "arn:aws:secretsmanager:us-east-2:${var.aws_account_id}:secret:gcp_api_credentials_2-*"
+        ]
       }
     ]
   })
 }
 
-# Policy para conectar las Lambda a: 1) las tablas de Redshift, 2) las imagenes de ECR, 3) los buckets de S3 y 4) las Step Functions.
+# Policy para conectar las Lambda a: 
+# 1) las tablas de Redshift
+# 2) las imagenes de ECR
+# 3) los buckets de S3 y 
+# 4) las Step Functions.
 resource "aws_iam_role_policy" "lambda_redshift_access" {
   name = "lambda_redshift_access"
   role = aws_iam_role.lambda_exec.id
@@ -292,15 +341,23 @@ resource "aws_iam_role_policy" "lambda_redshift_access" {
           "s3:DeleteObject"
         ],
         Effect = "Allow",
-        Resource = [
+        Resource = [  
           "${aws_s3_bucket.market_tickets.arn}/*",
-          aws_s3_bucket.market_tickets.arn
+          aws_s3_bucket.market_tickets.arn,
+          aws_s3_bucket.mp_reports.arn,
+          "${aws_s3_bucket.mp_reports.arn}/*",
+          "${aws_s3_bucket.bank_payments.arn}/*",
+          aws_s3_bucket.bank_payments.arn
         ]
       },
       {
         Effect = "Allow",
         Action = "states:StartExecution",
-        Resource = aws_sfn_state_machine.mp_report_etl_flow.arn
+        Resource = [
+          aws_sfn_state_machine.pdf_etl_flow.arn,
+          aws_sfn_state_machine.mp_report_etl_flow.arn,
+          aws_sfn_state_machine.bank_payments_etl_flow.arn
+        ]
       }
     ]
   })
@@ -320,9 +377,11 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
           tagPrefixList = [
             "pdf_extractor-latest",
             "pdf_processor-latest",
-            "load_report_and_pdf-latest",
             "mp_report_extractor-latest",
             "mp_report_processor-latest",
+            "bank_payments_extractor-latest",
+            "bank_payments_processor-latest",
+            "load_report_and_pdf-latest",
             "webhook_mp_report-latest",
             "compensation_flow-latest",
             "lambda-base"
@@ -368,7 +427,9 @@ resource "aws_iam_role_policy" "redshift_spectrum_glue_access" {
           aws_s3_bucket.market_tickets.arn,
           "${aws_s3_bucket.market_tickets.arn}/*",
           aws_s3_bucket.mp_reports.arn,
-          "${aws_s3_bucket.mp_reports.arn}/*"
+          "${aws_s3_bucket.mp_reports.arn}/*",
+          aws_s3_bucket.bank_payments.arn,
+          "${aws_s3_bucket.bank_payments.arn}/*"
         ]
       }
     ]
@@ -423,6 +484,30 @@ resource "aws_s3_bucket_policy" "mp_reports_policy" {
   })
 }
 
+# Policy para bloquear cualquier acceso al bucket de S3 de gastos del banco que no sea por HTTPS (Secure Transport).
+resource "aws_s3_bucket_policy" "bank_payments_policy" {
+  bucket = aws_s3_bucket.bank_payments.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Deny",
+        Principal = "*",
+        Action    = "s3:*",
+        Resource = [
+          aws_s3_bucket.bank_payments.arn,
+          "${aws_s3_bucket.bank_payments.arn}/*"
+        ],
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
 # Policy para la Step Function para ejecutar funciones Lambda
 resource "aws_iam_policy" "step_function_lambda_policy" {
   name = "step_function_lambda_policy"
@@ -438,6 +523,8 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
           aws_lambda_function.pdf_processor.arn,
           aws_lambda_function.mp_report_extractor.arn,
           aws_lambda_function.mp_report_processor.arn,
+          aws_lambda_function.bank_payments_extractor.arn,
+          aws_lambda_function.bank_payments_processor.arn,
           aws_lambda_function.load_report_and_pdf.arn
         ]
       }
@@ -629,6 +716,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
   })
 }
 
+# 8.2 Creacion del job de Reportes MP en Step Function
 resource "aws_sfn_state_machine" "mp_report_etl_flow" {
   name     = "mp-report-etl-flow"
   role_arn = aws_iam_role.step_function_role.arn
@@ -706,6 +794,79 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
   })
 }
 
+# 8.1 Creacion del job de PDFs en Step Function
+resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
+  name     = "bank-payments-etl-flow"
+  role_arn = aws_iam_role.step_function_role.arn
+
+  logging_configuration {
+    level                  = "ALL"
+    include_execution_data = true
+    log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
+  }
+
+  # Steps secuenciales
+  definition = jsonencode({
+    StartAt = "Extract Bank Payments Gmail",
+    # Primer step ejecuta Extract data
+    States = {
+      "Extract Bank Payments Gmail" = {
+        Type     = "Task",
+        Resource = aws_lambda_function.bank_payments_extractor.arn,
+        Catch: [
+          {
+            "ErrorEquals": ["States.ALL"],
+            "ResultPath": "$.error-info",
+            "Next": "CompensationFlow"
+          }
+        ],
+        Next     = "Transform Gmail Bank Payments"
+      },
+      # Segundo step ejecuta Transform data
+      "Transform Gmail Bank Payments" = {
+        Type     = "Task",
+        Resource = aws_lambda_function.bank_payments_processor.arn,
+        Catch: [
+          {
+            "ErrorEquals": ["States.ALL"],
+            "ResultPath": "$.error-info",
+            "Next": "CompensationFlow"
+          }
+        ],
+        Next     = "Load Gmail Bank Payments"
+      },
+      # Tercer step ejecuta Load data
+      "Load Gmail Bank Payments" = {
+        Type     = "Task",
+        Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Catch: [
+          {
+            "ErrorEquals": ["States.ALL"],
+            "ResultPath": "$.error-info",
+            "Next": "CompensationFlow"
+          }
+        ],
+        Next     = "Run Bank Payments Crawler"
+      },
+      # Ultimo step ejecuta Glue Crawler
+      "Run Bank Payments Crawler" = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::aws-sdk:glue:startCrawler",
+        Parameters = {
+          Name = aws_glue_crawler.bank_payments_crawler.name
+        },
+        End = true
+      },
+      # Step compensatorio por si falla algun step del job
+      CompensationFlow: {
+        "Type": "Task",
+        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation-flow",
+        "End": true
+      }
+    }
+  })
+}
+
 ########### 9. Glue Data Catalog ###########
 
 resource "aws_glue_catalog_database" "etl_database" {
@@ -733,6 +894,18 @@ resource "aws_glue_crawler" "mp_reports_crawler" {
 
   s3_target {
     path = "s3://${aws_s3_bucket.mp_reports.bucket}/raw/"
+  }
+
+  schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
+}
+
+resource "aws_glue_crawler" "bank_payments_crawler" {
+  name          = "bank-payments-crawler"
+  role          = aws_iam_role.glue_service_role.arn
+  database_name = aws_glue_catalog_database.etl_database.name
+
+  s3_target {
+    path = "s3://${aws_s3_bucket.bank_payments.bucket}/raw/"
   }
 
   schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
@@ -782,6 +955,23 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_mp_report_failure" {
   alarm_description   = "This metric monitors Lambda errors"
   dimensions = {
     StateMachineArn = aws_sfn_state_machine.mp_report_etl_flow.arn
+  }
+  alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
+}
+
+# 11.4 Calculo de metricas de errores de ejecucion del ETL de reportes de MP en Cloudwatch
+resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure" {
+  alarm_name          = "bank_payment_Failures"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = "60"
+  statistic           = "Sum"
+  threshold           = "0"
+  alarm_description   = "This metric monitors Lambda errors"
+  dimensions = {
+    StateMachineArn = aws_sfn_state_machine.bank_payments_etl_flow.arn
   }
   alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
 }
