@@ -84,17 +84,20 @@ resource "aws_api_gateway_rest_api" "telegram_webhook" {
 }
 
 resource "aws_api_gateway_resource" "webhook" {
+  rest_api_id = aws_api_gateway_rest_api.telegram_webhook.id
   path_part   = "webhook"
   parent_id   = aws_api_gateway_rest_api.telegram_webhook.root_resource_id
 }
 
 resource "aws_api_gateway_method" "post" {
+  rest_api_id   = aws_api_gateway_rest_api.telegram_webhook.id
   http_method   = "POST"
   resource_id   = aws_api_gateway_resource.webhook.id
   authorization = "NONE"
 }
 
 resource "aws_api_gateway_integration" "lambda" {
+  rest_api_id   = aws_api_gateway_rest_api.telegram_webhook.id
   http_method = aws_api_gateway_method.post.http_method
   resource_id = aws_api_gateway_resource.webhook.id
   type        = "AWS_PROXY"
