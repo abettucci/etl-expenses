@@ -602,42 +602,8 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
   })
 }
 
-resource "aws_iam_role_policy" "step_function_glue_part1" {
-  name = "step_function_glue_part1"
-  role = aws_iam_role.step_function_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect   = "Allow",
-      Action   = ["glue:StartCrawler"],
-      Resource = [
-        aws_glue_crawler.market_tickets_crawler.arn,
-        aws_glue_crawler.mp_reports_crawler.arn
-      ]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "step_function_glue_part2" {
-  name = "step_function_glue_part2"
-  role = aws_iam_role.step_function_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect   = "Allow",
-      Action   = ["glue:StartCrawler"],
-      Resource = [
-        aws_glue_crawler.bank_payments_crawler.arn
-      ]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "step_function_start_execution_part1" {
-  name = "step_function_start_execution_part1"
-  role = aws_iam_role.step_function_role.id
+resource "aws_iam_policy" "step_function_start_policy" {
+  name = "step_function_start_policy"
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -646,26 +612,39 @@ resource "aws_iam_role_policy" "step_function_start_execution_part1" {
       Action   = "states:StartExecution",
       Resource = [
         aws_sfn_state_machine.pdf_etl_flow.arn,
-        aws_sfn_state_machine.mp_report_etl_flow.arn
+        aws_sfn_state_machine.mp_report_etl_flow.arn,
+        aws_sfn_state_machine.bank_payments_etl_flow.arn
       ]
     }]
   })
 }
 
-resource "aws_iam_role_policy" "step_function_start_execution_part2" {
-  name = "step_function_start_execution_part2"
-  role = aws_iam_role.step_function_role.id
+resource "aws_iam_policy" "step_function_glue_policy" {
+  name = "step_function_glue_policy"
 
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
       Effect   = "Allow",
-      Action   = "states:StartExecution",
+      Action   = ["glue:StartCrawler"],
       Resource = [
-        aws_sfn_state_machine.bank_payments_etl_flow.arn
+        aws_glue_crawler.market_tickets_crawler.arn,
+        aws_glue_crawler.mp_reports_crawler.arn,
+        aws_glue_crawler.bank_payments_crawler.arn
       ]
     }]
   })
+}
+
+resource "aws_iam_role_policy_attachment" "attach_glue_policy" {
+  role       = aws_iam_role.step_function_role.name
+  policy_arn = aws_iam_policy.step_function_glue_policy.arn
+}
+
+
+resource "aws_iam_role_policy_attachment" "attach_start_policy" {
+  role       = aws_iam_role.step_function_role.name
+  policy_arn = aws_iam_policy.step_function_start_policy.arn
 }
 
 # Policy para ejecutar logueos de errores de jobs de las Step Functions
