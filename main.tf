@@ -101,7 +101,7 @@ resource "aws_api_gateway_integration" "lambda" {
   http_method = aws_api_gateway_method.post.http_method
   resource_id = aws_api_gateway_resource.webhook.id
   type        = "AWS_PROXY"
-  uri         = aws_lambda_function.telegram_redshift_bot.invoke_arn
+  uri         = aws_lambda_function.ai_agent.invoke_arn
 }
 
 ########### 4. Lambdas basadas en imágenes Docker ###########
