@@ -259,7 +259,7 @@ resource "aws_lambda_function" "compensation_flow" {
 }
 
 # 4.10 Lambda data load de redshift a big query para visualizar los datos
-resource "aws_lambda_function" "redshift_to_bq" {
+resource "aws_lambda_function" "redshift-to-bq" {
   function_name = "redshift-to-bq"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -594,7 +594,7 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
           aws_lambda_function.bank_payments_extractor.arn,
           aws_lambda_function.bank_payments_processor.arn,
           aws_lambda_function.load_report_and_pdf.arn,
-          aws_lambda_function.redshift_to_bq.arn
+          aws_lambda_function.redshift-to-bq.arn
         ]
       }
     ]
