@@ -98,8 +98,9 @@ resource "aws_api_gateway_method" "post" {
 
 resource "aws_api_gateway_integration" "lambda" {
   rest_api_id   = aws_api_gateway_rest_api.telegram_webhook.id
-  http_method = aws_api_gateway_method.post.http_method
   resource_id = aws_api_gateway_resource.webhook.id
+  http_method = "POST"
+  integration_http_method = "POST"
   type        = "AWS_PROXY"
   uri         = aws_lambda_function.ai_agent.invoke_arn
 }
@@ -601,9 +602,8 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
   })
 }
 
-# Policy para la Step Function para que se pueda ejecutar Glue Crawler en el ultimo step del job
-resource "aws_iam_role_policy" "step_function_glue" {
-  name = "step_function_glue"
+resource "aws_iam_role_policy" "step_function_glue_part1" {
+  name = "step_function_glue_part1"
   role = aws_iam_role.step_function_role.id
 
   policy = jsonencode({
@@ -613,15 +613,30 @@ resource "aws_iam_role_policy" "step_function_glue" {
       Action   = ["glue:StartCrawler"],
       Resource = [
         aws_glue_crawler.market_tickets_crawler.arn,
-        aws_glue_crawler.mp_reports_crawler.arn,
+        aws_glue_crawler.mp_reports_crawler.arn
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "step_function_glue_part2" {
+  name = "step_function_glue_part2"
+  role = aws_iam_role.step_function_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = ["glue:StartCrawler"],
+      Resource = [
         aws_glue_crawler.bank_payments_crawler.arn
       ]
     }]
   })
 }
 
-resource "aws_iam_role_policy" "step_function_start_execution" {
-  name = "step_function_start_execution"
+resource "aws_iam_role_policy" "step_function_start_execution_part1" {
+  name = "step_function_start_execution_part1"
   role = aws_iam_role.step_function_role.id
 
   policy = jsonencode({
@@ -631,7 +646,22 @@ resource "aws_iam_role_policy" "step_function_start_execution" {
       Action   = "states:StartExecution",
       Resource = [
         aws_sfn_state_machine.pdf_etl_flow.arn,
-        aws_sfn_state_machine.mp_report_etl_flow.arn,
+        aws_sfn_state_machine.mp_report_etl_flow.arn
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "step_function_start_execution_part2" {
+  name = "step_function_start_execution_part2"
+  role = aws_iam_role.step_function_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = "states:StartExecution",
+      Resource = [
         aws_sfn_state_machine.bank_payments_etl_flow.arn
       ]
     }]
