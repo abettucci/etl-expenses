@@ -5,7 +5,7 @@ ARG aws_account_id
 FROM ${aws_account_id}.dkr.ecr.us-east-2.amazonaws.com/etl-expenses:lambda-base
 
 # Instala cmake y build-essential
-RUN apt-get update && apt-get install -y cmake build-essential
+RUN yum install -y cmake make gcc-c++ && yum clean all
 
 # El resto de tu Dockerfile...
 COPY redshift_to_bq/requirements.txt .
