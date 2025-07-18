@@ -87,6 +87,21 @@ def send_telegram_message(chat_id, text, token):
     requests.post(url, json=payload)
 
 def lambda_handler(event, context):
+    print("== Evento recibido por Lambda ==")
+    print(json.dumps(event))  # Agrega esto
+
+    data = json.loads(event["body"])
+    text = data["message"]["text"]
+    chat_id = data["message"]["chat"]["id"]
+
+    print('text: ', text)
+    print('chat_id: ', chat_id)
+
+    response_text = handle_message(text)
+    send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+
+    return {"statusCode": 200}
+
     try:
         # Procesar update
         update = Update.de_json(json.loads(event["body"]), bot)
