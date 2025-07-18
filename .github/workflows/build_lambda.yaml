@@ -124,7 +124,7 @@ jobs:
           terraform import aws_s3_bucket.mp_reports mercadopago-reports
           terraform import aws_s3_bucket.bank_payments bank-payments
 
-          terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_lambda_policy
+          # terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_lambda_policy
           
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace
 
