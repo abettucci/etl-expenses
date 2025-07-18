@@ -62,11 +62,11 @@ def generate_sql(question: str) -> str:
     return llm(prompt)
 
 # Manejo de Telegram - versión simplificada para Lambda
-def handle_message(update: Update) -> str:
-    question = update.message.text
+def handle_message(text: str) -> str:
+    question = text
     sql = generate_sql(question)
     response = query_redshift(sql)
-    
+
     return f"""
         🔍 *Consulta:* {question}
 
@@ -87,37 +87,31 @@ def send_telegram_message(chat_id, text, token):
     requests.post(url, json=payload)
 
 def lambda_handler(event, context):
-    print("== Evento recibido por Lambda ==")
-    print(json.dumps(event))  # Agrega esto
-
-    data = json.loads(event["body"])
-    text = data["message"]["text"]
-    chat_id = data["message"]["chat"]["id"]
-
-    print('text: ', text)
-    print('chat_id: ', chat_id)
-
-    response_text = handle_message(text)
-    send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
-
-    return {"statusCode": 200}
-
     try:
-        # Procesar update
-        update = Update.de_json(json.loads(event["body"]), bot)
-        
-        # Generar respuesta
-        response_text = handle_message(update)
-        
-        # Enviar respuesta usando el bot directamente
-        send_telegram_message(update.effective_chat.id, response_text, TELEGRAM_BOT_TOKEN)
-            
+        print("== Evento recibido por Lambda ==")
+        print(json.dumps(event))  # Agrega esto
+
+        data = json.loads(event["body"])
+        text = data["message"]["text"]
+        chat_id = data["message"]["chat"]["id"]
+
+        print('text: ', text)
+        print('chat_id: ', chat_id)
+
+        response_text = handle_message(text)
+        send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+
         return {"statusCode": 200}
     except Exception as e:
-        # En caso de error, intentar enviar mensaje de error
+        print("[ERROR] Exception en Lambda:", str(e))
+
+        # Intentar enviar mensaje de error al usuario
         try:
-            update = Update.de_json(json.loads(event["body"]), bot)
-            send_telegram_message(update.effective_chat.id, response_text, TELEGRAM_BOT_TOKEN)
-        except:
-            pass
+            data = json.loads(event["body"])
+            chat_id = data["message"]["chat"]["id"]
+            send_telegram_message(chat_id, "❌ Ocurrió un error al procesar tu mensaje. Por favor, intentá de nuevo.", TELEGRAM_BOT_TOKEN)
+        except Exception as nested_e:
+            print("[ERROR] No se pudo enviar mensaje de error:", str(nested_e))
+
         return {"statusCode": 500}
+    
