@@ -7,8 +7,10 @@ import requests
 
 # Configuración inicial
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+API_GATEWAY_URL = os.environ.get("API_GATEWAY_URL")
+
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
-llm = Bedrock(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
+llm = Bedrock(model_id="amazon.nova-micro-v1:0")
 redshift_data = boto3.client('redshift-data')
 
 # Conexión a Redshift
@@ -85,6 +87,14 @@ def send_telegram_message(chat_id, text, token):
         "parse_mode": "Markdown"
     }
     requests.post(url, json=payload)
+
+def set_webhook(token, api_url):
+    url = f"https://api.telegram.org/bot{token}/setWebhook"
+    response = requests.post(url, params={"url": api_url})
+    print("Webhook setup response:", response.json())
+
+# Dentro del lambda_handler o setup inicial
+set_webhook(TELEGRAM_BOT_TOKEN, API_GATEWAY_URL)
 
 def lambda_handler(event, context):
     try:
