@@ -32,6 +32,12 @@ variable "email" {
   sensitive   = true
 }
 
+variable "TELEGRAM_BOT_TOKEN" {
+  description = "TELEGRAM_BOT_TOKEN"
+  type        = string
+  sensitive   = true
+}
+
 ########### 1. Buckets de S3 ###########
 # 1.1 Bucket para PDF de Gmail
 resource "aws_s3_bucket" "market_tickets" {
@@ -299,7 +305,9 @@ resource "aws_lambda_function" "ai_agent" {
   environment {
     variables = {
       REDSHIFT_WORKGROUP = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      REDSHIFT_DATABASE  = "dev"
+      REDSHIFT_DATABASE  = "dev",
+      TELEGRAM_BOT_TOKEN = ${var.TELEGRAM_BOT_TOKEN}
+      
     }
   }
 }
