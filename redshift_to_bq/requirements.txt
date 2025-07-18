@@ -1,2 +1,1 @@
-pandas-gbq
 google-cloud-bigquery
