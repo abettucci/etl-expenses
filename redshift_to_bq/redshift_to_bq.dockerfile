@@ -3,10 +3,6 @@ ARG aws_account_id
 
 # Referenciamos a la imagen de la lambda base con librerias comun entre todas las lambda
 FROM ${aws_account_id}.dkr.ecr.us-east-2.amazonaws.com/etl-expenses:lambda-base
-
-# Instala cmake y build-essential
-RUN yum install -y cmake make gcc-c++ && yum clean all
-
 # El resto de tu Dockerfile...
 COPY redshift_to_bq/requirements.txt .
 RUN pip install -r requirements.txt
