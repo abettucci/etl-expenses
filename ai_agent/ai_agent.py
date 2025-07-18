@@ -3,6 +3,7 @@ import json
 import boto3
 from telegram import Bot, Update
 from langchain_community.llms import Bedrock
+import requests
 
 # Configuración inicial
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -76,6 +77,15 @@ def handle_message(update: Update) -> str:
         {response}
     """
 
+def send_telegram_message(chat_id, text, token):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    requests.post(url, json=payload)
+
 def lambda_handler(event, context):
     try:
         # Procesar update
@@ -85,21 +95,14 @@ def lambda_handler(event, context):
         response_text = handle_message(update)
         
         # Enviar respuesta usando el bot directamente
-        bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=response_text,
-            parse_mode="Markdown"
-        )
+        send_telegram_message(update.effective_chat.id, response_text, TELEGRAM_BOT_TOKEN)
             
         return {"statusCode": 200}
     except Exception as e:
         # En caso de error, intentar enviar mensaje de error
         try:
             update = Update.de_json(json.loads(event["body"]), bot)
-            bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"❌ Error procesando tu consulta: {str(e)}"
-            )
+            send_telegram_message(update.effective_chat.id, response_text, TELEGRAM_BOT_TOKEN)
         except:
             pass
         return {"statusCode": 500}
