@@ -1,4 +1,4 @@
 python-telegram-bot==20.5
-langchain==0.1.0  # Framework RAG
-anthropic-bedrock==0.5.0
-python-dotenv==1.0.0  # Manejo de variables de entorno
+boto3>=1.26.0
+requests>=2.28.0
+openai>=1.0.0

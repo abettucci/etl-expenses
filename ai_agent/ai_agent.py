@@ -2,50 +2,75 @@ import os
 import json
 import boto3
 from telegram import Bot, Update
-from langchain_community.llms import Bedrock
 import requests
+import openai
 
 # Configuración inicial
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-# La URL del webhook se configurará manualmente en Telegram
-# No necesitamos API_GATEWAY_URL como variable de entorno
-
+TELEGRAM_BOT_TOKEN = "7541715839:AAFaA1ZIwVSzEu6Y34coDSc5UjGDNm1rm8I"
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-# Cambiar a un modelo más común y agregar manejo de errores
-try:
-    llm = Bedrock(
-        model_id="anthropic.claude-v2",  # Modelo principal recomendado
-        model_kwargs={
-            "max_tokens": 512,
-            "temperature": 0.1,
-            "top_p": 0.9
-        }
-    )
-    print("✅ Modelo Claude v2 cargado exitosamente")
-except Exception as e:
-    print(f"❌ Error cargando modelo Claude: {e}")
-    try:
-        # Fallback a Titan si Claude no está disponible
-        llm = Bedrock(
-            model_id="amazon.titan-text-express-v1",
-            model_kwargs={"maxTokenCount": 512, "temperature": 0.1}
-        )
-        print("✅ Modelo Titan (fallback) cargado exitosamente")
-    except Exception as e2:
-        print(f"❌ Error cargando modelo fallback: {e2}")
-        llm = None
 
 redshift_data = boto3.client('redshift-data')
 
-# Verificar que Bedrock esté disponible
-try:
-    bedrock_client = boto3.client('bedrock-runtime', region_name='us-east-2')
-    print("✅ Cliente Bedrock configurado correctamente")
-except Exception as e:
-    print(f"❌ Error configurando cliente Bedrock: {e}")
+# Configuración de OpenAI
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is required")
 
-# Conexión a Redshift
+openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+def generate_sql_with_openai(question: str) -> str:
+    """Genera SQL usando OpenAI GPT"""
+    
+    try:
+        # Prompt para generar SQL
+        prompt = f"""
+        Eres un experto en SQL y análisis de datos. Necesito que generes una consulta SQL para responder a esta pregunta: "{question}"
+
+        Las tablas disponibles son:
+        - mp_data: transacciones de MercadoPago (campos: id, amount, created_date, description, status)
+        - bank_payments: gastos bancarios (campos: id, amount, transaction_date, description, category)
+
+        Reglas importantes:
+        1. Usa solo las tablas mencionadas
+        2. Genera SQL válido para Redshift
+        3. Si la pregunta es sobre gastos, usa bank_payments
+        4. Si la pregunta es sobre transacciones/pagos, usa mp_data
+        5. Limita los resultados a máximo 20 filas
+        6. Incluye fechas relevantes cuando sea apropiado
+
+        Genera solo el SQL, sin explicaciones adicionales:
+        """
+        
+        print(f"🤖 Enviando prompt a OpenAI GPT...")
+        
+        # Llamar a OpenAI
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",  # Modelo económico y rápido
+            messages=[
+                {"role": "system", "content": "Eres un experto en SQL para Redshift."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500,
+            temperature=0.1
+        )
+        
+        sql = response.choices[0].message.content
+        if sql:
+            sql = sql.strip()
+        else:
+            sql = ""
+        
+        # Limpiar SQL (remover markdown si existe)
+        if sql.startswith('```sql'):
+            sql = sql.replace('```sql', '').replace('```', '').strip()
+        
+        print(f"✅ SQL generado por OpenAI: {sql[:100]}...")
+        return sql
+        
+    except Exception as e:
+        print(f"❌ Error generando SQL con OpenAI: {e}")
+        return ""
+
 def query_redshift(sql: str) -> str:
     """Ejecuta SQL y devuelve resultados formateados"""
     try:
@@ -82,30 +107,14 @@ def format_redshift_results(results: dict) -> str:
         "\n".join(rows)
     )
 
-def generate_sql(question: str) -> str:
-    # Versión simplificada sin FAISS
-    if llm is None:
-        return "SELECT 'Error: Modelo de IA no disponible' as error"
-    
-    try:
-        prompt = f"""
-            Genera SQL para responder a esta pregunta: {question}
-            
-            Las tablas disponibles son:
-            - mp_data (transacciones)
-            - bank_payments (gastos bancarios)
-            
-            SQL:
-        """
-        return llm(prompt)
-    except Exception as e:
-        print(f"❌ Error generando SQL: {e}")
-        return "SELECT 'Error generando consulta SQL' as error"
-
-# Manejo de Telegram - versión simplificada para Lambda
+# Manejo de Telegram - versión con OpenAI
 def handle_message(text: str) -> str:
     question = text
-    sql = generate_sql(question)
+    sql = generate_sql_with_openai(question)
+    
+    if not sql:
+        return "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
+    
     response = query_redshift(sql)
 
     return f"""
@@ -127,14 +136,6 @@ def send_telegram_message(chat_id, text, token):
     }
     requests.post(url, json=payload)
 
-def set_webhook(token, api_url):
-    url = f"https://api.telegram.org/bot{token}/setWebhook"
-    response = requests.post(url, params={"url": api_url})
-    print("Webhook setup response:", response.json())
-
-# El webhook se configurará manualmente después del deployment
-# No se ejecuta automáticamente en Lambda
-
 def lambda_handler(event, context):
     try:
         print("== Evento recibido por Lambda ==")
@@ -150,16 +151,25 @@ def lambda_handler(event, context):
         # Manejar comando /start
         if text == "/start":
             welcome_message = """
-🤖 *Bot de Consultas de Datos*
+🤖 *Bot de Consultas de Datos con OpenAI*
 
-¡Hola! Soy tu asistente para consultar datos de transacciones y gastos.
+¡Hola! Soy tu asistente inteligente para consultar datos de transacciones y gastos.
 
-Puedes preguntarme cosas como:
+🎯 *Características:*
+• IA real con OpenAI GPT
+• Generación dinámica de SQL
+• Respuestas inteligentes y precisas
+
+💡 *Puedes preguntarme:*
 • "¿Cuánto gasté este mes?"
 • "Mostrame las transacciones de ayer"
 • "¿Cuál fue el gasto más alto?"
+• "Gastos por categoría"
+• "Transacciones pendientes"
+• "Resumen de gastos de la semana"
+• "¿Cuánto gasté en comida este año?"
 
-¡Escribí tu pregunta!
+¡Escribí tu pregunta y la IA generará la consulta SQL automáticamente!
             """
             send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
@@ -179,5 +189,4 @@ Puedes preguntarme cosas como:
         except Exception as nested_e:
             print("[ERROR] No se pudo enviar mensaje de error:", str(nested_e))
 
-        return {"statusCode": 200}  # Cambiar a 200 para evitar reintentos
-    
+        return {"statusCode": 200}  # Cambiar a 200 para evitar reintentos 
