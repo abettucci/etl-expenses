@@ -307,7 +307,7 @@ resource "aws_lambda_function" "ai_agent" {
       REDSHIFT_WORKGROUP = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
       REDSHIFT_DATABASE  = "dev",
       TELEGRAM_BOT_TOKEN = var.TELEGRAM_BOT_TOKEN
-      API_GATEWAY_URL    = "${aws_api_gateway_deployment.prod.invoke_url}/webhook"      
+      API_GATEWAY_URL    = "${aws_api_gateway_deployment.webhook_deployment.invoke_url}/webhook"      
     }
   }
 }
