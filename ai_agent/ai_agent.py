@@ -10,8 +10,36 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 API_GATEWAY_URL = os.environ.get("API_GATEWAY_URL")
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
-llm = Bedrock(model_id="amazon.nova-micro-v1:0")
+
+# Cambiar a un modelo más común y agregar manejo de errores
+try:
+    # Usar el modelo que está disponible en us-east-2
+    llm = Bedrock(
+        model_id="amazon.nova-micro-v1:0",
+        model_kwargs={
+            "max_tokens": 512,
+            "temperature": 0.1
+        }
+    )
+    print("✅ Bedrock model amazon.nova-micro-v1:0 cargado exitosamente")
+except Exception as e:
+    print(f"❌ Error cargando modelo principal: {e}")
+    try:
+        # Fallback a otro modelo
+        llm = Bedrock(model_id="amazon.titan-text-express-v1")
+        print("✅ Bedrock model fallback cargado exitosamente")
+    except Exception as e2:
+        print(f"❌ Error cargando modelo fallback: {e2}")
+        llm = None
+
 redshift_data = boto3.client('redshift-data')
+
+# Verificar que Bedrock esté disponible
+try:
+    bedrock_client = boto3.client('bedrock-runtime', region_name='us-east-2')
+    print("✅ Cliente Bedrock configurado correctamente")
+except Exception as e:
+    print(f"❌ Error configurando cliente Bedrock: {e}")
 
 # Conexión a Redshift
 def query_redshift(sql: str) -> str:
@@ -52,16 +80,23 @@ def format_redshift_results(results: dict) -> str:
 
 def generate_sql(question: str) -> str:
     # Versión simplificada sin FAISS
-    prompt = f"""
-        Genera SQL para responder a esta pregunta: {question}
-        
-        Las tablas disponibles son:
-        - mp_data (transacciones)
-        - bank_payments (gastos bancarios)
-        
-        SQL:
-    """
-    return llm(prompt)
+    if llm is None:
+        return "SELECT 'Error: Modelo de IA no disponible' as error"
+    
+    try:
+        prompt = f"""
+            Genera SQL para responder a esta pregunta: {question}
+            
+            Las tablas disponibles son:
+            - mp_data (transacciones)
+            - bank_payments (gastos bancarios)
+            
+            SQL:
+        """
+        return llm(prompt)
+    except Exception as e:
+        print(f"❌ Error generando SQL: {e}")
+        return "SELECT 'Error generando consulta SQL' as error"
 
 # Manejo de Telegram - versión simplificada para Lambda
 def handle_message(text: str) -> str:
@@ -99,7 +134,7 @@ set_webhook(TELEGRAM_BOT_TOKEN, API_GATEWAY_URL)
 def lambda_handler(event, context):
     try:
         print("== Evento recibido por Lambda ==")
-        print(json.dumps(event))  # Agrega esto
+        print(json.dumps(event))
 
         data = json.loads(event["body"])
         text = data["message"]["text"]
@@ -107,6 +142,23 @@ def lambda_handler(event, context):
 
         print('text: ', text)
         print('chat_id: ', chat_id)
+
+        # Manejar comando /start
+        if text == "/start":
+            welcome_message = """
+🤖 *Bot de Consultas de Datos*
+
+¡Hola! Soy tu asistente para consultar datos de transacciones y gastos.
+
+Puedes preguntarme cosas como:
+• "¿Cuánto gasté este mes?"
+• "Mostrame las transacciones de ayer"
+• "¿Cuál fue el gasto más alto?"
+
+¡Escribí tu pregunta!
+            """
+            send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
 
         response_text = handle_message(text)
         send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
@@ -123,5 +175,5 @@ def lambda_handler(event, context):
         except Exception as nested_e:
             print("[ERROR] No se pudo enviar mensaje de error:", str(nested_e))
 
-        return {"statusCode": 500}
+        return {"statusCode": 200}  # Cambiar a 200 para evitar reintentos
     
