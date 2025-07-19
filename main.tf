@@ -713,9 +713,21 @@ resource "aws_iam_role_policy" "lambda_redshift_data" {
         Resource = "*"
       },
       {
+        Action   = [
+          "bedrock:InvokeModel",
+          "bedrock:ListFoundationModels"  # Opcional pero útil para debugging
+        ],
+        Effect   = "Allow",
+        Resource = [
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-v2",
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-text-express-v1",
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/ai21.j2-mid-v1"
+        ]
+      },
+      {
         Action   = ["bedrock:InvokeModel"],
         Effect   = "Allow",
-        Resource = "arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0"
+        Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/*"  # Permiso más amplio si prefieres
       }
     ]
   })
