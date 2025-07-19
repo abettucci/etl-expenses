@@ -141,7 +141,7 @@ jobs:
           terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor
           terraform import aws_lambda_function.bank_payments_processor bank_payments_processor
           terraform import aws_lambda_function.redshift-to-bq redshift-to-bq
-          terraform import aws_lambda_function.ai_agent ai-agent
+          # terraform import aws_lambda_function.ai_agent ai-agent
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf
           
           terraform import aws_iam_role.lambda_exec lambda_exec_role
