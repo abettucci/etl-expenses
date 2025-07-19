@@ -307,7 +307,6 @@ resource "aws_lambda_function" "ai_agent" {
       REDSHIFT_WORKGROUP = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
       REDSHIFT_DATABASE  = "dev",
       TELEGRAM_BOT_TOKEN = var.TELEGRAM_BOT_TOKEN
-      API_GATEWAY_URL    = "${aws_api_gateway_deployment.webhook_deployment.invoke_url}/webhook"      
     }
   }
 }
@@ -1116,4 +1115,10 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure"
     StateMachineArn = aws_sfn_state_machine.bank_payments_etl_flow.arn
   }
   alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
+}
+
+# Output para obtener la URL del webhook
+output "webhook_url" {
+  value = "${aws_api_gateway_deployment.webhook_deployment.invoke_url}/webhook"
+  description = "URL del webhook para configurar en Telegram"
 }
