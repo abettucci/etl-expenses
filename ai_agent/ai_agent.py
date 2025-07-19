@@ -7,27 +7,31 @@ import requests
 
 # Configuración inicial
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-API_GATEWAY_URL = os.environ.get("API_GATEWAY_URL")
+# La URL del webhook se configurará manualmente en Telegram
+# No necesitamos API_GATEWAY_URL como variable de entorno
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Cambiar a un modelo más común y agregar manejo de errores
 try:
-    # Usar el modelo que está disponible en us-east-2
     llm = Bedrock(
-        model_id="amazon.nova-micro-v1:0",
+        model_id="anthropic.claude-v2",  # Modelo principal recomendado
         model_kwargs={
             "max_tokens": 512,
-            "temperature": 0.1
+            "temperature": 0.1,
+            "top_p": 0.9
         }
     )
-    print("✅ Bedrock model amazon.nova-micro-v1:0 cargado exitosamente")
+    print("✅ Modelo Claude v2 cargado exitosamente")
 except Exception as e:
-    print(f"❌ Error cargando modelo principal: {e}")
+    print(f"❌ Error cargando modelo Claude: {e}")
     try:
-        # Fallback a otro modelo
-        llm = Bedrock(model_id="amazon.titan-text-express-v1")
-        print("✅ Bedrock model fallback cargado exitosamente")
+        # Fallback a Titan si Claude no está disponible
+        llm = Bedrock(
+            model_id="amazon.titan-text-express-v1",
+            model_kwargs={"maxTokenCount": 512, "temperature": 0.1}
+        )
+        print("✅ Modelo Titan (fallback) cargado exitosamente")
     except Exception as e2:
         print(f"❌ Error cargando modelo fallback: {e2}")
         llm = None
@@ -128,8 +132,8 @@ def set_webhook(token, api_url):
     response = requests.post(url, params={"url": api_url})
     print("Webhook setup response:", response.json())
 
-# Dentro del lambda_handler o setup inicial
-set_webhook(TELEGRAM_BOT_TOKEN, API_GATEWAY_URL)
+# El webhook se configurará manualmente después del deployment
+# No se ejecuta automáticamente en Lambda
 
 def lambda_handler(event, context):
     try:
