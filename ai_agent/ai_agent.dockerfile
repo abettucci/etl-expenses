@@ -12,5 +12,5 @@ ENV TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 COPY ai_agent/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY ai_agent/ai_agent.py ${LAMBDA_TASK_ROOT}
+COPY ai_agent/ai_agent.py ${LAMBDA_TASK_ROOT}/ai_agent.py
 CMD ["ai_agent.lambda_handler"]
