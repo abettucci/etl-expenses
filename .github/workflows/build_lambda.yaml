@@ -128,7 +128,7 @@ jobs:
           terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_start_policy
           terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_glue_policy
 
-          # terraform import aws_lambda_permission.allow_api_gateway arn:aws:lambda:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai-agent/AllowAPIGatewayInvoke
+          terraform import aws_lambda_permission.allow_api_gateway arn:aws:lambda:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai-agent/AllowAPIGatewayInvoke
           
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace
 
