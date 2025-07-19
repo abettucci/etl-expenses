@@ -715,7 +715,7 @@ resource "aws_iam_role_policy" "lambda_redshift_data" {
       {
         Action   = ["bedrock:InvokeModel"],
         Effect   = "Allow",
-        Resource = "arn:aws:bedrock:*::foundation-model/anthropic.claude-v2"
+        Resource = "arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0"
       }
     ]
   })
