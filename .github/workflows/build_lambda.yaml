@@ -167,3 +167,24 @@ jobs:
           TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN : ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+      - name: Get Webhook URL
+        id: webhook
+        run: |
+          WEBHOOK_URL=$(terraform output -raw webhook_url)
+          echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
+          
+      - name: Configure Telegram Webhook
+        run: |
+          WEBHOOK_URL=$(terraform output -raw webhook_url)
+          echo "Configurando webhook con URL: $WEBHOOK_URL"
+          
+          curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/setWebhook" \
+               -H "Content-Type: application/json" \
+               -d "{\"url\": \"$WEBHOOK_URL\"}"
+               
+          echo "Webhook configurado exitosamente"
+          
+      - name: Verify Webhook
+        run: |
+          curl -X GET "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getWebhookInfo" | jq . 
