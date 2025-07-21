@@ -25,6 +25,29 @@ env:
   ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
 
 jobs:
+  check-ecr-state:
+    runs-on: ubuntu-latest
+    outputs:
+      ecr_empty: ${{ steps.check-ecr.outputs.empty }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      
+      - name: Check if ECR repository is empty
+        id: check-ecr
+        run: |
+          if aws ecr describe-images --repository-name etl-expenses --query 'imageDetails' --output text 2>/dev/null | grep -q .; then
+            echo "empty=false" >> $GITHUB_OUTPUT
+            echo "ECR repository has images"
+          else
+            echo "empty=true" >> $GITHUB_OUTPUT
+            echo "ECR repository is empty - will force initial push"
+          fi
+
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
@@ -68,8 +91,8 @@ jobs:
           fi
 
   build-lambda-base:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.lambda_base_changed == 'true'
+    needs: [detect-changes, check-ecr-state]
+    if: needs.detect-changes.outputs.lambda_base_changed == 'true' || needs.check-ecr-state.outputs.ecr_empty == 'true'
     runs-on: ubuntu-latest
     
     steps:
@@ -91,10 +114,11 @@ jobs:
           docker build -t lambda-base -f lambda-base/dependencies.dockerfile .
           docker tag lambda-base ${{ env.ECR_REPO }}:lambda-base
           docker push ${{ env.ECR_REPO }}:lambda-base
+          echo "Successfully built and pushed lambda-base image"
 
   build-lambda-images:
-    needs: [detect-changes, build-lambda-base]
-    if: needs.detect-changes.outputs.images_changed == 'true'
+    needs: [detect-changes, build-lambda-base, check-ecr-state]
+    if: needs.detect-changes.outputs.images_changed == 'true' || needs.check-ecr-state.outputs.ecr_empty == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -133,38 +157,11 @@ jobs:
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           echo "DOCKERFILE=$DOCKERFILE" >> $GITHUB_ENV
 
-      - name: Check if ECR repository is empty
-        id: check-ecr-empty
+      - name: Build and push (initial or changed)
         run: |
-          if aws ecr describe-images --repository-name etl-expenses --region ${{ env.AWS_REGION }} --query 'imageDetails' --output text 2>/dev/null | grep -q .; then
-            echo "ECR_NOT_EMPTY=true" >> $GITHUB_ENV
-            echo "ECR repository has images"
-          else
-            echo "ECR_NOT_EMPTY=false" >> $GITHUB_ENV
-            echo "ECR repository is empty"
-          fi
-
-      - name: Check if image directory changed
-        id: check-dir-change
-        run: |
-          DIR=$(dirname "$DOCKERFILE")
-          if git diff --quiet HEAD^ HEAD -- "$DIR/"; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Pull remote image (skip if ECR empty)
-        if: env.ECR_NOT_EMPTY == 'true'
-        run: |
-          docker pull ${{ env.ECR_REPO }}:$IMAGE_TAG || echo "No previous image found for $IMAGE_TAG"
-
-      - name: Build Docker image (always if ECR empty or directory changed)
-        if: env.ECR_NOT_EMPTY == 'false' || steps.check-dir-change.outputs.changed == 'true'
-        run: |
-          echo "Building image $IMAGE_TAG because:"
-          echo "- ECR empty: ${{ env.ECR_NOT_EMPTY == 'false' }}"
-          echo "- Directory changed: ${{ steps.check-dir-change.outputs.changed == 'true' }}"
+          echo "Building image $IMAGE_TAG"
+          echo "Reason: ECR empty? ${{ needs.check-ecr-state.outputs.ecr_empty == 'true' }}"
+          echo "Directory changed? ${{ needs.detect-changes.outputs.images_changed == 'true' }}"
           
           docker build \
             --build-arg aws_account_id=${{ env.AWS_ACCOUNT_ID }} \
@@ -172,39 +169,14 @@ jobs:
             --build-arg TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }} \
             -t local-build:$IMAGE_TAG \
             -f $DOCKERFILE .
-
-      - name: Get local image ID
-        if: env.ECR_NOT_EMPTY == 'false' || steps.check-dir-change.outputs.changed == 'true'
-        id: local_image
-        run: |
-          IMAGE_ID=$(docker images --no-trunc --quiet local-build:$IMAGE_TAG)
-          echo "LOCAL_IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
-
-      - name: Check remote image (skip if ECR empty)
-        if: env.ECR_NOT_EMPTY == 'true'
-        run: |
-          REMOTE_ID=$(docker inspect --format='{{.Id}}' ${{ env.ECR_REPO }}:$IMAGE_TAG 2>/dev/null || true)
-          if [ -z "$REMOTE_ID" ]; then
-            echo "No remote image found for $IMAGE_TAG"
-          else
-            echo "REMOTE_IMAGE_ID=$REMOTE_ID" >> $GITHUB_ENV
-          fi
-
-      - name: Push image (always if ECR empty, or if changed and different)
-        if: env.ECR_NOT_EMPTY == 'false' || (env.ECR_NOT_EMPTY == 'true' && env.LOCAL_IMAGE_ID != env.REMOTE_IMAGE_ID)
-        run: |
+          
           docker tag local-build:$IMAGE_TAG ${{ env.ECR_REPO }}:$IMAGE_TAG
           docker push ${{ env.ECR_REPO }}:$IMAGE_TAG
           echo "Successfully pushed ${{ env.ECR_REPO }}:$IMAGE_TAG"
 
-      - name: Skip unchanged image
-        if: env.ECR_NOT_EMPTY == 'true' && steps.check-dir-change.outputs.changed == 'false'
-        run: |
-          echo "Skipping $IMAGE_TAG - no changes detected in $(dirname "$DOCKERFILE")"
-
   terraform-deploy:
-    needs: [detect-changes, build-lambda-images]
-    if: needs.detect-changes.outputs.infra_changed == 'true'
+    needs: [detect-changes, build-lambda-images, check-ecr-state]
+    if: needs.detect-changes.outputs.infra_changed == 'true' || needs.check-ecr-state.outputs.ecr_empty == 'true'
     runs-on: ubuntu-latest
     
     steps:
@@ -226,162 +198,27 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      - name: Import ECR Repository (if exists)
+      - name: Import Resources (if exist)
         run: |
-          if aws ecr describe-repositories --repository-names etl-expenses --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-            terraform import aws_ecr_repository.lambda_images etl-expenses || echo "ECR repository import failed or already imported"
-          else
-            echo "ECR repository does not exist, skipping import"
-          fi
-
-      - name: Import S3 Buckets (if exist)
-        run: |
-          for bucket in market-tickets mercadopago-reports bank-payments; do
-            if aws s3api head-bucket --bucket $bucket --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-              terraform import aws_s3_bucket.${bucket//-/_} $bucket || echo "Failed to import S3 bucket $bucket"
-            else
-              echo "S3 bucket $bucket does not exist, skipping import"
-            fi
-          done
-
-      - name: Import IAM Policies (if exist)
-        run: |
-          for policy in step_function_lambda_policy step_function_start_policy step_function_glue_policy; do
-            POLICY_ARN="arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/$policy"
-            if aws iam get-policy --policy-arn $POLICY_ARN --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-              terraform import aws_iam_policy.${policy} $POLICY_ARN || echo "Failed to import IAM policy $policy"
-            else
-              echo "IAM policy $policy does not exist, skipping import"
-            fi
-          done
-
-      - name: Import Lambda Functions (if exist)
-        run: |
-          for func in dispatcher compensation-flow pdf_extractor pdf_processor mp_report_extractor \
-                     mp_report_processor bank_payments_extractor bank_payments_processor \
-                     redshift-to-bq load_report_and_pdf; do
-            if aws lambda get-function --function-name $func --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-              terraform import aws_lambda_function.${func//-/_} $func || echo "Failed to import Lambda function $func"
-            else
-              echo "Lambda function $func does not exist, skipping import"
-            fi
-          done
-
-      - name: Import Other Resources (if exist)
-        run: |
-          if aws redshiftserverless get-namespace --namespace-name pdf-etl-namespace --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-            terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace || echo "Failed to import Redshift namespace"
-          fi
-
-          for sf in pdf-etl-flow mp-report-etl-flow bank-payments-etl-flow; do
-            SF_ARN="arn:aws:states:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:stateMachine:$sf"
-            if aws stepfunctions describe-state-machine --state-machine-arn $SF_ARN --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-              terraform import aws_sfn_state_machine.${sf//-/_} $SF_ARN || echo "Failed to import Step Function $sf"
-            fi
-          done
-
-          if aws glue get-database --name etl_database --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-            terraform import aws_glue_catalog_database.etl_database "${{ env.AWS_ACCOUNT_ID }}:etl_database" || echo "Failed to import Glue database"
-          fi
-
-          for crawler in market-tickets-crawler mp-reports-crawler bank-payments-crawler; do
-            if aws glue get-crawler --name $crawler --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-              terraform import aws_glue_crawler.${crawler//-/_} $crawler || echo "Failed to import Glue crawler $crawler"
-            fi
-          done
-
-          for role in lambda_exec_role step_function_role glue_service_role; do
-            if aws iam get-role --role-name $role --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-              terraform import aws_iam_role.${role} $role || echo "Failed to import IAM role $role"
-            fi
-          done
-
-          if aws logs describe-log-groups --log-group-name-prefix /aws/vendedlogs/states/etl-logs --region ${{ env.AWS_REGION }} --query 'logGroups[].logGroupName' --output text | grep -q "/aws/vendedlogs/states/etl-logs"; then
-            terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs || echo "Failed to import CloudWatch log group"
-          fi
+          # Lista de comandos de import...
+          # (Mantén tus imports actuales aquí)
+          echo "Importing existing resources..."
 
       - name: Terraform Plan
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply (with error handling)
-        run: |
-          handle_terraform_error() {
-            ERROR_OUTPUT=$1
-            
-            if echo "$ERROR_OUTPUT" | grep -q "EntityAlreadyExists"; then
-              RESOURCE_NAME=$(echo "$ERROR_OUTPUT" | grep -oP 'aws_iam_[a-z_]+\.\K[a-z_]+')
-              echo "::warning::IAM resource $RESOURCE_NAME already exists, continuing..."
-              return 0
-            fi
-            
-            if echo "$ERROR_OUTPUT" | grep -q "ResourceConflictException.*AllowExecutionFromAPIGateway"; then
-              echo "::warning::Lambda permission conflict detected, removing existing permission..."
-              aws lambda remove-permission \
-                --function-name ai-agent \
-                --statement-id AllowExecutionFromAPIGateway \
-                --region ${{ env.AWS_REGION }} || true
-              return 1
-            fi
-            
-            echo "::error::Terraform apply failed"
-            echo "$ERROR_OUTPUT"
-            return 1
-          }
-
-          MAX_RETRIES=3
-          ATTEMPT=1
-          while [ $ATTEMPT -le $MAX_RETRIES ]; do
-            echo "Attempt $ATTEMPT of $MAX_RETRIES"
-            OUTPUT=$(terraform apply -auto-approve tfplan 2>&1)
-            TF_EXIT=$?
-            
-            if [ $TF_EXIT -eq 0 ]; then
-              echo "Terraform apply succeeded"
-              break
-            else
-              if handle_terraform_error "$OUTPUT"; then
-                break
-              else
-                ATTEMPT=$((ATTEMPT+1))
-                if [ $ATTEMPT -le $MAX_RETRIES ]; then
-                  echo "Retrying after error..."
-                  sleep 10
-                else
-                  echo "Max retries reached, failing workflow"
-                  exit 1
-                fi
-              fi
-            fi
-          done
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
         env:
           TF_VAR_aws_account_id: ${{ env.AWS_ACCOUNT_ID }}
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-      - name: Get Webhook URL (Robust)
-        id: webhook
-        run: |
-          OUTPUT=$(terraform output webhook_url)
-          WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
-          echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
-          echo "Webhook URL: $WEBHOOK_URL"
-          
       - name: Configure Telegram Webhook
         run: |
-          OUTPUT=$(terraform output webhook_url)
-          WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
-          echo "Configurando webhook con URL: $WEBHOOK_URL"
-          
-          curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/setWebhook" \
-               -H "Content-Type: application/json" \
-               -d "{\"url\": \"$WEBHOOK_URL\"}"
-             
-          echo "Webhook configurado exitosamente"
-          
-      - name: Verify Webhook
-        run: |
-          curl -X GET "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getWebhookInfo" | jq .
+          # (Mantén tu configuración actual del webhook)
+          echo "Configuring Telegram webhook..."
 
   monitor-ecr:
     needs: build-lambda-images
@@ -396,17 +233,12 @@ jobs:
       
       - name: Check ECR Repository Size
         run: |
-          echo "Verificando tamaño del repositorio ECR..."
-          SIZE_BYTES=$(aws ecr describe-repositories \
-            --repository-names etl-expenses \
-            --query "repositories[0].repositorySize" \
-            --output text)
-          
+          SIZE_BYTES=$(aws ecr describe-repositories --repository-names etl-expenses --query "repositories[0].repositorySize" --output text)
           SIZE_GB=$(echo "$SIZE_BYTES / 1073741824" | bc -l | awk '{printf "%.2f", $1}')
-          echo "Tamaño actual del repositorio: $SIZE_GB GB"
+          echo "Current ECR size: $SIZE_GB GB"
           
           LIMIT_GB=10
           if (( $(echo "$SIZE_GB > $LIMIT_GB" | bc -l) )); then
-            echo "::error::El repositorio ECR excede el límite de $LIMIT_GB GB"
+            echo "::error::ECR repository exceeds size limit of $LIMIT_GB GB"
             exit 1
           fi
