@@ -1,49 +1,115 @@
-name: Deploy to AWS Lambda
+name: Smart Deploy to AWS Lambda (ETL)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
+    paths:
+      - 'lambda-base/**'
+      - 'extract_data_pdf/**'
+      - 'transform_data_pdf/**'
+      - 'extract_data_mp/**'
+      - 'transform_data_mp/**'
+      - 'load_data/**'
+      - 'webhook_mp_report/**'
+      - 'compensation_flow/**'
+      - 'extract_data_bank_pay/**'
+      - 'transform_data_bank_pay/**'
+      - 'redshift_to_bq/**'
+      - 'ai_agent/**'
+      - 'infrastructure/**'
+      - '.github/workflows/build_lambda.yaml'
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+
 jobs:
-  build-lambda-base:
+  detect-changes:
     runs-on: ubuntu-latest
+    outputs:
+      lambda_base_changed: ${{ steps.check-lambda-base.outputs.changed }}
+      images_changed: ${{ steps.check-images.outputs.changed }}
+      infra_changed: ${{ steps.check-infra.outputs.changed }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Necesario para comparar cambios
+      
+      - name: Check Lambda Base changes
+        id: check-lambda-base
+        run: |
+          if git diff --quiet HEAD^ HEAD -- lambda-base/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Check Lambda Images changes
+        id: check-images
+        run: |
+          # Lista de todos los directorios de imágenes Lambda
+          CHANGED=false
+          for dir in extract_data_pdf transform_data_pdf extract_data_mp transform_data_mp load_data webhook_mp_report compensation_flow extract_data_bank_pay transform_data_bank_pay redshift_to_bq ai_agent; do
+            if ! git diff --quiet HEAD^ HEAD -- "$dir/"; then
+              CHANGED=true
+              break
+            fi
+          done
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+      
+      - name: Check Infrastructure changes
+        id: check-infra
+        run: |
+          if git diff --quiet HEAD^ HEAD -- infrastructure/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+  build-lambda-base:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.lambda_base_changed == 'true'
+    runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{secrets.AWS_REGION}} 
-          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
-          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Login to AWS ECR
         uses: aws-actions/amazon-ecr-login@v1
         
       - name: Build lambda-base image
         run: |
-          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
           docker build -t lambda-base -f lambda-base/dependencies.dockerfile .
-          docker tag lambda-base $ECR_REPO:lambda-base
-          docker push $ECR_REPO:lambda-base
-    
+          docker tag lambda-base ${{ env.ECR_REPO }}:lambda-base
+          docker push ${{ env.ECR_REPO }}:lambda-base
+
   build-lambda-images:
-    needs: build-lambda-base
+    needs: [detect-changes, build-lambda-base]
+    if: needs.detect-changes.outputs.images_changed == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: ["pdf_extractor-latest|extract_data_pdf/extract_data_pdf.dockerfile", "pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "bank_payments_extractor-latest|extract_data_bank_pay/extract_data_bank_pay.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile","redshift_to_bq-latest|redshift_to_bq/redshift_to_bq.dockerfile","ai_agent-latest|ai_agent/ai_agent.dockerfile"]
+        image: ["pdf_extractor-latest|extract_data_pdf/extract_data_pdf.dockerfile","pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile","webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile","compensation_flow-latest|compensation_flow/compensation_flow.dockerfile","bank_payments_extractor-latest|extract_data_bank_pay/extract_data_bank_pay.dockerfile","bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile","redshift_to_bq-latest|redshift_to_bq/redshift_to_bq.dockerfile","ai_agent-latest|ai_agent/ai_agent.dockerfile"]    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{secrets.AWS_REGION}} 
-          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
-          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Login to AWS ECR
         uses: aws-actions/amazon-ecr-login@v1
@@ -55,32 +121,43 @@ jobs:
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           echo "DOCKERFILE=$DOCKERFILE" >> $GITHUB_ENV
 
-      - name: Pull remote image
+      - name: Check if image directory changed
+        id: check-dir-change
         run: |
-          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
-          docker pull $ECR_REPO:$IMAGE_TAG || echo "No previous image"
+          # Extraer el directorio del Dockerfile
+          DIR=$(dirname "$DOCKERFILE")
+          if git diff --quiet HEAD^ HEAD -- "$DIR/"; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pull remote image
+        if: steps.check-dir-change.outputs.changed == 'true'
+        run: |
+          docker pull ${{ env.ECR_REPO }}:$IMAGE_TAG || echo "No previous image"
 
       - name: Build Docker image
+        if: steps.check-dir-change.outputs.changed == 'true'
         run: |
-          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
           docker build \
-            --build-arg aws_account_id=${{ secrets.AWS_ACCOUNT_ID }} \
+            --build-arg aws_account_id=${{ env.AWS_ACCOUNT_ID }} \
             --build-arg github_secret=${{ secrets.GITHUB_API_SECRET }} \
             --build-arg TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }} \
             -t local-build:$IMAGE_TAG \
             -f $DOCKERFILE .
         
       - name: Get local image ID
+        if: steps.check-dir-change.outputs.changed == 'true'
         id: local_image
         run: |
           IMAGE_ID=$(docker images --no-trunc --quiet local-build:$IMAGE_TAG)
           echo "LOCAL_IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
 
       - name: Check remote image
+        if: steps.check-dir-change.outputs.changed == 'true'
         run: |
-          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
-          REMOTE_ID=$(docker inspect --format='{{.Id}}' $ECR_REPO:$IMAGE_TAG 2>/dev/null || true)
-      
+          REMOTE_ID=$(docker inspect --format='{{.Id}}' ${{ env.ECR_REPO }}:$IMAGE_TAG 2>/dev/null || true)
           if [ -z "$REMOTE_ID" ]; then
             echo "No remote image found for $IMAGE_TAG"
           else
@@ -88,26 +165,31 @@ jobs:
           fi
 
       - name: Compare and push if different
-        if: env.LOCAL_IMAGE_ID != env.REMOTE_IMAGE_ID
+        if: steps.check-dir-change.outputs.changed == 'true' && env.LOCAL_IMAGE_ID != env.REMOTE_IMAGE_ID
         run: |
-          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
-          docker tag local-build:$IMAGE_TAG $ECR_REPO:$IMAGE_TAG
-          docker push $ECR_REPO:$IMAGE_TAG
+          docker tag local-build:$IMAGE_TAG ${{ env.ECR_REPO }}:$IMAGE_TAG
+          docker push ${{ env.ECR_REPO }}:$IMAGE_TAG
+
+      - name: Skip unchanged image
+        if: steps.check-dir-change.outputs.changed == 'false'
+        run: |
+          echo "Skipping $IMAGE_TAG - no changes detected in $(dirname "$DOCKERFILE")"
 
   terraform-deploy:
-  
-    needs: build-lambda-images
+    needs: [detect-changes, build-lambda-images]
+    if: needs.detect-changes.outputs.infra_changed == 'true'
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{secrets.AWS_REGION}} 
-          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
-          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
@@ -118,17 +200,18 @@ jobs:
         run: |
           terraform init
           
+          # Importar recursos existentes
           terraform import aws_ecr_repository.lambda_images etl-expenses
           
           terraform import aws_s3_bucket.market_tickets market-tickets
           terraform import aws_s3_bucket.mp_reports mercadopago-reports
           terraform import aws_s3_bucket.bank_payments bank-payments
 
-          terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_lambda_policy
-          terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_start_policy
-          terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_glue_policy
+          terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/step_function_lambda_policy
+          terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/step_function_start_policy
+          terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:policy/step_function_glue_policy
 
-          terraform import aws_lambda_permission.allow_api_gateway arn:aws:lambda:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai-agent/AllowAPIGatewayInvoke
+          # terraform import aws_lambda_permission.allow_api_gateway arn:aws:lambda:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:function:ai-agent/AllowAPIGatewayInvoke
           
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace
 
@@ -141,18 +224,17 @@ jobs:
           terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor
           terraform import aws_lambda_function.bank_payments_processor bank_payments_processor
           terraform import aws_lambda_function.redshift-to-bq redshift-to-bq
-          # terraform import aws_lambda_function.ai_agent ai-agent
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf
           
           terraform import aws_iam_role.lambda_exec lambda_exec_role
           terraform import aws_iam_role.step_function_role step_function_role
           terraform import aws_iam_role.glue_service_role glue_service_role
 
-          terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:pdf-etl-flow
-          terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:mp-report-etl-flow
-          terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:stateMachine:bank-payments-etl-flow
+          terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:stateMachine:pdf-etl-flow
+          terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:stateMachine:mp-report-etl-flow
+          terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:stateMachine:bank-payments-etl-flow
 
-          terraform import aws_glue_catalog_database.etl_database "${{ secrets.AWS_ACCOUNT_ID }}:etl_database"
+          terraform import aws_glue_catalog_database.etl_database "${{ env.AWS_ACCOUNT_ID }}:etl_database"
           terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler
           terraform import aws_glue_crawler.mp_reports_crawler mp-reports-crawler
           terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler
@@ -163,15 +245,14 @@ jobs:
       
           terraform apply -auto-approve
         env:
-          TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
-          TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+          TF_VAR_aws_account_id: ${{ env.AWS_ACCOUNT_ID }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
           TF_VAR_email: ${{ secrets.EMAIL }}
-          TF_VAR_TELEGRAM_BOT_TOKEN : ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
       - name: Get Webhook URL (Robust)
         id: webhook
         run: |
-          # Obtener output y limpiarlo
           OUTPUT=$(terraform output webhook_url)
           WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
           echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
@@ -179,7 +260,6 @@ jobs:
           
       - name: Configure Telegram Webhook
         run: |
-          # Obtener output y limpiarlo
           OUTPUT=$(terraform output webhook_url)
           WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
           echo "Configurando webhook con URL: $WEBHOOK_URL"
@@ -192,4 +272,33 @@ jobs:
           
       - name: Verify Webhook
         run: |
-          curl -X GET "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getWebhookInfo" | jq . 
+          curl -X GET "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getWebhookInfo" | jq .
+
+  monitor-ecr:
+    needs: build-lambda-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      
+      - name: Check ECR Repository Size
+        run: |
+          echo "Verificando tamaño del repositorio ECR..."
+          SIZE_BYTES=$(aws ecr describe-repositories \
+            --repository-names etl-expenses \
+            --query "repositories[0].repositorySize" \
+            --output text)
+          
+          SIZE_GB=$(echo "$SIZE_BYTES / 1073741824" | bc -l | awk '{printf "%.2f", $1}')
+          echo "Tamaño actual del repositorio: $SIZE_GB GB"
+          
+          # Opcional: Fallar el workflow si excede un límite
+          LIMIT_GB=10
+          if (( $(echo "$SIZE_GB > $LIMIT_GB" | bc -l) )); then
+            echo "::error::El repositorio ECR excede el límite de $LIMIT_GB GB"
+            exit 1
+          fi
