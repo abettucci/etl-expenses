@@ -204,8 +204,8 @@ jobs:
           # (Mantén tus imports actuales aquí)
           echo "Importing existing resources..."
 
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
+      # - name: Terraform Plan
+      #   run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
