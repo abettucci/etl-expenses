@@ -42,7 +42,7 @@ jobs:
             cd "$dir"
 
             # Only proceed if all required files exist
-            if [[ -f "lambda_function.py" && -f "*.dockerfile" && -f "requirements.txt" ]]; then
+            if [[ -f "lambda_function.py" && -f "requirements.txt" && $(ls *.dockerfile 2>/dev/null | wc -l) -gt 0 ]]; then
               DOCKERFILE=$(ls *.dockerfile | head -n1)
               
               # Calculate hash based on Dockerfile, function and requirements
