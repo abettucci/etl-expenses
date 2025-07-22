@@ -44,14 +44,14 @@ jobs:
               DOCKERFILE=$(ls $dir/*.dockerfile | head -n1)
               # Calculate hash based on Dockerfile, function and requirements
               HASH=$(cat $DOCKERFILE $dir/lambda_function.py $dir/requirements.txt | sha256sum | cut -c1-12)
-              IMAGE_NAME=${{ env.ECR_REPO }}:$(basename $dir)-$HASH
+              IMAGE_TAG=$(basename $dir)-$HASH
+              IMAGE_NAME=${{ env.ECR_REPO }}:$IMAGE_TAG
 
               # Check if image already exists in ECR
-              if aws ecr describe-images --repository-name ${{ env.ECR_REPO }} --image-ids imageTag=$(basename $dir)-$HASH >/dev/null 2>&1; then
-                echo "🔄 Image $IMAGE_NAME already exists, skipping build."
+              if aws ecr describe-images --repository-name etl-expenses --image-ids imageTag=$IMAGE_TAG >/dev/null 2>&1; then
+                echo "🔄 Image $IMAGE_NAME already exists in ECR, skipping build and push."
               else
                 echo "🚀 Building and pushing $IMAGE_NAME"
-                # Build and push
                 docker build -t $IMAGE_NAME -f $DOCKERFILE .
                 aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
                 docker push $IMAGE_NAME
