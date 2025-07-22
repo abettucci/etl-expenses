@@ -148,20 +148,42 @@ jobs:
           set -x
           terraform init
           
-          terraform import aws_ecr_repository.lambda_images etl-expenses
+          # Import existing ECR repository
+          terraform import aws_ecr_repository.lambda_images etl-expenses || true
           
+          # Import existing API Gateway and resources
+          terraform import aws_api_gateway_rest_api.telegram_webhook $(aws apigateway get-rest-apis --query "items[?name=='telegram-redshift-bot'].id" --output text) || true
+          
+          API_ID=$(aws apigateway get-rest-apis --query "items[?name=='telegram-redshift-bot'].id" --output text)
+          if [ ! -z "$API_ID" ]; then
+            ROOT_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/'].id" --output text)
+            WEBHOOK_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/webhook'].id" --output text)
+            
+            if [ ! -z "$WEBHOOK_ID" ]; then
+              echo "🔄 Importing existing API Gateway resources..."
+              terraform import aws_api_gateway_resource.webhook $API_ID/$WEBHOOK_ID || true
+              terraform import aws_api_gateway_method.post $API_ID/$WEBHOOK_ID/POST || true
+              terraform import aws_api_gateway_integration.lambda $API_ID/$WEBHOOK_ID/POST || true
+            else
+              echo "⚠️ Webhook resource not found in API Gateway"
+            fi
+          else
+            echo "⚠️ API Gateway 'telegram-redshift-bot' not found"
+          fi
+          
+          # Import other existing resources
           terraform import aws_s3_bucket.market_tickets market-tickets || true
           terraform import aws_s3_bucket.mp_reports mercadopago-reports || true
           terraform import aws_s3_bucket.bank_payments bank-payments || true
-
+          
           terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_lambda_policy || true
           terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_start_policy || true
           terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/step_function_glue_policy || true
-
-          terraform import aws_lambda_permission.allow_api_gateway arn:aws:lambda:${{ secrets.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai-agent/AllowAPIGatewayInvoke || true
+          
+          terraform import aws_lambda_permission.allow_api_gateway AllowAPIGatewayInvoke || true
           
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace || true
-
+          
           terraform import aws_lambda_function.dispatcher dispatcher || true
           terraform import aws_lambda_function.compensation_flow compensation-flow || true
           terraform import aws_lambda_function.pdf_extractor pdf_extractor || true
