@@ -1,23 +1,9 @@
-name: Smart Deploy to AWS Lambda (ETL)
+name: Build and Push Lambda Docker Images Optimized
 
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'lambda-base/**'
-      - 'extract_data_pdf/**'
-      - 'transform_data_pdf/**'
-      - 'extract_data_mp/**'
-      - 'transform_data_mp/**'
-      - 'load_data/**'
-      - 'webhook_mp_report/**'
-      - 'compensation_flow/**'
-      - 'extract_data_bank_pay/**'
-      - 'transform_data_bank_pay/**'
-      - 'redshift_to_bq/**'
-      - 'ai_agent/**'
-      - 'infrastructure/**'
-      - '.github/workflows/build_lambda.yaml'
+    branches: [main]
+  workflow_dispatch:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -25,158 +11,65 @@ env:
   ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
 
 jobs:
-  check-ecr-state:
+  build-and-push:
     runs-on: ubuntu-latest
-    outputs:
-      ecr_empty: ${{ steps.check-ecr.outputs.empty }}
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      
-      - name: Check if ECR repository is empty
-        id: check-ecr
-        run: |
-          if aws ecr describe-images --repository-name etl-expenses --query 'imageDetails' --output text 2>/dev/null | grep -q .; then
-            echo "empty=false" >> $GITHUB_OUTPUT
-            echo "ECR repository has images"
-          else
-            echo "empty=true" >> $GITHUB_OUTPUT
-            echo "ECR repository is empty - will force initial push"
-          fi
 
-  detect-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      lambda_base_changed: ${{ steps.check-lambda-base.outputs.changed }}
-      images_changed: ${{ steps.check-images.outputs.changed }}
-      infra_changed: ${{ steps.check-infra.outputs.changed }}
-    
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      
-      - name: Check Lambda Base changes
-        id: check-lambda-base
+      - name: Get list of Lambda directories
+        id: list_dirs
         run: |
-          if git diff --quiet HEAD^ HEAD -- lambda-base/; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Check Lambda Images changes
-        id: check-images
+          dirs=$(find . -type f -name 'lambda_function.py' -exec dirname {} \;)
+          echo "lambda_dirs<<EOF" >> $GITHUB_OUTPUT
+          echo "$dirs" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Build and Push changed Lambda images
         run: |
-          CHANGED=false
-          for dir in extract_data_pdf transform_data_pdf extract_data_mp transform_data_mp load_data webhook_mp_report compensation_flow extract_data_bank_pay transform_data_bank_pay redshift_to_bq ai_agent; do
-            if ! git diff --quiet HEAD^ HEAD -- "$dir/"; then
-              CHANGED=true
-              break
+          echo "${{ steps.list_dirs.outputs.lambda_dirs }}" | while read dir; do
+            cd "$dir"
+
+            # Only proceed if all required files exist
+            if [[ -f "lambda_function.py" && -f "*.dockerfile" && -f "requirements.txt" ]]; then
+              DOCKERFILE=$(ls *.dockerfile | head -n1)
+              
+              # Calculate hash based on Dockerfile, function and requirements
+              HASH=$(cat $DOCKERFILE lambda_function.py requirements.txt | sha256sum | cut -c1-12)
+              IMAGE_NAME=${{ env.ECR_REPO_NAME }}:$(basename $dir)-$HASH
+
+              # Check if image already exists in ECR
+              if aws ecr describe-images --repository-name ${{ env.ECR_REPO_NAME }} --image-ids imageTag=$(basename $dir)-$HASH >/dev/null 2>&1; then
+                echo "🔄 Image $IMAGE_NAME already exists, skipping build."
+              else
+                echo "🚀 Building and pushing $IMAGE_NAME"
+                
+                # Build and push
+                docker build -t $IMAGE_NAME -f $DOCKERFILE .
+                aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+                docker tag $IMAGE_NAME ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$IMAGE_NAME
+                docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$IMAGE_NAME
+              fi
+            else
+              echo "⚠️ Skipping $dir because required files are missing"
             fi
+
+            cd - > /dev/null
           done
-          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
-      
-      - name: Check Infrastructure changes
-        id: check-infra
-        run: |
-          if git diff --quiet HEAD^ HEAD -- infrastructure/; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
-
-  build-lambda-base:
-    needs: [detect-changes, check-ecr-state]
-    if: needs.detect-changes.outputs.lambda_base_changed == 'true' || needs.check-ecr-state.outputs.ecr_empty == 'true'
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ env.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Login to AWS ECR
-        uses: aws-actions/amazon-ecr-login@v1
-        
-      - name: Build lambda-base image
-        run: |
-          docker build -t lambda-base -f lambda-base/dependencies.dockerfile .
-          docker tag lambda-base ${{ env.ECR_REPO }}:lambda-base
-          docker push ${{ env.ECR_REPO }}:lambda-base
-          echo "Successfully built and pushed lambda-base image"
-
-  build-lambda-images:
-    needs: [detect-changes, build-lambda-base, check-ecr-state]
-    if: needs.detect-changes.outputs.images_changed == 'true' || needs.check-ecr-state.outputs.ecr_empty == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        image: [
-          "pdf_extractor-latest|extract_data_pdf/extract_data_pdf.dockerfile",
-          "pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile",
-          "mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile",
-          "mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile",
-          "load_report_and_pdf-latest|load_data/load_data.dockerfile",
-          "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile",
-          "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile",
-          "bank_payments_extractor-latest|extract_data_bank_pay/extract_data_bank_pay.dockerfile",
-          "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile",
-          "redshift_to_bq-latest|redshift_to_bq/redshift_to_bq.dockerfile",
-          "ai_agent-latest|ai_agent/ai_agent.dockerfile"
-        ]
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ env.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Login to AWS ECR
-        uses: aws-actions/amazon-ecr-login@v1
-        
-      - name: Extract tag and dockerfile
-        id: extract
-        run: |
-          IFS='|' read -r IMAGE_TAG DOCKERFILE <<< "${{ matrix.image }}"
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "DOCKERFILE=$DOCKERFILE" >> $GITHUB_ENV
-
-      - name: Build and push (initial or changed)
-        run: |
-          echo "Building image $IMAGE_TAG"
-          echo "Reason: ECR empty? ${{ needs.check-ecr-state.outputs.ecr_empty == 'true' }}"
-          echo "Directory changed? ${{ needs.detect-changes.outputs.images_changed == 'true' }}"
           
-          docker build \
-            --build-arg aws_account_id=${{ env.AWS_ACCOUNT_ID }} \
-            --build-arg github_secret=${{ secrets.GITHUB_API_SECRET }} \
-            --build-arg TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }} \
-            -t local-build:$IMAGE_TAG \
-            -f $DOCKERFILE .
-          
-          docker tag local-build:$IMAGE_TAG ${{ env.ECR_REPO }}:$IMAGE_TAG
-          docker push ${{ env.ECR_REPO }}:$IMAGE_TAG
-          echo "Successfully pushed ${{ env.ECR_REPO }}:$IMAGE_TAG"
-
   terraform-deploy:
-    needs: [detect-changes, build-lambda-images, check-ecr-state]
-    if: needs.detect-changes.outputs.infra_changed == 'true' || needs.check-ecr-state.outputs.ecr_empty == 'true'
+    needs: [build-and-push]
     runs-on: ubuntu-latest
     
     steps:
@@ -198,15 +91,6 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      - name: Import Resources (if exist)
-        run: |
-          # Lista de comandos de import...
-          # (Mantén tus imports actuales aquí)
-          echo "Importing existing resources..."
-
-      # - name: Terraform Plan
-      #   run: terraform plan -out=tfplan
-
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
         env:
@@ -215,30 +99,26 @@ jobs:
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
+      - name: Get Webhook URL (Robust)
+        id: webhook
+        run: |
+          OUTPUT=$(terraform output webhook_url)
+          WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
+          echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
+          echo "Webhook URL: $WEBHOOK_URL"
+          
       - name: Configure Telegram Webhook
         run: |
-          # (Mantén tu configuración actual del webhook)
-          echo "Configuring Telegram webhook..."
-
-  monitor-ecr:
-    needs: build-lambda-images
-    runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ env.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      
-      - name: Check ECR Repository Size
-        run: |
-          SIZE_BYTES=$(aws ecr describe-repositories --repository-names etl-expenses --query "repositories[0].repositorySize" --output text)
-          SIZE_GB=$(echo "$SIZE_BYTES / 1073741824" | bc -l | awk '{printf "%.2f", $1}')
-          echo "Current ECR size: $SIZE_GB GB"
+          OUTPUT=$(terraform output webhook_url)
+          WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
+          echo "Configurando webhook con URL: $WEBHOOK_URL"
           
-          LIMIT_GB=10
-          if (( $(echo "$SIZE_GB > $LIMIT_GB" | bc -l) )); then
-            echo "::error::ECR repository exceeds size limit of $LIMIT_GB GB"
-            exit 1
-          fi
+          curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/setWebhook" \
+               -H "Content-Type: application/json" \
+               -d "{\"url\": \"$WEBHOOK_URL\"}"
+             
+          echo "Webhook configurado exitosamente"
+          
+      - name: Verify Webhook
+        run: |
+          curl -X GET "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getWebhookInfo" | jq .
