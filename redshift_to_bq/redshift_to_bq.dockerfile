@@ -4,5 +4,5 @@ FROM public.ecr.aws/lambda/python:3.9
 COPY redshift_to_bq/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY redshift_to_bq/redshift_to_bq.py ${LAMBDA_TASK_ROOT}
-CMD ["redshift_to_bq.lambda_handler"]
+COPY redshift_to_bq/lambda_function.py ${LAMBDA_TASK_ROOT}
+CMD ["lambda_function.lambda_handler"]
