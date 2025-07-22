@@ -6,7 +6,7 @@ import requests
 import openai
 
 # Configuración inicial
-TELEGRAM_BOT_TOKEN = "REDACTED_TELEGRAM_BOT_TOKEN"
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 redshift_data = boto3.client('redshift-data')
