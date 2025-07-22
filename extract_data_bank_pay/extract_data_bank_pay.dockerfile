@@ -5,5 +5,5 @@ FROM public.ecr.aws/lambda/python:3.9
 COPY extract_data_bank_pay/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY extract_data_bank_pay/extract_data_bank_pay.py ${LAMBDA_TASK_ROOT}
-CMD ["extract_data_bank_pay.lambda_handler"]
+COPY extract_data_bank_pay/lambda_function.py ${LAMBDA_TASK_ROOT}
+CMD ["lambda_function.lambda_handler"]
