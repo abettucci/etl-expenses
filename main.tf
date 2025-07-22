@@ -93,30 +93,49 @@ resource "aws_ecr_repository" "lambda_images" {
 # API Gateway para Telegram Webhook
 resource "aws_api_gateway_rest_api" "telegram_webhook" {
   name = "telegram-redshift-bot"
+  
+  # Evitar destruir si ya existe
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_api_gateway_resource" "webhook" {
   rest_api_id = aws_api_gateway_rest_api.telegram_webhook.id
   path_part   = "webhook"
   parent_id   = aws_api_gateway_rest_api.telegram_webhook.root_resource_id
+  
+  # Evitar destruir si ya existe
+  lifecycle {
+    prevent_destroy = true
+  }
 }
-
 
 resource "aws_api_gateway_method" "post" {
   rest_api_id   = aws_api_gateway_rest_api.telegram_webhook.id
   resource_id   = aws_api_gateway_resource.webhook.id
   http_method   = "POST"
   authorization = "NONE"
+  
+  # Evitar destruir si ya existe
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_api_gateway_integration" "lambda" {
-  rest_api_id   = aws_api_gateway_rest_api.telegram_webhook.id
+  rest_api_id = aws_api_gateway_rest_api.telegram_webhook.id
   resource_id = aws_api_gateway_resource.webhook.id
   http_method = aws_api_gateway_method.post.http_method
 
   integration_http_method = "POST"
-  type        = "AWS_PROXY"
-  uri         = aws_lambda_function.ai_agent.invoke_arn
+  type                   = "AWS_PROXY"
+  uri                    = aws_lambda_function.ai_agent.invoke_arn
+  
+  # Evitar destruir si ya existe
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_lambda_permission" "allow_api_gateway" {
@@ -394,29 +413,51 @@ resource "aws_iam_role_policy" "secrets_token_access" {
   })
 }
 
-# Policy para conectar las Lambda a: 
-# 1) las tablas de Redshift
-# 2) las imagenes de ECR
-# 3) los buckets de S3 y 
-# 4) las Step Functions.
-resource "aws_iam_role_policy" "lambda_redshift_access" {
+# Separar las políticas en recursos distintos
+resource "aws_iam_policy" "lambda_redshift_access" {
   name = "lambda_redshift_access"
-  role = aws_iam_role.lambda_exec.id
-
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
       {
         Action = [
           "redshift-data:*",
-          "redshift-data:ExecuteStatement",
-          "redshift-data:GetStatementResult",
           "redshift:GetClusterCredentials",
           "redshift:Describe*",
-          "redshift-serverless:*",
+          "redshift-serverless:*"
+        ],
+        Effect   = "Allow",
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "lambda_ecr_access" {
+  name = "lambda_ecr_access"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
-          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchCheckLayerAvailability"
+        ],
+        Effect   = "Allow",
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "lambda_bedrock_access" {
+  name = "lambda_bedrock_access"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
           "bedrock:ListFoundationModels",
@@ -426,7 +467,16 @@ resource "aws_iam_role_policy" "lambda_redshift_access" {
         ],
         Effect   = "Allow",
         Resource = "*"
-      },
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "lambda_s3_access" {
+  name = "lambda_s3_access"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
       {
         Action = [
           "s3:PutObject",
@@ -435,7 +485,7 @@ resource "aws_iam_role_policy" "lambda_redshift_access" {
           "s3:DeleteObject"
         ],
         Effect = "Allow",
-        Resource = [  
+        Resource = [
           "${aws_s3_bucket.market_tickets.arn}/*",
           aws_s3_bucket.market_tickets.arn,
           aws_s3_bucket.mp_reports.arn,
@@ -443,18 +493,30 @@ resource "aws_iam_role_policy" "lambda_redshift_access" {
           "${aws_s3_bucket.bank_payments.arn}/*",
           aws_s3_bucket.bank_payments.arn
         ]
-      },
-      {
-        Effect = "Allow",
-        Action = "states:StartExecution",
-        Resource = [
-          aws_sfn_state_machine.pdf_etl_flow.arn,
-          aws_sfn_state_machine.mp_report_etl_flow.arn,
-          aws_sfn_state_machine.bank_payments_etl_flow.arn
-        ]
       }
     ]
   })
+}
+
+# Attachments de las políticas al rol
+resource "aws_iam_role_policy_attachment" "lambda_redshift" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_redshift_access.arn
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_ecr" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_ecr_access.arn
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_bedrock_access.arn
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_s3" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_s3_access.arn
 }
 
 # Policy para eliminar imagenes que no estan dentro de los tags de las funciones Lambda de los dos jobs
@@ -692,37 +754,6 @@ resource "aws_iam_role_policy" "step_function_logging" {
           "logs:DescribeLogGroups"
         ]
         Resource = "*"
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy" "lambda_redshift_data" {
-  role = aws_iam_role.lambda_exec.id
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action   = ["redshift-data:*"],
-        Effect   = "Allow",
-        Resource = "*"
-      },
-      {
-        Action   = [
-          "bedrock:InvokeModel",
-          "bedrock:ListFoundationModels"  # Opcional pero útil para debugging
-        ],
-        Effect   = "Allow",
-        Resource = [
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-v2",
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-text-express-v1",
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/ai21.j2-mid-v1"
-        ]
-      },
-      {
-        Action   = ["bedrock:InvokeModel"],
-        Effect   = "Allow",
-        Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/*"  # Permiso más amplio si prefieres
       }
     ]
   })
