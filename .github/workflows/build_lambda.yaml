@@ -85,7 +85,7 @@ jobs:
         run: terraform init
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -auto-approve
         env:
           TF_VAR_aws_account_id: ${{ env.AWS_ACCOUNT_ID }}
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
