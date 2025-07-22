@@ -15,10 +15,10 @@ COPY ai_agent/requirements.txt .
 RUN pip install -r requirements.txt --no-cache-dir --no-deps
 
 # Copiar código de la función
-COPY ai_agent/ai_agent.py ${LAMBDA_TASK_ROOT}/ai_agent.py
+COPY ai_agent/lambda_function.py ${LAMBDA_TASK_ROOT}/lambda_function.py
 
 # Limpiar cache y archivos temporales para reducir tamaño
 RUN rm -rf /var/cache/pip/* /tmp/* /var/tmp/*
 RUN find /var/lang -name "*.pyc" -delete 2>/dev/null || true
 
-CMD ["ai_agent.lambda_handler"]
+CMD ["lambda_function.lambda_handler"]

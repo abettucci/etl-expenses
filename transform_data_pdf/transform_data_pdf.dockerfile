@@ -5,5 +5,5 @@ FROM public.ecr.aws/lambda/python:3.9
 COPY transform_data_pdf/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY transform_data_pdf/transform_data_pdf.py ${LAMBDA_TASK_ROOT}
-CMD ["transform_data_pdf.lambda_handler"]
+COPY transform_data_pdf/lambda_function.py ${LAMBDA_TASK_ROOT}
+CMD ["lambda_function.lambda_handler"]
