@@ -3,7 +3,11 @@ FROM public.ecr.aws/lambda/python:3.9
 
 # Agregar dependencias específicas para esta función
 COPY transform_data_bank_pay/requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt --no-cache-dir --no-deps
 
-COPY transform_data_bank_pay/transform_data_bank_pay.py ${LAMBDA_TASK_ROOT}
-CMD ["transform_data_bank_pay.lambda_handler"]
+COPY transform_data_bank_pay/lambda_function.py ${LAMBDA_TASK_ROOT}
+
+RUN rm -rf /var/cache/pip/* /tmp/* /var/tmp/*
+RUN find /var/lang -name "*.pyc" -delete 2>/dev/null || true
+
+CMD ["lambda_function.lambda_handler"]
