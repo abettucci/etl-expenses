@@ -13,6 +13,7 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -31,6 +32,7 @@ jobs:
       - name: Get list of Lambda directories
         id: list_dirs
         run: |
+          set -x
           dirs=$(find . -type f -name 'lambda_function.py' -exec dirname {} \;)
           echo "lambda_dirs<<EOF" >> $GITHUB_OUTPUT
           echo "$dirs" >> $GITHUB_OUTPUT
@@ -38,6 +40,7 @@ jobs:
 
       - name: Build and Push changed Lambda images
         run: |
+          set -x
           echo "${{ steps.list_dirs.outputs.lambda_dirs }}" | while read dir; do
             # Only proceed if all required files exist
             if [[ -f "$dir/lambda_function.py" && -f "$dir/requirements.txt" && $(ls $dir/*.dockerfile 2>/dev/null | wc -l) -gt 0 ]]; then
@@ -83,6 +86,7 @@ jobs:
 
       - name: Terraform Init
         run: |
+          set -x
           terraform init
           
           terraform import aws_ecr_repository.lambda_images etl-expenses
@@ -128,14 +132,16 @@ jobs:
 
           terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs || true  
         
-          env:
+        env:
           TF_VAR_aws_account_id: ${{ env.AWS_ACCOUNT_ID }}
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         
       - name: Terraform Apply
-        run: terraform apply -auto-approve
+        run: |
+          set -x
+          terraform apply -auto-approve
         env:
           TF_VAR_aws_account_id: ${{ env.AWS_ACCOUNT_ID }}
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
@@ -145,6 +151,7 @@ jobs:
       - name: Get Webhook URL (Robust)
         id: webhook
         run: |
+          set -x
           OUTPUT=$(terraform output webhook_url)
           WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
           echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
@@ -152,6 +159,7 @@ jobs:
           
       - name: Configure Telegram Webhook
         run: |
+          set -x
           OUTPUT=$(terraform output webhook_url)
           WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
           echo "Configurando webhook con URL: $WEBHOOK_URL"
@@ -164,4 +172,5 @@ jobs:
           
       - name: Verify Webhook
         run: |
+          set -x
           curl -X GET "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getWebhookInfo" | jq .
