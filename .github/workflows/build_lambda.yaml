@@ -58,6 +58,8 @@ jobs:
                 docker build -t $IMAGE_NAME -f $DOCKERFILE .
                 aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
                 docker push $IMAGE_NAME
+                docker tag $IMAGE_NAME ${{ env.ECR_REPO }}:$(basename $dir)-latest
+                docker push ${{ env.ECR_REPO }}:$(basename $dir)-latest
               fi
             else
               echo "⚠️ Skipping $dir because required files are missing"
