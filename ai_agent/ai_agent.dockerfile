@@ -12,7 +12,7 @@ ENV TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 
 # Agregamos dependencias específicas de esta función (solo las que no están en base)
 COPY ai_agent/requirements.txt .
-RUN pip install -r requirements.txt --no-cache-dir --no-deps
+RUN pip install -r requirements.txt --no-cache-dir
 
 # Copiar código de la función
 COPY ai_agent/lambda_function.py ${LAMBDA_TASK_ROOT}/lambda_function.py
