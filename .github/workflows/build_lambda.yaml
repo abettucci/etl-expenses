@@ -47,10 +47,10 @@ jobs:
               
               # Calculate hash based on Dockerfile, function and requirements
               HASH=$(cat $DOCKERFILE lambda_function.py requirements.txt | sha256sum | cut -c1-12)
-              IMAGE_NAME=${{ env.ECR_REPO_NAME }}:$(basename $dir)-$HASH
+              IMAGE_NAME=${{ env.ECR_REPO }}:$(basename $dir)-$HASH
 
               # Check if image already exists in ECR
-              if aws ecr describe-images --repository-name ${{ env.ECR_REPO_NAME }} --image-ids imageTag=$(basename $dir)-$HASH >/dev/null 2>&1; then
+              if aws ecr describe-images --repository-name ${{ env.ECR_REPO }} --image-ids imageTag=$(basename $dir)-$HASH >/dev/null 2>&1; then
                 echo "🔄 Image $IMAGE_NAME already exists, skipping build."
               else
                 echo "🚀 Building and pushing $IMAGE_NAME"
