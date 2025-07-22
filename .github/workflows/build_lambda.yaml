@@ -9,6 +9,8 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
 jobs:
   build-and-push:
@@ -42,28 +44,81 @@ jobs:
         run: |
           set -x
           echo "${{ steps.list_dirs.outputs.lambda_dirs }}" | while read dir; do
-            # Only proceed if all required files exist
-            if [[ -f "$dir/lambda_function.py" && -f "$dir/requirements.txt" && $(ls $dir/*.dockerfile 2>/dev/null | wc -l) -gt 0 ]]; then
-              DOCKERFILE=$(ls $dir/*.dockerfile | head -n1)
-              # Calculate hash based on Dockerfile, function and requirements
-              HASH=$(cat $DOCKERFILE $dir/lambda_function.py $dir/requirements.txt | sha256sum | cut -c1-12)
-              IMAGE_TAG=$(basename $dir)-$HASH
-              IMAGE_NAME=${{ env.ECR_REPO }}:$IMAGE_TAG
-
-              # Check if image already exists in ECR
-              if aws ecr describe-images --repository-name etl-expenses --image-ids imageTag=$IMAGE_TAG >/dev/null 2>&1; then
-                echo "🔄 Image $IMAGE_NAME already exists in ECR, skipping build and push."
-              else
-                echo "🚀 Building and pushing $IMAGE_NAME"
-                docker build -t $IMAGE_NAME -f $DOCKERFILE .
-                aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-                docker push $IMAGE_NAME
-                docker tag $IMAGE_NAME ${{ env.ECR_REPO }}:$(basename $dir)-latest
-                docker push ${{ env.ECR_REPO }}:$(basename $dir)-latest
-              fi
-            else
-              echo "⚠️ Skipping $dir because required files are missing"
+            echo "📁 Processing directory: $dir"
+            
+            # Validate required files exist
+            if [[ ! -f "$dir/lambda_function.py" ]]; then
+              echo "⚠️ Missing lambda_function.py in $dir"
+              continue
             fi
+            if [[ ! -f "$dir/requirements.txt" ]]; then
+              echo "⚠️ Missing requirements.txt in $dir"
+              continue
+            fi
+            
+            # Find Dockerfile
+            DOCKERFILE=$(ls $dir/*.dockerfile 2>/dev/null | head -n1)
+            if [[ -z "$DOCKERFILE" ]]; then
+              echo "⚠️ No dockerfile found in $dir"
+              continue
+            fi
+            
+            echo "📄 Using Dockerfile: $DOCKERFILE"
+            
+            # Calculate hash and verify files
+            if ! HASH=$(cat $DOCKERFILE $dir/lambda_function.py $dir/requirements.txt 2>/dev/null | sha256sum | cut -c1-12); then
+              echo "❌ Failed to calculate hash for $dir"
+              continue
+            fi
+            
+            echo "🔑 Calculated hash: $HASH"
+            IMAGE_TAG=$(basename $dir)-$HASH
+            IMAGE_NAME=${{ env.ECR_REPO }}:$IMAGE_TAG
+            LATEST_TAG=${{ env.ECR_REPO }}:$(basename $dir)-latest
+            
+            echo "🏷️ Image tag: $IMAGE_TAG"
+            
+            # Check if image exists in ECR
+            if aws ecr describe-images \
+              --repository-name etl-expenses \
+              --image-ids imageTag=$IMAGE_TAG \
+              --output json > /dev/null 2>&1; then
+              
+              echo "🔄 Image $IMAGE_NAME already exists in ECR"
+              
+              # Always update latest tag to ensure it points to the correct image
+              echo "⭐ Updating latest tag to point to $IMAGE_TAG"
+              aws ecr batch-delete-image \
+                --repository-name etl-expenses \
+                --image-ids imageTag=$(basename $dir)-latest \
+                --output json > /dev/null 2>&1 || true
+              
+              docker pull $IMAGE_NAME
+              docker tag $IMAGE_NAME $LATEST_TAG
+              docker push $LATEST_TAG
+              
+            else
+              echo "🚀 Building new image: $IMAGE_NAME"
+              
+              # Build the image
+              if ! docker build -t $IMAGE_NAME -f $DOCKERFILE .; then
+                echo "❌ Failed to build image for $dir"
+                continue
+              fi
+              
+              # Login to ECR
+              echo "🔐 Logging in to ECR"
+              aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+                docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+              
+              # Push both tags
+              echo "⬆️ Pushing images to ECR"
+              docker push $IMAGE_NAME
+              docker tag $IMAGE_NAME $LATEST_TAG
+              docker push $LATEST_TAG
+            fi
+            
+            echo "✅ Successfully processed $dir"
           done
           
   terraform-deploy:
@@ -139,6 +194,7 @@ jobs:
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         
       - name: Terraform Apply
         run: |
@@ -149,6 +205,7 @@ jobs:
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Get Webhook URL (Robust)
         id: webhook
