@@ -43,6 +43,12 @@ jobs:
       - name: Build and Push changed Lambda images
         run: |
           set -x
+          
+          # Login to ECR first (valid for 12 hours)
+          echo "🔐 Logging in to ECR"
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          
           echo "${{ steps.list_dirs.outputs.lambda_dirs }}" | while read dir; do
             echo "📁 Processing directory: $dir"
             
@@ -93,6 +99,7 @@ jobs:
                 --image-ids imageTag=$(basename $dir)-latest \
                 --output json > /dev/null 2>&1 || true
               
+              # Pull and retag
               docker pull $IMAGE_NAME
               docker tag $IMAGE_NAME $LATEST_TAG
               docker push $LATEST_TAG
@@ -105,11 +112,6 @@ jobs:
                 echo "❌ Failed to build image for $dir"
                 continue
               fi
-              
-              # Login to ECR
-              echo "🔐 Logging in to ECR"
-              aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-                docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
               
               # Push both tags
               echo "⬆️ Pushing images to ECR"
