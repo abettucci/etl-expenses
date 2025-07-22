@@ -54,8 +54,7 @@ jobs:
                 # Build and push
                 docker build -t $IMAGE_NAME -f $DOCKERFILE .
                 aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-                docker tag $IMAGE_NAME ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$IMAGE_NAME
-                docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$IMAGE_NAME
+                docker push $IMAGE_NAME
               fi
             else
               echo "⚠️ Skipping $dir because required files are missing"
