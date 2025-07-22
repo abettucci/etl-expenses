@@ -2,10 +2,9 @@
 # Usa imagen base con dependencias compartidas
 
 # Solo los ARG que se usan en FROM pueden ir antes
-ARG aws_account_id
 
 # Imagen base optimizada
-FROM ${aws_account_id}.dkr.ecr.us-east-2.amazonaws.com/etl-expenses:lambda-base
+FROM public.ecr.aws/lambda/python:3.9
 
 # Ahora sí, el resto de los ARG y ENV
 ARG TELEGRAM_BOT_TOKEN

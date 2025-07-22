@@ -1,8 +1,5 @@
-# Importamos la variable de github secrets
-ARG aws_account_id
-
 # Referenciamos a la imagen de la lambda base con librerias comun entre todas las lambda
-FROM ${aws_account_id}.dkr.ecr.us-east-2.amazonaws.com/etl-expenses:lambda-base
+FROM public.ecr.aws/lambda/python:3.9
 
 # Agregar dependencias específicas para esta función
 COPY transform_data_pdf/requirements.txt .

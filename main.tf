@@ -478,18 +478,6 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
           countNumber = 1
         }
         action = { type = "expire" }
-      },
-      # Regla 2: Tag restante
-      {
-        rulePriority = 2
-        description  = "Eliminar imágenes de lambda-base"
-        selection = {
-          tagStatus = "tagged"
-          tagPrefixList = ["lambda-base"]
-          countType   = "imageCountMoreThan"
-          countNumber = 1
-        }
-        action = { type = "expire" }
       }
     ]
   })
