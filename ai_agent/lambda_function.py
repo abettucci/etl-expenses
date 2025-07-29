@@ -72,8 +72,8 @@ def generate_sql_with_openai(question: str) -> str:
         return ""
 
 def query_redshift(sql: str) -> str:
-    """Ejecuta SQL y devuelve resultados formateados"""
     try:
+        print(f"🔍 Ejecutando SQL en Redshift:\n{sql}")  # Debug
         response = redshift_data.execute_statement(
             Database='dev',
             WorkgroupName='pdf-etl-workgroup',
@@ -87,24 +87,43 @@ def query_redshift(sql: str) -> str:
                 if status['HasResultSet']:
                     results = redshift_data.get_statement_result(Id=query_id)
                     return format_redshift_results(results)
-                return "✅ Consulta ejecutada (sin resultados)"
+                return "ℹ️ No se encontraron resultados."
             elif status['Status'] == 'FAILED':
-                return f"❌ Error en Redshift: {status['Error']}"
+                error_msg = f"❌ Error en Redshift:\n```\n{status['Error']}\n```\nSQL:\n```sql\n{sql}\n```"
+                print(error_msg)  # Debug en CloudWatch
+                return error_msg
     except Exception as e:
-        return f"⚠️ Error: {str(e)}"
+        error_msg = f"⚠️ Error inesperado:\n```\n{str(e)}\n```"
+        print(error_msg)  # Debug
+        return error_msg
 
 def format_redshift_results(results: dict) -> str:
-    """Convierte resultados de Redshift Data API a Markdown"""
     columns = [col['name'] for col in results['ColumnMetadata']]
-    rows = [
-        " | ".join(str(field.get('stringValue', field.get('longValue', ''))) for field in record)
-        for record in results['Records']
-    ]
+    formatted_rows = []
+    
+    for record in results['Records']:
+        row = []
+        for field in record:
+            # Manejar todos los tipos de datos de Redshift Data API
+            if 'stringValue' in field:
+                row.append(str(field['stringValue']))
+            elif 'longValue' in field:
+                row.append(str(field['longValue']))
+            elif 'doubleValue' in field:
+                row.append(str(field['doubleValue']))
+            elif 'booleanValue' in field:
+                row.append("Sí" if field['booleanValue'] else "No")
+            elif 'isNull' in field and field['isNull']:
+                row.append("NULL")
+            else:
+                row.append("?")
+        formatted_rows.append(" | ".join(row))
+    
     return (
-        "📊 Resultados:\n" +
-        " | ".join(columns) + "\n" +
-        "|-" * len(columns) + "\n" +
-        "\n".join(rows)
+        "📊 *Resultados:*\n" +
+        "| " + " | ".join(columns) + " |\n" +
+        "|" + "|".join(["---"] * len(columns)) + "|\n" +
+        "\n".join(["| " + row + " |" for row in formatted_rows])
     )
 
 # Manejo de Telegram - versión con OpenAI
