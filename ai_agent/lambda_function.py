@@ -10,6 +10,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 redshift_data = boto3.client('redshift-data')
+glue_client = boto3.client('glue')
 
 # Configuración de OpenAI
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -18,25 +19,45 @@ if not OPENAI_API_KEY:
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
+def get_table_columns(database: str, table: str) -> list:
+    """Obtiene columnas de una tabla desde Glue Data Catalog"""
+    try:
+        response = glue_client.get_table(
+            DatabaseName=database,
+            Name=table
+        )
+        return [col['Name'] for col in response['Table']['StorageDescriptor']['Columns']]
+    except Exception as e:
+        print(f"❌ Error obteniendo esquema de {table}: {e}")
+        return []
+
 def generate_sql_with_openai(question: str) -> str:
     """Genera SQL usando OpenAI GPT"""
     
     try:
+        # Obtener esquemas actualizados
+        bank_columns = get_table_columns('dev', 'bank_payments')
+        mp_columns = get_table_columns('dev', 'mp_data')
+        market_columns = get_table_columns('dev', 'carrefour_data')
+
         # Prompt para generar SQL
         prompt = f"""
         Eres un experto en SQL y análisis de datos. Necesito que generes una consulta SQL para responder a esta pregunta: "{question}"
+    
+        Esquema actual:
+        - bank_payments: {', '.join(bank_columns)}
+        - mp_data: {', '.join(mp_columns)}
+        - carrefour_data: {', '.join(market_columns)}
 
-        Las tablas disponibles son:
-        - mp_data: transacciones de MercadoPago (campos: id, amount, created_date, description, status)
-        - bank_payments: gastos bancarios (campos: id, amount, transaction_date, description, category)
+        Reglas de oro:
+        1. Usa solo estas columnas y las tablas mencionadas.
+        2. Genera SQL válido para Redshift.
+        3. Si la pregunta es sobre gastos del banco/santander, usa bank_payments.
+        4. Si la pregunta es sobre gastos del supermercado/carrefour, usa carrefour_data.
+        5. Si la pregunta es sobre transacciones/pagos a traves de mercado pago, usa mp_data.
+        6. Limita los resultados a máximo 20 filas.
+        7. Incluye fechas relevantes cuando sea apropiado.
 
-        Reglas importantes:
-        1. Usa solo las tablas mencionadas
-        2. Genera SQL válido para Redshift
-        3. Si la pregunta es sobre gastos, usa bank_payments
-        4. Si la pregunta es sobre transacciones/pagos, usa mp_data
-        5. Limita los resultados a máximo 20 filas
-        6. Incluye fechas relevantes cuando sea apropiado
 
         Genera solo el SQL, sin explicaciones adicionales:
         """
@@ -151,7 +172,6 @@ def send_telegram_message(chat_id, text, token):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown"
     }
     try:
         response = requests.post(url, json=payload, timeout=5)
