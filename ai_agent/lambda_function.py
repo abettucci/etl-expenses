@@ -36,13 +36,14 @@ def generate_sql_with_openai(question: str) -> str:
     
     try:
         # Obtener esquemas actualizados
-        bank_columns = get_table_columns('dev', 'bank_payments')
-        mp_columns = get_table_columns('dev', 'mp_data')
-        market_columns = get_table_columns('dev', 'carrefour_data')
+        bank_columns = get_table_columns('etl_database', 'bank_payments')
+        mp_columns = get_table_columns('etl_database', 'mp_data')
+        # market_columns = get_table_columns('etl_database', 'carrefour_data')
+        # 4. Si la pregunta es sobre gastos del supermercado/carrefour, usa carrefour_data.
+        # - carrefour_data: {', '.join(market_columns)}
 
         print(f"bank_columns: {bank_columns}")
         print(f"mp_columns: {mp_columns}")
-        print(f"market_columns: {market_columns}")
 
         # Prompt para generar SQL
         prompt = f"""
@@ -51,16 +52,14 @@ def generate_sql_with_openai(question: str) -> str:
         Esquema actual:
         - bank_payments: {', '.join(bank_columns)}
         - mp_data: {', '.join(mp_columns)}
-        - carrefour_data: {', '.join(market_columns)}
 
         Reglas de oro:
         1. Usa solo estas columnas y las tablas mencionadas.
         2. Genera SQL válido para Redshift.
         3. Si la pregunta es sobre gastos del banco/santander, usa bank_payments.
-        4. Si la pregunta es sobre gastos del supermercado/carrefour, usa carrefour_data.
-        5. Si la pregunta es sobre transacciones/pagos a traves de mercado pago, usa mp_data.
-        6. Limita los resultados a máximo 20 filas.
-        7. Incluye fechas relevantes cuando sea apropiado.
+        4. Si la pregunta es sobre transacciones/pagos a traves de mercado pago, usa mp_data.
+        5. Limita los resultados a máximo 20 filas.
+        6. Incluye fechas relevantes cuando sea apropiado.
 
         Genera solo el SQL, sin explicaciones adicionales:
         """
