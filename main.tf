@@ -144,6 +144,19 @@ resource "aws_lambda_permission" "allow_api_gateway" {
   function_name = aws_lambda_function.ai_agent.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.telegram_webhook.execution_arn}/*/*"
+  
+  depends_on = [
+    aws_api_gateway_rest_api.telegram_webhook,
+    aws_lambda_function.ai_agent
+  ]
+  
+  lifecycle {
+    create_before_destroy = true
+    # Prevenir cambios que requieran recreación
+    ignore_changes = [
+      source_arn
+    ]
+  }
 }
 
 resource "aws_api_gateway_deployment" "webhook_deployment" {
@@ -167,7 +180,7 @@ resource "aws_lambda_function" "pdf_extractor" {
     variables = {
       WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
       BUCKET_NAME    = aws_s3_bucket.market_tickets.bucket
-    }
+    } 
   }
 }
 
