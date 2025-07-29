@@ -251,13 +251,13 @@ jobs:
         id: webhook
         run: |
           set -x
-          # Obtener la salida y limpiarla rigurosamente
-          RAW_OUTPUT=$(terraform output -raw webhook_url)
-          WEBHOOK_URL=$(echo "$RAW_OUTPUT" | tr -d '\n' | sed 's/"//g' | sed 's/.*\(https[^[:space:]]*\).*/\1/')
+          # Extraer SOLO la URL usando grep y sed
+          RAW_OUTPUT=$(terraform output webhook_url)
+          WEBHOOK_URL=$(echo "$RAW_OUTPUT" | grep -o 'https://[^[:space:]]*' | head -n1 | sed 's/"//g')
           
-          # Verificar que la URL sea válida
+          # Validar formato
           if [[ ! "$WEBHOOK_URL" =~ ^https://.* ]]; then
-            echo "❌ Error: WEBHOOK_URL no tiene el formato esperado: '$WEBHOOK_URL'"
+            echo "❌ Error: URL malformada - '$WEBHOOK_URL'"
             exit 1
           fi
           
