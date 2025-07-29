@@ -251,24 +251,33 @@ jobs:
         id: webhook
         run: |
           set -x
-          OUTPUT=$(terraform output webhook_url)
-          WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
+          # Obtener la salida y limpiarla rigurosamente
+          RAW_OUTPUT=$(terraform output -raw webhook_url)
+          WEBHOOK_URL=$(echo "$RAW_OUTPUT" | tr -d '\n' | sed 's/"//g' | sed 's/.*\(https[^[:space:]]*\).*/\1/')
+          
+          # Verificar que la URL sea válida
+          if [[ ! "$WEBHOOK_URL" =~ ^https://.* ]]; then
+            echo "❌ Error: WEBHOOK_URL no tiene el formato esperado: '$WEBHOOK_URL'"
+            exit 1
+          fi
+          
           echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
-          echo "Webhook URL: $WEBHOOK_URL"
+          echo "✅ Webhook URL limpia: $WEBHOOK_URL"
           
       - name: Configure Telegram Webhook
         run: |
           set -x
-          OUTPUT=$(terraform output webhook_url)
-          WEBHOOK_URL=$(echo "$OUTPUT" | sed 's/"//g' | tr -d '\n' | sed 's/.*https/https/')
+          # Usar directamente la variable del paso anterior
+          WEBHOOK_URL="${{ steps.webhook.outputs.webhook_url }}"
+          
           echo "Configurando webhook con URL: $WEBHOOK_URL"
           
           curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/setWebhook" \
-               -H "Content-Type: application/json" \
-               -d "{\"url\": \"$WEBHOOK_URL\"}"
-             
-          echo "Webhook configurado exitosamente"
+              -H "Content-Type: application/json" \
+              -d "{\"url\": \"$WEBHOOK_URL\"}"
           
+          echo "Webhook configurado exitosamente"
+                
       - name: Verify Webhook
         run: |
           set -x
