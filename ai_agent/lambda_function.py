@@ -40,6 +40,10 @@ def generate_sql_with_openai(question: str) -> str:
         mp_columns = get_table_columns('dev', 'mp_data')
         market_columns = get_table_columns('dev', 'carrefour_data')
 
+        print(f"bank_columns: {bank_columns}")
+        print(f"mp_columns: {mp_columns}")
+        print(f"market_columns: {market_columns}")
+
         # Prompt para generar SQL
         prompt = f"""
         Eres un experto en SQL y análisis de datos. Necesito que generes una consulta SQL para responder a esta pregunta: "{question}"
@@ -57,7 +61,6 @@ def generate_sql_with_openai(question: str) -> str:
         5. Si la pregunta es sobre transacciones/pagos a traves de mercado pago, usa mp_data.
         6. Limita los resultados a máximo 20 filas.
         7. Incluye fechas relevantes cuando sea apropiado.
-
 
         Genera solo el SQL, sin explicaciones adicionales:
         """
@@ -85,7 +88,7 @@ def generate_sql_with_openai(question: str) -> str:
         if sql.startswith('```sql'):
             sql = sql.replace('```sql', '').replace('```', '').strip()
         
-        print(f"✅ SQL generado por OpenAI: {sql[:100]}...")
+        print(f"✅ SQL generado por OpenAI: {sql}")
         return sql
         
     except Exception as e:
