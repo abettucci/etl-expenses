@@ -134,7 +134,13 @@ def send_telegram_message(chat_id, text, token):
         "text": text,
         "parse_mode": "Markdown"
     }
-    requests.post(url, json=payload)
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"Error enviando mensaje a Telegram: {e}")
+        return None
 
 def lambda_handler(event, context):
     try:
@@ -151,33 +157,43 @@ def lambda_handler(event, context):
         # Manejar comando /start
         if text == "/start":
             welcome_message = """
-🤖 *Bot de Consultas de Datos con OpenAI*
+                🤖 *Bot de Consultas de Datos con OpenAI*
 
-¡Hola! Soy tu asistente inteligente para consultar datos de transacciones y gastos.
+                ¡Hola! Soy tu asistente inteligente para consultar datos de transacciones y gastos.
 
-🎯 *Características:*
-• IA real con OpenAI GPT
-• Generación dinámica de SQL
-• Respuestas inteligentes y precisas
+                🎯 *Características:*
+                • IA real con OpenAI GPT
+                • Generación dinámica de SQL
+                • Respuestas inteligentes y precisas
 
-💡 *Puedes preguntarme:*
-• "¿Cuánto gasté este mes?"
-• "Mostrame las transacciones de ayer"
-• "¿Cuál fue el gasto más alto?"
-• "Gastos por categoría"
-• "Transacciones pendientes"
-• "Resumen de gastos de la semana"
-• "¿Cuánto gasté en comida este año?"
+                💡 *Puedes preguntarme:*
+                • "¿Cuánto gasté este mes?"
+                • "Mostrame las transacciones de ayer"
+                • "¿Cuál fue el gasto más alto?"
+                • "Gastos por categoría"
+                • "Transacciones pendientes"
+                • "Resumen de gastos de la semana"
+                • "¿Cuánto gasté en comida este año?"
 
-¡Escribí tu pregunta y la IA generará la consulta SQL automáticamente!
+                ¡Escribí tu pregunta y la IA generará la consulta SQL automáticamente!
             """
             send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
 
         response_text = handle_message(text)
-        send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+        result = send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
 
-        return {"statusCode": 200}
+        if result is None:
+           return {
+               "statusCode": 200,
+               "body": json.dumps({"message": "No se pudo enviar el mensaje a Telegram (chat_id inválido o error de red)"})
+           }
+        else:
+           return {
+               "statusCode": 200,
+               "body": json.dumps({"message": "Mensaje enviado correctamente"})
+           }
+
     except Exception as e:
         print("[ERROR] Exception en Lambda:", str(e))
 
