@@ -78,9 +78,12 @@ jobs:
             fi
             
             echo "🔑 Calculated hash: $HASH"
-            IMAGE_TAG=$(basename $dir)-$HASH
-            IMAGE_NAME=${{ env.ECR_REPO }}:$IMAGE_TAG
-            LATEST_TAG=${{ env.ECR_REPO }}:$(basename $dir)-latest
+
+            # 1. Generar tag único por función (nombre_dir + git_sha + timestamp)
+            LAMBDA_NAME=$(basename $dir)
+            IMAGE_TAG="${LAMBDA_NAME}-$(git rev-parse --short HEAD)-$(date +%s)"
+            IMAGE_URI="${{ env.ECR_REPO }}:${IMAGE_TAG}"
+            LATEST_TAG="${{ env.ECR_REPO }}:${LAMBDA_NAME}-latest"
             
             echo "🏷️ Image tag: $IMAGE_TAG"
 
@@ -90,7 +93,7 @@ jobs:
               --image-ids imageTag=$IMAGE_TAG \
               --output json > /dev/null 2>&1; then
               
-              echo "🔄 Image $IMAGE_NAME already exists in ECR"
+              echo "🔄 Image $IMAGE_URI already exists in ECR"
               
               # Always update latest tag to ensure it points to the correct image
               echo "⭐ Updating latest tag to point to $IMAGE_TAG"
@@ -108,22 +111,36 @@ jobs:
                 --image-manifest "$MANIFEST" || true
               
             else
-              echo "🚀 Building new image: $IMAGE_NAME"
+              echo "🚀 Building new image: $IMAGE_URI"
               
               # Build the image
-              if ! docker build -t $IMAGE_NAME -f $DOCKERFILE .; then
+              if ! docker build -t $IMAGE_URI -f $DOCKERFILE .; then
                 echo "❌ Failed to build image for $dir"
                 continue
               fi
               
               # Push both tags
               echo "⬆️ Pushing images to ECR"
-              docker push $IMAGE_NAME
-              docker tag $IMAGE_NAME $LATEST_TAG
+              docker push $IMAGE_URI
+              docker tag $IMAGE_URI $LATEST_TAG
               docker push $LATEST_TAG
               fi
+
+            # Actualizar Lambda automáticamente (si existe)
+            echo "🔄 Actualizando Lambda: $LAMBDA_NAME"
+            if aws lambda get-function --function-name $LAMBDA_NAME --region ${{ env.AWS_REGION }} &>/dev/null; then
+              aws lambda update-function-code \
+                --function-name $LAMBDA_NAME \
+                --image-uri $IMAGE_URI \
+                --region ${{ env.AWS_REGION }}
+              
+              echo "✅ Lambda actualizada con imagen: $IMAGE_URI"
+            else
+              echo "⚠️ Lambda $LAMBDA_NAME no existe (se omitió la actualización)"
+            fi
             
             echo "✅ Successfully processed $dir"
+
           done
           
   terraform-deploy:
