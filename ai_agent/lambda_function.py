@@ -19,16 +19,20 @@ if not OPENAI_API_KEY:
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-def get_table_columns(database: str, table: str) -> list:
-    """Obtiene columnas de una tabla desde Glue Data Catalog"""
+def get_table_columns_by_prefix(database: str, table_prefix: str) -> list:
+    """Busca una tabla por prefijo y devuelve sus columnas"""
     try:
-        response = glue_client.get_table(
-            DatabaseName=database,
-            Name=table
-        )
-        return [col['Name'] for col in response['Table']['StorageDescriptor']['Columns']]
+        paginator = glue_client.get_paginator('get_tables')
+        for page in paginator.paginate(DatabaseName=database):
+            for table in page['TableList']:
+                table_name = table['Name']
+                if table_name.startswith(table_prefix):
+                    print(f"✅ Usando tabla encontrada: {table_name}")
+                    return [col['Name'] for col in table['StorageDescriptor']['Columns']]
+        print(f"⚠️ No se encontró ninguna tabla con prefijo '{table_prefix}' en el catálogo.")
+        return []
     except Exception as e:
-        print(f"❌ Error obteniendo esquema de {table}: {e}")
+        print(f"❌ Error al buscar tablas con prefijo '{table_prefix}': {e}")
         return []
 
 def generate_sql_with_openai(question: str) -> str:
@@ -36,11 +40,9 @@ def generate_sql_with_openai(question: str) -> str:
     
     try:
         # Obtener esquemas actualizados
-        bank_columns = get_table_columns('etl_database', 'bank_payments')
-        mp_columns = get_table_columns('etl_database', 'mp_data')
-        # market_columns = get_table_columns('etl_database', 'carrefour_data')
-        # 4. Si la pregunta es sobre gastos del supermercado/carrefour, usa carrefour_data.
-        # - carrefour_data: {', '.join(market_columns)}
+        bank_columns = get_table_columns_by_prefix('etl_database', 'bank_payments_')
+        mp_columns = get_table_columns_by_prefix('etl_database', 'mp_reports_')
+        market_tickets_columns = get_table_columns_by_prefix('etl_database', 'market_tickets_')
 
         print(f"bank_columns: {bank_columns}")
         print(f"mp_columns: {mp_columns}")
@@ -52,12 +54,14 @@ def generate_sql_with_openai(question: str) -> str:
         Esquema actual:
         - bank_payments: {', '.join(bank_columns)}
         - mp_data: {', '.join(mp_columns)}
+        - carrefour_data: {', '.join(market_tickets_columns)}
 
         Reglas de oro:
         1. Usa solo estas columnas y las tablas mencionadas.
         2. Genera SQL válido para Redshift.
         3. Si la pregunta es sobre gastos del banco/santander, usa bank_payments.
         4. Si la pregunta es sobre transacciones/pagos a traves de mercado pago, usa mp_data.
+        5. Si la pregunta es sobre gastos del supermercado/carrefour, usa carrefour_data.
         5. Limita los resultados a máximo 20 filas.
         6. Incluye fechas relevantes cuando sea apropiado.
 

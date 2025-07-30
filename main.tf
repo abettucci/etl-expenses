@@ -1072,6 +1072,8 @@ resource "aws_glue_crawler" "market_tickets_crawler" {
   role          = aws_iam_role.glue_service_role.arn
   database_name = aws_glue_catalog_database.etl_database.name
 
+  table_prefix  = "market_tickets_"
+
   s3_target {
     path = "s3://${aws_s3_bucket.market_tickets.bucket}/raw/"
   }
@@ -1084,6 +1086,8 @@ resource "aws_glue_crawler" "mp_reports_crawler" {
   role          = aws_iam_role.glue_service_role.arn
   database_name = aws_glue_catalog_database.etl_database.name
 
+  table_prefix  = "mp_reports_"
+
   s3_target {
     path = "s3://${aws_s3_bucket.mp_reports.bucket}/raw/"
   }
@@ -1095,6 +1099,8 @@ resource "aws_glue_crawler" "bank_payments_crawler" {
   name          = "bank-payments-crawler"
   role          = aws_iam_role.glue_service_role.arn
   database_name = aws_glue_catalog_database.etl_database.name
+
+  table_prefix  = "bank_payments_"
 
   s3_target {
     path = "s3://${aws_s3_bucket.bank_payments.bucket}/raw/"
