@@ -9,8 +9,8 @@ import openai
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-redshift_data = boto3.client('redshift-data')
-glue_client = boto3.client('glue')
+redshift_data = boto3.client('redshift-data', region_name='us-east-2')
+glue_client = boto3.client('glue', region_name = 'us-east-2')
 
 # Configuración de OpenAI
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
