@@ -77,13 +77,25 @@ jobs:
               echo "🔄 No changes detected, updating latest tag only"
               
               # Actualizar tag latest usando el manifest existente
-              aws ecr batch-get-image --repository-name etl-expenses \
-                --image-ids imageTag="$IMAGE_TAG" \
-                --query 'images[].imageManifest' --output text | \
-                xargs -I {} aws ecr put-image \
+              MANIFEST=$(aws ecr batch-get-image \
+                --repository-name etl-expenses \
+                --image-ids imageTag="${LAMBDA_DIR}-${SHORT_HASH}" \
+                --query 'images[].imageManifest' \
+                --output text | jq -r '.')
+
+              # Validar que el JSON es válido
+              if ! jq -e . >/dev/null 2>&1 <<<"$MANIFEST"; then
+                echo "❌ Invalid JSON manifest, using fallback method"
+                docker pull ${ECR_REPO}:${LAMBDA_DIR}-${SHORT_HASH}
+                docker tag ${ECR_REPO}:${LAMBDA_DIR}-${SHORT_HASH} ${ECR_REPO}:${LAMBDA_DIR}-latest
+                docker push ${ECR_REPO}:${LAMBDA_DIR}-latest
+              else
+                aws ecr put-image \
                   --repository-name etl-expenses \
                   --image-tag "${LAMBDA_DIR}-latest" \
-                  --image-manifest "{}"
+                  --image-manifest "$MANIFEST"
+              fi
+              
             else
               echo "🚀 Changes detected, building new image..."
               
