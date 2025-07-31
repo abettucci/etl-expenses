@@ -678,6 +678,23 @@ resource "aws_s3_bucket_policy" "bank_payments_policy" {
   })
 }
 
+locals {
+  lambda_functions = [
+    "pdf_extractor",
+    "pdf_processor",
+    "mp_report_extractor",
+    "mp_report_processor",
+    "bank_payments_extractor",
+    "bank_payments_processor",
+    "load_report_and_pdf",
+    "webhook_mp_report",
+    "compensation_flow",
+    "redshift_to_bq",
+    "ai-agent",
+    "dispatcher"
+  ]
+}
+
 resource "aws_iam_role_policy" "step_function_lambda_invoke_policy_1" {
   name = "step-function-invoke-lambdas-1"
   role = aws_iam_role.step_function_role.id

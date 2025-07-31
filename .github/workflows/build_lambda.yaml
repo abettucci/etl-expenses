@@ -31,118 +31,38 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      - name: Get list of Lambda directories
-        id: list_dirs
+      - name: Login to ECR
         run: |
-          set -x
-          dirs=$(find . -type f -name 'lambda_function.py' -exec dirname {} \;)
-          echo "lambda_dirs<<EOF" >> $GITHUB_OUTPUT
-          echo "$dirs" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Build and Push changed Lambda images
-        run: |
-          set -x
-          
-          # Login to ECR first (valid for 12 hours)
-          echo "🔐 Logging in to ECR"
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           
-          echo "${{ steps.list_dirs.outputs.lambda_dirs }}" | while read dir; do
-            echo "📁 Processing directory: $dir"
+      - name: Calcular hash del contenido
+        id: hash
+        run: |
+          HASH=$(find lambda/ -type f -exec sha256sum {} \; | sort | sha256sum | cut -d ' ' -f1)
+          echo "HASH=$HASH"
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
 
-            # Validate required files exist
-            if [[ ! -f "$dir/lambda_function.py" ]]; then
-              echo "⚠️ Missing lambda_function.py in $dir"
-              continue
-            fi
-            if [[ ! -f "$dir/requirements.txt" ]]; then
-              echo "⚠️ Missing requirements.txt in $dir"
-              continue
-            fi
-            
-            # Find Dockerfile
-            DOCKERFILE=$(ls $dir/*.dockerfile 2>/dev/null | head -n1)
-            if [[ -z "$DOCKERFILE" ]]; then
-              echo "⚠️ No dockerfile found in $dir"
-              continue
-            fi
-            
-            echo "📄 Using Dockerfile: $DOCKERFILE"
-            
-            # Calculate hash and verify files
-            if ! HASH=$(cat $DOCKERFILE $dir/lambda_function.py $dir/requirements.txt 2>/dev/null | sha256sum | cut -c1-12); then
-              echo "❌ Failed to calculate hash for $dir"
-              continue
-            fi
-            
-            echo "🔑 Calculated hash: $HASH"
-
-            # 1. Generar tag único por función (nombre_dir + git_sha + timestamp)
-            LAMBDA_NAME=$(basename $dir)
-            IMAGE_TAG="${LAMBDA_NAME}-$(git rev-parse --short HEAD)-$(date +%s)"
-            IMAGE_URI="${{ env.ECR_REPO }}:${IMAGE_TAG}"
-            LATEST_TAG="${{ env.ECR_REPO }}:${LAMBDA_NAME}-latest"
-            
-            echo "🏷️ Image tag: $IMAGE_TAG"
-
-            # Check if image exists in ECR
-            if aws ecr describe-images \
-              --repository-name etl-expenses \
-              --image-ids imageTag=$IMAGE_TAG \
-              --output json > /dev/null 2>&1; then
-              
-              echo "🔄 Image $IMAGE_URI already exists in ECR"
-              
-              # Always update latest tag to ensure it points to the correct image
-              echo "⭐ Updating latest tag to point to $IMAGE_TAG"
+      - name: Chequear si la imagen ya existe en ECR
+        id: check_image
+        run: |
+          IMAGE_TAG=${{ steps.hash.outputs.hash }}
+          EXISTS=$(aws ecr describe-images --repository-name my-ecr-repo --image-ids imageTag=$IMAGE_TAG || true)
+          if echo "$EXISTS" | grep -q 'imageTag'; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Construir y pushear imagen si no existe
+        if: steps.check_image.outputs.exists == 'false'
+        run: |
+          IMAGE_TAG=${{ steps.hash.outputs.hash }}
+          docker build -t my-ecr-repo:$IMAGE_TAG .
+          docker tag my-ecr-repo:$IMAGE_TAG ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-2.amazonaws.com/my-ecr-repo:$IMAGE_TAG
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-2.amazonaws.com/my-ecr-repo:$IMAGE_TAG
+        
                 
-              # En vez de pull/tag/push, usar el manifest directamente
-              MANIFEST=$(aws ecr batch-get-image \
-                --repository-name etl-expenses \
-                --image-ids imageTag=$IMAGE_TAG \
-                --query 'images[].imageManifest' \
-                --output text)
-              
-              aws ecr put-image \
-                --repository-name etl-expenses \
-                --image-tag "$(basename $dir)-latest" \
-                --image-manifest "$MANIFEST" || true
-              
-            else
-              echo "🚀 Building new image: $IMAGE_URI"
-              
-              # Build the image
-              if ! docker build -t $IMAGE_URI -f $DOCKERFILE .; then
-                echo "❌ Failed to build image for $dir"
-                continue
-              fi
-              
-              # Push both tags
-              echo "⬆️ Pushing images to ECR"
-              docker push $IMAGE_URI
-              docker tag $IMAGE_URI $LATEST_TAG
-              docker push $LATEST_TAG
-              fi
-
-            # Actualizar Lambda automáticamente (si existe)
-            echo "🔄 Actualizando Lambda: $LAMBDA_NAME"
-            if aws lambda get-function --function-name $LAMBDA_NAME --region ${{ env.AWS_REGION }} &>/dev/null; then
-              aws lambda update-function-code \
-                --function-name $LAMBDA_NAME \
-                --image-uri $IMAGE_URI \
-                --region ${{ env.AWS_REGION }}
-              
-              echo "✅ Lambda actualizada con imagen: $IMAGE_URI"
-            else
-              echo "⚠️ Lambda $LAMBDA_NAME no existe (se omitió la actualización)"
-            fi
-            
-            echo "✅ Successfully processed $dir"
-
-          done
-          
   terraform-deploy:
     needs: [build-and-push]
     runs-on: ubuntu-latest
