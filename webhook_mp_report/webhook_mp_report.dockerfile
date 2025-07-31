@@ -2,8 +2,8 @@
 FROM public.ecr.aws/lambda/python:3.9
 
 # Agregar dependencias específicas para esta función
-COPY webhook_mp_report/requirements.txt .
+COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY webhook_mp_report/lambda_function.py ${LAMBDA_TASK_ROOT}
+COPY lambda_function.py ${LAMBDA_TASK_ROOT}
 CMD ["lambda_function.lambda_handler"]
