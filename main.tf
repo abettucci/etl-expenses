@@ -697,6 +697,9 @@ locals {
 
 resource "aws_iam_role_policy" "step_function_lambda_invoke_policy" {
   for_each = toset(local.lambda_functions)
+
+  name = "step-function-invoke-lambdas"
+  role = aws_iam_role.step_function_role.id
   
   # La misma política para todas las funciones
   policy = jsonencode({
