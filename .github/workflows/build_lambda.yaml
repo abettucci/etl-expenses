@@ -36,70 +36,58 @@ jobs:
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             docker login --username AWS --password-stdin ${ECR_REPO}
 
-      - name: Get list of Lambda directories
-        id: list_dirs
-        run: |
-          dirs=$(find . -type f -name 'lambda_function.py' -exec dirname {} \;)
-          echo "lambda_dirs<<EOF" >> $GITHUB_OUTPUT
-          echo "$dirs" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Process Lambda directories
-        run: |
-          set -x
-          echo "${{ steps.list_dirs.outputs.lambda_dirs }}" | while read dir; do
-            LAMBDA_NAME=$(basename $dir)
-            echo "📁 Processing directory: $dir"
-
-            # Calcular hash de los archivos relevantes
-            HASH=$(find $dir -type f \( -name '*.py' -o -name 'requirements.txt' -o -name '*.dockerfile' \) -exec sha256sum {} \; | \
-                   sort | sha256sum | cut -d ' ' -f1)
-            SHORT_HASH=$(echo $HASH | cut -c1-12)
-            IMAGE_TAG="${LAMBDA_NAME}-${SHORT_HASH}"
-            IMAGE_URI="${ECR_REPO}:${IMAGE_TAG}"
-            LATEST_TAG="${ECR_REPO}:${LAMBDA_NAME}-latest"
-
-            # Verificar si la imagen ya existe
-            if aws ecr describe-images --repository-name etl-expenses \
-               --image-ids imageTag=$IMAGE_TAG &>/dev/null; then
-              echo "🔄 Image ${IMAGE_URI} already exists, skipping build"
-              
-              # Actualizar tag latest
-              MANIFEST=$(aws ecr batch-get-image --repository-name etl-expenses \
-                --image-ids imageTag=$IMAGE_TAG --query 'images[].imageManifest' --output text)
-              aws ecr put-image --repository-name etl-expenses \
-                --image-tag $LAMBDA_NAME-latest --image-manifest "$MANIFEST"
-            else
-              # Construir y pushear nueva imagen
-              echo "🚀 Building new image: ${IMAGE_URI}"
-              DOCKERFILE=$(ls $dir/*.dockerfile | head -n1)
-              
-              docker build -t $IMAGE_URI -f $DOCKERFILE $dir
-              docker push $IMAGE_URI
-              
-              # Actualizar tag latest
-              docker tag $IMAGE_URI $LATEST_TAG
-              docker push $LATEST_TAG
-
-              # Limpiar imágenes antiguas (mantener solo las 2 más recientes)
-              aws ecr list-images --repository-name etl-expenses \
-                --filter "tagStatus=TAGGED" --query "imageIds[?starts_with(imageTag, '${LAMBDA_NAME}-')]" \
-                --output json | jq -r 'sort_by(.imageTag)[0:-2][] | .imageDigest' | \
-                while read digest; do
-                  aws ecr batch-delete-image --repository-name etl-expenses \
-                    --image-ids imageDigest=$digest
+            - name: Build and Push Lambda images
+            run: |
+              set -x
+              # Lista de directorios con Lambdas (ajustada a tu estructura)
+              LAMBDA_DIRS=(
+                "ai_agent"
+                "compensation_flow" 
+                "extract_data_bank_pay"
+                "extract_data_mp"
+                "extract_data_pdf"
+                "load_data"
+                "redshift_to_bq"
+                "transform_data_bank_pay"
+                "transform_data_mp"
+                "transform_data_pdf"
+                "webhook_mp_report"
+              )
+          
+              for LAMBDA_DIR in "${LAMBDA_DIRS[@]}"; do
+                echo "📁 Processing: $LAMBDA_DIR"
+                
+                # 1. Calcular hash de los archivos relevantes
+                HASH=$(find $LAMBDA_DIR -type f \( -name '*.py' -o -name 'requirements.txt' -o -name '*.dockerfile' \) \
+                       -exec sha256sum {} \; | sort | sha256sum | cut -d ' ' -f1)
+                SHORT_HASH=${HASH:0:12}
+                
+                # 2. Construir imagen
+                DOCKERFILE="$LAMBDA_DIR/${LAMBDA_DIR}.dockerfile"
+                if [[ ! -f "$DOCKERFILE" ]]; then
+                  DOCKERFILE="$LAMBDA_DIR/Dockerfile" # Fallback a naming alternativo
+                fi
+                
+                IMAGE_URI="${{ env.ECR_REPO }}:${LAMBDA_DIR}-${SHORT_HASH}"
+                
+                docker build -t $IMAGE_URI -f $DOCKERFILE $LAMBDA_DIR
+                docker push $IMAGE_URI
+                
+                # 3. Actualizar tag 'latest'
+                LATEST_TAG="${{ env.ECR_REPO }}:${LAMBDA_DIR}-latest"
+                docker tag $IMAGE_URI $LATEST_TAG
+                docker push $LATEST_TAG
+                
+                # 4. Limpieza (mantener solo 2 imágenes por Lambda)
+                aws ecr list-images --repository-name etl-expenses \
+                  --filter "tagStatus=TAGGED" \
+                  --query "imageIds[?starts_with(imageTag, '${LAMBDA_DIR}-')].imageDigest" \
+                  --output text | head -n -2 | while read digest; do
+                    aws ecr batch-delete-image \
+                      --repository-name etl-expenses \
+                      --image-ids imageDigest=$digest
                 done
-            fi
-
-            # Actualizar función Lambda si existe
-            if aws lambda get-function --function-name $LAMBDA_NAME &>/dev/null; then
-              echo "🔄 Updating Lambda function: $LAMBDA_NAME"
-              aws lambda update-function-code \
-                --function-name $LAMBDA_NAME \
-                --image-uri $IMAGE_URI \
-                --region ${{ env.AWS_REGION }}
-            fi
-          done        
+              done
                 
   terraform-deploy:
     needs: [build-and-push]
