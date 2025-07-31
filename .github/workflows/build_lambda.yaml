@@ -57,9 +57,11 @@ jobs:
           for LAMBDA_DIR in "${LAMBDA_DIRS[@]}"; do
             echo "📁 Processing: $LAMBDA_DIR"
             
-            # 1. Validar estructura del directorio
-            if [[ ! -f "$LAMBDA_DIR/Dockerfile" ]]; then
-              echo "⚠️ No Dockerfile found in $LAMBDA_DIR, skipping"
+            # 1. Buscar Dockerfile con naming pattern [nombre_dir].dockerfile
+            DOCKERFILE="${LAMBDA_DIR}/${LAMBDA_DIR}.dockerfile"
+            
+            if [[ ! -f "$DOCKERFILE" ]]; then
+              echo "⚠️ No ${LAMBDA_DIR}.dockerfile found in $LAMBDA_DIR, skipping"
               continue
             fi
 
