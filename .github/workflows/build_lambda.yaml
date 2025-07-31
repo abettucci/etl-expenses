@@ -66,7 +66,7 @@ jobs:
             fi
 
             # 2. Calcular hash más preciso (incluye todos los archivos relevantes)
-            CONTENT_HASH=$(find $LAMBDA_DIR -type f \( -name '*.py' -o -name 'requirements.txt' -o -name 'Dockerfile' \) \
+            CONTENT_HASH=$(find $LAMBDA_DIR -type f \( -name '*.py' -o -name 'requirements.txt' -o -name $DOCKERFILE \) \
                         -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
             SHORT_HASH=${CONTENT_HASH:0:12}
             IMAGE_TAG="${LAMBDA_DIR}-${SHORT_HASH}"
@@ -89,7 +89,7 @@ jobs:
               
               # 4. Construir con manejo de errores
               if ! docker build -t "${ECR_REPO}:${IMAGE_TAG}" \
-                  -f "$LAMBDA_DIR/Dockerfile" "$LAMBDA_DIR"; then
+                  -f $DOCKERFILE "$LAMBDA_DIR"; then
                 echo "❌ Build failed for $LAMBDA_DIR"
                 exit 1
               fi
