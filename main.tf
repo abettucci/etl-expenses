@@ -678,19 +678,33 @@ resource "aws_s3_bucket_policy" "bank_payments_policy" {
   })
 }
 
-resource "aws_iam_role_policy" "step_function_lambda_invoke_policy" {
-  name = "invoke-lambda-from-step-function"
-  role = aws_iam_role.step_function_role.name
+resource "aws_iam_role_policy" "step_function_lambda_invoke_policy_1" {
+  name = "step-function-invoke-lambdas-1"
+  role = aws_iam_role.step_function_role.id
 
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
-      {
-        Effect = "Allow",
-        Action = [
-          "lambda:InvokeFunction"
-        ],
-        Resource = "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function:compensation-flow"
+      for fn in slice(local.lambda_functions, 0, 50) : {
+        Effect   = "Allow",
+        Action   = "lambda:InvokeFunction",
+        Resource = "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function/${fn}"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "step_function_lambda_invoke_policy_2" {
+  name = "step-function-invoke-lambdas-2"
+  role = aws_iam_role.step_function_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      for fn in slice(local.lambda_functions, 50, length(local.lambda_functions)) : {
+        Effect   = "Allow",
+        Action   = "lambda:InvokeFunction",
+        Resource = "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function/${fn}"
       }
     ]
   })
