@@ -678,23 +678,6 @@ resource "aws_s3_bucket_policy" "bank_payments_policy" {
   })
 }
 
-locals {
-  lambda_functions = [
-    "pdf_extractor",
-    "pdf_processor",
-    "mp_report_extractor",
-    "mp_report_processor",
-    "bank_payments_extractor",
-    "bank_payments_processor",
-    "load_report_and_pdf",
-    "webhook_mp_report",
-    "compensation_flow",
-    "redshift_to_bq",
-    "ai-agent",
-    "dispatcher"
-  ]
-}
-
 resource "aws_iam_role_policy" "step_function_lambda_invoke_policy" {
   name = "step-function-invoke-lambdas"
   role = aws_iam_role.step_function_role.id
@@ -722,9 +705,8 @@ resource "aws_iam_role_policy" "step_function_lambda_invoke_policy" {
           aws_lambda_function.compensation_flow.arn,
 
           aws_lambda_function.dispatcher.arn,
-          aws_lambda_function.ai-agent.arn,
-          aws_lambda_function.redshift_to_bq.arn,
-          aws_lambda_function.webhook_mp_report.arn
+          aws_lambda_function.ai_agent.arn,
+          aws_lambda_function.redshift-to-bq.arn,
         ]
       }
     ]

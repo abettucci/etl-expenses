@@ -56,77 +56,34 @@ jobs:
       
           for LAMBDA_DIR in "${LAMBDA_DIRS[@]}"; do
             echo "📁 Processing: $LAMBDA_DIR"
-            
-            # 1. Buscar Dockerfile con naming pattern [nombre_dir].dockerfile
             DOCKERFILE="${LAMBDA_DIR}/${LAMBDA_DIR}.dockerfile"
             
             if [[ ! -f "$DOCKERFILE" ]]; then
-              echo "⚠️ No ${LAMBDA_DIR}.dockerfile found in $LAMBDA_DIR, skipping"
+              echo "⚠️ No Dockerfile found, skipping"
               continue
             fi
 
-            # 2. Calcular hash más preciso (incluye todos los archivos relevantes)
-            CONTENT_HASH=$(find $LAMBDA_DIR -type f \( -name '*.py' -o -name 'requirements.txt' -o -name $DOCKERFILE \) \
-                        -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
-            SHORT_HASH=${CONTENT_HASH:0:12}
-            IMAGE_TAG="${LAMBDA_DIR}-${SHORT_HASH}"
+            # 1. Eliminar imagen anterior si existe
+            echo "🧹 Removing previous image..."
+            aws ecr batch-delete-image \
+              --repository-name etl-expenses \
+              --image-ids imageTag="${LAMBDA_DIR}-latest" || true
+
+            # 2. Construir y pushear SOLO con tag latest
+            echo "🏗️ Building new image..."
+            docker build -t "${ECR_REPO}:${LAMBDA_DIR}-latest" \
+                -f "$DOCKERFILE" "$LAMBDA_DIR"
             
-            # 3. Verificar si la imagen ya existe
-            if aws ecr describe-images --repository-name etl-expenses \
-              --image-ids imageTag="$IMAGE_TAG" &>/dev/null; then
-              echo "🔄 No changes detected, updating latest tag only"
-              
-              # Actualizar tag latest usando el manifest existente
-              MANIFEST=$(aws ecr batch-get-image \
-                --repository-name etl-expenses \
-                --image-ids imageTag="${LAMBDA_DIR}-${SHORT_HASH}" \
-                --query 'images[].imageManifest' \
-                --output text | jq -r '.')
+            echo "🚀 Pushing image..."
+            docker push "${ECR_REPO}:${LAMBDA_DIR}-latest"
 
-              # Validar que el JSON es válido
-              echo "🔄 Updating latest tag"
-              if ! aws ecr put-image \
-                --repository-name etl-expenses \
-                --image-tag "${LAMBDA_DIR}-latest" \
-                --image-manifest "$MANIFEST" 2>&1 | grep -q "ImageAlreadyExistsException"; then
-                echo "✅ Latest tag updated"
-              else
-                echo "ℹ️ Latest tag already points to correct image"
-              fi
-            else
-              echo "🚀 Changes detected, building new image..."
-              
-              # 4. Construir con manejo de errores
-              if ! docker build -t "${ECR_REPO}:${IMAGE_TAG}" \
-                  -f $DOCKERFILE "$LAMBDA_DIR"; then
-                echo "❌ Build failed for $LAMBDA_DIR"
-                exit 1
-              fi
-              
-              # 5. Push con reintentos
-              for i in {1..3}; do
-                docker push "${ECR_REPO}:${IMAGE_TAG}" && break || 
-                (echo "⚠️ Push attempt $i failed" && sleep 5)
-              done
-
-              # 6. Actualizar Lambda function si existe
-              if aws lambda get-function --function-name ${LAMBDA_DIR//_/-} &>/dev/null; then
-                echo "🔄 Updating Lambda function..."
-                aws lambda update-function-code \
-                  --function-name ${LAMBDA_DIR//_/-} \
-                  --image-uri "${ECR_REPO}:${IMAGE_TAG}" \
-                  --region ${{ env.AWS_REGION }}
-              fi
-
-              # 7. Limpieza segura (máximo 5 imágenes antiguas)
-              aws ecr describe-images --repository-name etl-expenses \
-                --filter "tagStatus=TAGGED" \
-                --query "sort_by(imageDetails,& imagePushedAt)[?starts_with(imageTags[0], '${LAMBDA_DIR}-') && imageTags[0]!='${IMAGE_TAG}' && imageTags[0]!='${LAMBDA_DIR}-latest']" \
-                --output json | jq -r '.[5:][].imageDigest' | while read digest; do
-                  aws ecr batch-delete-image \
-                    --repository-name etl-expenses \
-                    --image-ids imageDigest=$digest
-                done
+            # 3. Actualizar Lambda
+            if aws lambda get-function --function-name ${LAMBDA_DIR//_/-} &>/dev/null; then
+              echo "🔄 Updating Lambda function..."
+              aws lambda update-function-code \
+                --function-name ${LAMBDA_DIR//_/-} \
+                --image-uri "${ECR_REPO}:${LAMBDA_DIR}-latest" \
+                --region ${{ env.AWS_REGION }}
             fi
           done
                 
