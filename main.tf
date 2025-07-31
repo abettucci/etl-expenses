@@ -678,39 +678,9 @@ resource "aws_s3_bucket_policy" "bank_payments_policy" {
   })
 }
 
-resource "aws_iam_role_policy" "step_function_lambda_invoke_policy" {
-  name = "step-function-invoke-lambdas"
-  role = aws_iam_role.step_function_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = [
-          "lambda:InvokeFunction",
-          "lambda:InvokeAsync"
-        ]
-        Resource = [
-          aws_lambda_function.mp_report_extractor.arn,
-          aws_lambda_function.mp_report_processor.arn,
-
-          aws_lambda_function.bank_payments_extractor.arn,
-          aws_lambda_function.bank_payments_processor.arn,
-          
-          aws_lambda_function.pdf_extractor.arn,
-          aws_lambda_function.pdf_processor.arn,
-          
-          aws_lambda_function.load_report_and_pdf.arn,
-          aws_lambda_function.compensation_flow.arn,
-
-          aws_lambda_function.dispatcher.arn,
-          aws_lambda_function.ai_agent.arn,
-          aws_lambda_function.redshift-to-bq.arn,
-        ]
-      }
-    ]
-  })
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
+  role       = aws_iam_role.step_function_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSLambda_FullAccess"
 }
 
 # Policy para la Step Function para ejecutar funciones Lambda
