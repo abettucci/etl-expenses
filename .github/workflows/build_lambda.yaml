@@ -84,18 +84,15 @@ jobs:
                 --output text | jq -r '.')
 
               # Validar que el JSON es válido
-              if ! jq -e . >/dev/null 2>&1 <<<"$MANIFEST"; then
-                echo "❌ Invalid JSON manifest, using fallback method"
-                docker pull ${ECR_REPO}:${LAMBDA_DIR}-${SHORT_HASH}
-                docker tag ${ECR_REPO}:${LAMBDA_DIR}-${SHORT_HASH} ${ECR_REPO}:${LAMBDA_DIR}-latest
-                docker push ${ECR_REPO}:${LAMBDA_DIR}-latest
+              echo "🔄 Updating latest tag"
+              if ! aws ecr put-image \
+                --repository-name etl-expenses \
+                --image-tag "${LAMBDA_DIR}-latest" \
+                --image-manifest "$MANIFEST" 2>&1 | grep -q "ImageAlreadyExistsException"; then
+                echo "✅ Latest tag updated"
               else
-                aws ecr put-image \
-                  --repository-name etl-expenses \
-                  --image-tag "${LAMBDA_DIR}-latest" \
-                  --image-manifest "$MANIFEST"
+                echo "ℹ️ Latest tag already points to correct image"
               fi
-              
             else
               echo "🚀 Changes detected, building new image..."
               
