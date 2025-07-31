@@ -63,21 +63,45 @@ jobs:
               continue
             fi
 
-            # 1. Eliminar imagen anterior si existe
+            # 1. Calcular hash del contenido relevante
+            CONTENT_HASH=$(find $LAMBDA_DIR -type f \( -name '*.py' -o -name 'requirements.txt' -o -name $DOCKERFILE \) \
+                        -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+            SHORT_HASH=${CONTENT_HASH:0:12}
+
+            # 2. Verificar si la imagen actual en ECR tiene el mismo hash
+            CURRENT_HASH=$(aws ecr describe-images --repository-name etl-expenses \
+                        --image-ids imageTag="${LAMBDA_DIR}-latest" \
+                        --query 'imageDetails[].imageTags[?contains(@, `hash-`)]' \
+                        --output text | cut -d'-' -f2 || true)
+
+            if [[ "$SHORT_HASH" == "$CURRENT_HASH" ]]; then
+              echo "✅ No changes detected for $LAMBDA_DIR, skipping build"
+              continue
+            fi
+
+            # 3. Eliminar imagen anterior (si existe)
             echo "🧹 Removing previous image..."
             aws ecr batch-delete-image \
               --repository-name etl-expenses \
-              --image-ids imageTag="${LAMBDA_DIR}-latest" || true
+              --image-ids imageTag="${LAMBDA_DIR}-latest" 2>/dev/null || true
 
-            # 2. Construir y pushear SOLO con tag latest
-            echo "🏗️ Building new image..."
+            # 4. Construir nueva imagen con metadata de hash
+            echo "🏗️ Building new image (hash: $SHORT_HASH)..."
             docker build -t "${ECR_REPO}:${LAMBDA_DIR}-latest" \
-                -f "$DOCKERFILE" "$LAMBDA_DIR"
-            
+                        --label "build-hash=$SHORT_HASH" \
+                        -f "$DOCKERFILE" "$LAMBDA_DIR"
+
+            # 5. Tag adicional con hash (solo para referencia)
+            docker tag "${ECR_REPO}:${LAMBDA_DIR}-latest" "${ECR_REPO}:${LAMBDA_DIR}-hash-$SHORT_HASH"
+
+            # 6. Push de la imagen
             echo "🚀 Pushing image..."
             docker push "${ECR_REPO}:${LAMBDA_DIR}-latest"
+            
+            # 7. Opcional: Push del tag con hash (puedes omitir esto si no lo necesitas)
+            docker push "${ECR_REPO}:${LAMBDA_DIR}-hash-$SHORT_HASH" || true
 
-            # 3. Actualizar Lambda
+            # 8. Actualizar Lambda
             if aws lambda get-function --function-name ${LAMBDA_DIR//_/-} &>/dev/null; then
               echo "🔄 Updating Lambda function..."
               aws lambda update-function-code \
