@@ -696,22 +696,36 @@ locals {
 }
 
 resource "aws_iam_role_policy" "step_function_lambda_invoke_policy" {
-  for_each = toset(local.lambda_functions)
-
   name = "step-function-invoke-lambdas"
   role = aws_iam_role.step_function_role.id
-  
-  # La misma política para todas las funciones
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action = [
+        Effect   = "Allow"
+        Action   = [
           "lambda:InvokeFunction",
           "lambda:InvokeAsync"
         ]
-        Effect   = "Allow"
-        Resource = "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:${each.key}"
+        Resource = [
+          aws_lambda_function.mp_report_extractor.arn,
+          aws_lambda_function.mp_report_processor.arn,
+
+          aws_lambda_function.bank_payments_extractor.arn,
+          aws_lambda_function.bank_payments_processor.arn,
+          
+          aws_lambda_function.pdf_extractor.arn,
+          aws_lambda_function.pdf_processor.arn,
+          
+          aws_lambda_function.load_report_and_pdf.arn,
+          aws_lambda_function.compensation_flow.arn,
+
+          aws_lambda_function.dispatcher.arn,
+          aws_lambda_function.ai-agent.arn,
+          aws_lambda_function.redshift_to_bq.arn,
+          aws_lambda_function.webhook_mp_report.arn
+        ]
       }
     ]
   })
