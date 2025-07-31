@@ -11,6 +11,8 @@ provider "aws" {
   region = "us-east-2"
 }
 
+data "aws_caller_identity" "current" {}
+
 ########### 0. Definicion de Variables ###########
 
 # Definimos las variables que van a utilizar algunos recursos para referenciar a las ARN
@@ -676,6 +678,24 @@ resource "aws_s3_bucket_policy" "bank_payments_policy" {
   })
 }
 
+resource "aws_iam_role_policy" "step_function_lambda_invoke_policy" {
+  name = "invoke-lambda-from-step-function"
+  role = aws_iam_role.step_function_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "lambda:InvokeFunction"
+        ],
+        Resource = "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function:compensation-flow"
+      }
+    ]
+  })
+}
+
 # Policy para la Step Function para ejecutar funciones Lambda
 resource "aws_iam_policy" "step_function_lambda_policy" {
   name = "step_function_lambda_policy"
@@ -1075,7 +1095,7 @@ resource "aws_glue_crawler" "market_tickets_crawler" {
   table_prefix  = "market_tickets_"
 
   s3_target {
-    path = "s3://${aws_s3_bucket.market_tickets.bucket}/raw/"
+    path = "s3://${aws_s3_bucket.market_tickets.bucket}/processed/"
   }
 
   schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
@@ -1103,7 +1123,7 @@ resource "aws_glue_crawler" "bank_payments_crawler" {
   table_prefix  = "bank_payments_"
 
   s3_target {
-    path = "s3://${aws_s3_bucket.bank_payments.bucket}/raw/"
+    path = "s3://${aws_s3_bucket.bank_payments.bucket}/processed/"
   }
 
   schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
