@@ -9,211 +9,196 @@ from PyPDF2 import PdfReader
 def calcular_hash_pdf(content_bytes):
     return hashlib.sha256(content_bytes).hexdigest()
 
-def hash_ya_procesado(hash_pdf, redshift_data):
-    check_query = f"""
-    SELECT 1 FROM archivos_ingestados 
-    WHERE hash_archivo = '{hash_pdf}'
-    LIMIT 1
-    """
-    check_response = redshift_data.execute_statement(
-        Database='dev',
-        WorkgroupName='pdf-etl-workgroup',
-        Sql=check_query
-    )
+def transform_pdf_to_dataframe(pdf_content, pdf_key):
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+            texto_completo = ""
+            pdf_reader = PdfReader(io.BytesIO(pdf_content))
+            
+            for pagina in pdf_reader.pages:
+                print(pagina)
 
-    return check_response
+                try:
+                    texto_pagina = pagina.extract_text()
+                    if texto_pagina:
+                        texto_completo += texto_pagina + "\n"
+                except:
+                    continue
+            
+            if not texto_completo:
+                print(f"⚠️ No se pudo extraer texto del PDF: {pdf_key}")
+                return pd.DataFrame()
 
-def parsear_pdf_a_rows(pdfs, s3, bucket, redshift_data):
-    for pdf_key in pdfs:
-        print('Nombre archivo leido: ', pdf_key)
+            lineas = [linea.replace('\xa0', ' ').replace('\xad', '').strip() 
+                     for linea in texto_completo.split('\n') if linea.strip()]
+
+            # Inicializar variables
+            fecha_compra = nro_ticket = suma_total_descuentos = ""
+            indice_fecha = indice_inicial = indice_final = indice_nro_ticket = indice_descuentos = None
+
+            for i, linea in enumerate(lineas):
+                if "Fecha" in linea and indice_fecha is None:
+                    indice_fecha = i
+                if "Caja" in linea and indice_inicial is None:
+                    indice_inicial = i
+                if "TOTAL" in linea and indice_final is None:
+                    indice_final = i
+                if "P.V." in linea and indice_nro_ticket is None:
+                    indice_nro_ticket = i    
+                if "AHORRO" in linea and indice_descuentos is None:
+                    indice_descuentos = i
+
+            # Extraer datos
+            if indice_fecha is not None:
+                fecha_linea = lineas[indice_fecha]
+                fecha_compra = fecha_linea[len('Fecha '):fecha_linea.find('Hora')].strip() if 'Hora' in fecha_linea else ""
+            
+            if indice_nro_ticket is not None:
+                nro_linea = lineas[indice_nro_ticket]
+                nro_ticket = nro_linea[nro_linea.find('Nro T.') + len('Nro T.'):].strip() if 'Nro T.' in nro_linea else ""
+                
+            if indice_descuentos is not None:
+                descuento_linea = lineas[indice_descuentos]
+                if '$' in descuento_linea:
+                    suma_total_descuentos = descuento_linea[descuento_linea.find('$')+1:].strip()
+                    try:
+                        suma_total_descuentos = float(suma_total_descuentos.replace(',', '.'))
+                    except:
+                        suma_total_descuentos = 0
+
+            # Procesar items
+            lista_items = []
+            categorias = ['Bebidas','Carniceria','Almacen','Frutas Y Verduras','Limpieza','Perfumeria','Hogar Bazar']
+            categoria_actual = ""
+            nombre_item = ""
+
+            if indice_inicial is not None and indice_final is not None:
+                lineas_items = lineas[indice_inicial+1:indice_final]
+            else:
+                lineas_items = []
+
+            for linea in lineas_items:
+                if linea in categorias:
+                    categoria_actual = linea
+                elif any(c in linea for c in ['x', '$']) and any(c.isdigit() for c in linea):
+                    # Procesar línea de item
+                    try:
+                        partes = linea.split()
+                        cantidad = peso = precio = monto_total = 0
+                        
+                        if 'x' in linea:
+                            if linea.count('x') == 1:
+                                cantidad, precio = linea.split('x')
+                                cantidad = float(cantidad.strip())
+                                precio = float(precio.split()[0].replace(',', '.'))
+                            else:
+                                partes = linea.split('x')
+                                peso = float(partes[1].strip())
+                                precio = float(partes[2].split()[0].replace(',', '.'))
+                        
+                        if '(' in linea and ')' in linea:
+                            monto_total = linea[linea.rfind(')')+1:].strip()
+                            monto_total = float(monto_total.replace(',', '.'))
+                        
+                        item = {
+                            "categoria": categoria_actual,
+                            "producto": nombre_item,
+                            "cantidad": cantidad,
+                            "peso": peso,
+                            "precio_unit": precio,
+                            "monto_total": monto_total
+                        }
+                        lista_items.append(item)
+                    except Exception as e:
+                        print(f"Error procesando línea: {linea} - {str(e)}")
+                else:
+                    nombre_item = linea
+
+            # Crear DataFrame
+            if lista_items:
+                df = pd.DataFrame(lista_items)
+                df['nro_ticket'] = nro_ticket
+                df['fecha'] = fecha_compra
+                
+                if not df.empty and 'monto_total' in df.columns:
+                    total_bruto = df['monto_total'].sum() - suma_total_descuentos
+                    df['total_ticket_bruto'] = round(total_bruto, 2)
+                    df['total_ticket_meli'] = round(total_bruto * 0.3, 2)
+                
+                return df
+            return pd.DataFrame()
+
+    except Exception as e:
+        print(f"❌ Error procesando PDF {pdf_key}: {str(e)}")
+        return pd.DataFrame()
+
+def process_pdf_file(s3, bucket, pdf_key):
+    try:
         print(f"📄 Procesando: {pdf_key}")
         pdf_obj = s3.get_object(Bucket=bucket, Key=pdf_key)
         pdf_content = pdf_obj['Body'].read()
 
-        hash_pdf = calcular_hash_pdf(pdf_content)
-        # check_response = hash_ya_procesado(hash_pdf, redshift_data)
-        # describe_response = redshift_data.describe_statement(Id=check_response['Id'])
+        if not pdf_content.startswith(b'%PDF'):
+            print(f"⚠️ El archivo {pdf_key} no es un PDF válido")
+            return False
 
-        # while describe_response['Status'] not in ['FINISHED', 'FAILED']:
-        #     time.sleep(1)
-        #     describe_response = redshift_data.describe_statement(Id=check_response['Id'])
+        df = transform_pdf_to_dataframe(pdf_content, pdf_key)
         
-        # if describe_response['Status'] == 'FINISHED' and describe_response['HasResultSet']:
-        #     # El archivo ya existe, salir
-        #     print(f"Archivo {pdf_key} ya fue procesado (hash: {hash_pdf})")
-        #     return
-    
-        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
-            pdf_reader = PdfReader(io.BytesIO(pdf_content))
-            texto_completo = "".join([p.extract_text() for p in pdf_reader.pages])
-            for pagina in pdf_reader.pages:
-                texto_pagina = pagina.extract_text()
-                texto_completo += texto_pagina
+        if df.empty:
+            print(f"⚠️ No se pudo extraer datos del PDF: {pdf_key}")
+            return False
 
-            # Dividir el texto completo en líneas
-            lineas = [linea.replace('\xa0', ' ').replace('\xad', '').strip() for linea in texto_completo.split('\n')]
+        # Guardar CSV
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False, sep=',', encoding='utf-8')
+        
+        csv_key = pdf_key.replace('raw/', 'processed/').replace('.pdf', '.csv')
+        s3.put_object(
+            Bucket=bucket,
+            Key=csv_key,
+            Body=csv_buffer.getvalue()
+        )
+        
+        print(f"✅ CSV generado: {csv_key}")
+        return True
 
-            indice_fecha, indice_inicial, indice_final, indice_nro_ticket, indice_descuentos, suma_total_descuentos  = 0, 0, 0, 0, 0, 0
+    except Exception as e:
+        print(f"❌ Error procesando {pdf_key}: {str(e)}")
+        return False
 
-            for i, linea in enumerate(lineas):
-                if "Fecha" in linea and indice_fecha == 0:
-                    indice_fecha = i
-                if "Caja" in linea and indice_inicial == 0:
-                    indice_inicial = i
-                if "TOTAL" in linea and indice_final == 0:
-                    indice_final = i
-                if "P.V." in linea and indice_nro_ticket == 0:
-                    indice_nro_ticket = i    
-                if "AHORRO" in linea and indice_descuentos == 0:
-                    indice_descuentos = i
-
-            if indice_fecha > 0:
-                fecha_compra = lineas[indice_fecha][len('Fecha '):lineas[indice_fecha].find('Hora')].strip()
-            
-            if indice_nro_ticket > 0:
-                nro_ticket = lineas[indice_nro_ticket][lineas[indice_nro_ticket].find('Nro T.') + len('Nro T.'):].strip()
-                
-            if indice_descuentos > 0:
-                suma_total_descuentos = lineas[indice_descuentos]
-                suma_total_descuentos = suma_total_descuentos[suma_total_descuentos.find('$')+1:].strip()
-                suma_total_descuentos = float(suma_total_descuentos.replace(',', '.'))
-
-            # Quedarse solo con los elementos que vienen después de ese índice
-            if indice_inicial is not None and indice_final is not None:
-                texto_final = lineas[indice_inicial + 2:indice_final+1]
-            else:
-                texto_final = []
-
-            texto_final = [valor for valor in texto_final if valor != '']
-            # texto_final.remove("================================================")
-
-            lista_items = []
-            categorias = ['Bebidas','Carniceria','Almacen','Frutas Y Verduras','Limpieza','Perfumeria','Hogar Bazar','Perfumeria'] # ir agregando categorias a medida que compre
-
-            for linea in texto_final:
-
-                if linea in categorias:
-                    categoria = linea
-                
-                elif linea[0].isnumeric() and linea[2:3].lower() == 'x' and linea[4:5].isnumeric():
-                    peso_item = 0
-                    cantidad_item = 0
-
-                    indice_fila_de_precio = texto_final.index(linea)
-                    cant_precio_item = linea[:linea.find("(")].strip() # hasta el IVA que es (21.00%)
-
-                    if cant_precio_item.count('x') == 1:
-                        cantidad_item = cant_precio_item[:cant_precio_item.find("x")].strip()
-                        precio_item = cant_precio_item[cant_precio_item.find("x")+2:].strip()
-
-                    if cant_precio_item.count('x') > 1: # es carne o algo por peso
-                        cant_precio_item_split = cant_precio_item.split('x')[1:]  #hasta la primera X siempre es "1x", entonces tomamos desde la segunda x    
-                        peso_item = cant_precio_item_split[0].strip() 
-                        precio_item = cant_precio_item_split[1].strip()
-
-                    monto_total = linea[linea.find("(")+8:].strip()
-                    monto_total = monto_total[monto_total.find(']')+1:].strip()
-
-                    item_compra = [categoria, nombre_item, cantidad_item, peso_item, precio_item, monto_total]
-                    lista_items.append(item_compra)
-
-                else: # el segundo elemento es el producto generalmente, el primero la categoria, el tercero el precio y el cuarto el descuento si hay
-                    nombre_item = linea
-
-            # Definimos dataframe de producto, peso, cantidad, precio_unit y monto total item
-            data = []
-            for item in lista_items:
-                fila = {
-                    "nro_ticket" : nro_ticket,
-                    "fecha" : fecha_compra,
-                    "categ" : item[0],
-                    "prod": item[1],
-                    "cant": item[2],
-                    "peso": float(item[3]),  # Convertir el precio a float
-                    "p_unit": float(item[4].replace(',', '.')),   # Convertir la cantidad a entero
-                    "p_total" : float(item[5])
-                }   
-                data.append(fila)
-
-            # Crear el DataFrame a partir de la lista de diccionarios
-            df = pd.DataFrame(data)
-
-            df['total_ticket_bruto'] = round(df['p_total'].sum() - suma_total_descuentos, 0)
-            df['total_ticket_meli'] = round((df['p_total'].sum() - suma_total_descuentos)*0.3, 0)
-            
-            # Nombre y ruta del archivo Excel
-            monto_total_ticket = str(df['total_ticket_meli'].iloc[0])
-            
-            if '.' in monto_total_ticket:
-                monto_total_ticket = monto_total_ticket[:monto_total_ticket.find('.')]
-
-        try:
-            print('Se convierte el pdf a df y se carga como csv a S3 en la carpeta de processed')
-            csv_buffer = io.StringIO()
-            df.to_csv(csv_buffer, index=False)
-            s3 = boto3.client("s3")
-            destination_folder = 'processed/' 
-            filename = pdf_key.split('/')[-1]
-            new_key = destination_folder + filename
-
-            s3.put_object(
-                Bucket=bucket,
-                Key=new_key,
-                Body=csv_buffer.getvalue(),
-                ContentType='text/csv'
-            )
-
-            # Eliminamos el archivo SOLO si ya se subio a la otra carpeta como csv
-            s3.delete_object(Bucket=bucket, Key=pdf_key)
-            
-            print(f"PDF movido con exito: {pdf_key} -> {new_key}")
-        except Exception as e:
-                print(f"Error al mover {pdf_key}: {str(e)}")
-
-    return new_key
-    
-def transform_pdfs_data():
-    # Conexion a  S3 y PostgreSQL config
-    bucket = 'market-tickets'
-    prefix = 'raw/'
+def transform_mp_report_data():    
     s3 = boto3.client('s3')
-    response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    pdfs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
-
-    # Conexion a Redshift
-    redshift_data = boto3.client('redshift-data')
-
-    sql = f"""
-        CREATE TABLE IF NOT EXISTS archivos_ingestados (
-        hash_archivo TEXT PRIMARY KEY,
-        fecha_ingesta TIMESTAMP DEFAULT GETDATE()
-        );
-    """
-
-    redshift_data.execute_statement(
-        Database='dev',
-        WorkgroupName='pdf-etl-workgroup',
-        Sql=sql
+    bucket = 'market-tickets'
+    
+    # Listar solo archivos PDF (excluyendo directorios)
+    response = s3.list_objects_v2(
+        Bucket=bucket,
+        Prefix='raw/',
+        Delimiter='/'
     )
+    
+    pdfs = [obj['Key'] for obj in response.get('Contents', []) 
+            if obj['Key'].lower().endswith('.pdf') and obj['Size'] > 0]
+    
+    for pdf_key in pdfs:
+        process_pdf_file(s3, bucket, pdf_key)
 
-    new_key = parsear_pdf_a_rows(pdfs, s3, bucket, redshift_data)
-
-    return new_key
-
-def lambda_handler(event,context):
+def lambda_handler(event, context):
     try:
-        key = transform_pdfs_data()
+        transform_mp_report_data()
         return {
             "statusCode": 200,
-            "body": {
-                "etl_flow": 'TICKET',
-                "bucket": 'market-tickets',
-                "key": key
-            }
+            "body": json.dumps({
+                "message": "Proceso completado",
+                "success": True
+            })
         }
     except Exception as e:
         print("⚠️ Error:", str(e))
         return {
             "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
+            "body": json.dumps({
+                "error": str(e),
+                "success": False
+            })
         }

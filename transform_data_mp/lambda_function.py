@@ -28,7 +28,8 @@ def move_to_processed(s3_client, file_key, bucket_name):
             CopySource={'Bucket': bucket_name, 'Key': file_key},
             Key=new_key
         )
-        s3_client.delete_object(Bucket=bucket_name, Key=file_key)
+        
+        # s3_client.delete_object(Bucket=bucket_name, Key=file_key)
         
         print(f"PDF movido: {file_key} -> {new_key}")
     except Exception as e:
