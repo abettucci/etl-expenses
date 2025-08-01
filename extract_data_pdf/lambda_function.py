@@ -26,7 +26,7 @@ def update_secret(updated_token_json, SECRET_NAME, REGION_NAME):
     )
 
 def auth_google(SECRET_NAME):
-    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly','https://www.googleapis.com/auth/bigquery']
     REGION_NAME = 'us-east-2'    
     token_info = get_secret(SECRET_NAME, REGION_NAME)
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
@@ -42,8 +42,7 @@ def auth_google(SECRET_NAME):
 
 # Funcion para extraer los PDFs especificos de Gmail
 def extract_gmail_pdfs(redshift_data):
-    creds = auth_google('gcp_credentials')
-    creds_b = auth_google('gcp_api_credentials_2')
+    creds = auth_google('gcp_api_credentials')
 
     gmail_service = build('gmail', 'v1', credentials=creds)
     s3_client = boto3.client('s3')
