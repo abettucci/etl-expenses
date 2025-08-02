@@ -173,7 +173,7 @@ resource "aws_lambda_function" "pdf_extractor" {
   function_name = "pdf_extractor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:pdf_extractor-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:pdf_extractor"
   
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -191,7 +191,7 @@ resource "aws_lambda_function" "pdf_processor" {
   function_name = "pdf_processor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:pdf_processor-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:pdf_processor"
 
   memory_size = 2048  # Más memoria para procesar PDFs
   timeout     = 900
@@ -208,7 +208,7 @@ resource "aws_lambda_function" "mp_report_extractor" {
   function_name = "mp_report_extractor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:mp_report_extractor-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:mp_report_extractor"
 
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -226,7 +226,7 @@ resource "aws_lambda_function" "mp_report_processor" {
   function_name = "mp_report_processor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:mp_report_processor-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:mp_report_processor"
 
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -244,7 +244,7 @@ resource "aws_lambda_function" "bank_payments_extractor" {
   function_name = "bank_payments_extractor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:bank_payments_extractor-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:bank_payments_extractor"
 
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -262,7 +262,7 @@ resource "aws_lambda_function" "bank_payments_processor" {
   function_name = "bank_payments_processor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:bank_payments_processor-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:bank_payments_processor"
 
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -280,7 +280,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
   function_name = "load_report_and_pdf"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:load_report_and_pdf-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:load_report_and_pdf"
 
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -298,7 +298,7 @@ resource "aws_lambda_function" "webhook_mp_report" {
   function_name = "webhook_mp_report"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:webhook_mp_report-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:webhook_mp_report"
 
   memory_size = 512
   timeout     = 30
@@ -315,7 +315,7 @@ resource "aws_lambda_function" "compensation_flow" {
   function_name = "compensation_flow"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:compensation_flow-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:compensation_flow"
   
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -326,7 +326,7 @@ resource "aws_lambda_function" "redshift_to_bq" {
   function_name = "redshift_to_bq"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:redshift_to_bq-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:redshift_to_bq"
   
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -337,7 +337,7 @@ resource "aws_lambda_function" "ai_agent" {
   function_name = "ai_agent"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:ai_agent-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:ai_agent"
   
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
