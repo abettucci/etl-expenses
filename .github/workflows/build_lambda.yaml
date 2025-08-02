@@ -55,38 +55,39 @@ jobs:
               fi
 
               echo "🔍 Procesando $dir..."
-              HASH=$(cat "$dir/lambda_function.py" "$dir/requirements.txt" "$DOCKERFILE" | sha256sum | awk '{print $1}')
-              IMAGE_TAG=$HASH
-              IMAGE_URI="${{ env.ECR_REPO }}:${IMAGE_TAG}"
+              HASH=$(find "$dir" \( -name "lambda_function.py" -o -name "requirements.txt" -o -iname "*dockerfile*" \) \
+              -exec cat {} + | sha256sum | awk '{print $1}')
 
+              # Nombrar tags
+              LAMBDA_NAME="${dir%/}"
+              HASH_TAG="$HASH"
+              LOGICAL_TAG="$LAMBDA_NAME"
+              REPO="${{ env.ECR_REPO }}"
+              IMAGE_HASH_URI="$REPO:$HASH_TAG"
+              IMAGE_LOGICAL_URI="$REPO:$LOGICAL_TAG"
 
-              echo "🔍 Verificando si la imagen $IMAGE_TAG ya existe en ECR..."
-              if aws ecr describe-images --repository-name "${{ env.ECR_REPO }}" --image-ids imageTag=$IMAGE_TAG >/dev/null 2>&1; then
-                echo "✅ Imagen ya existe en ECR, se omite build: $IMAGE_TAG"
+              # Verificar si ya existe la imagen con hash
+              if aws ecr describe-images --repository-name "$(basename $REPO)" --image-ids imageTag=$HASH_TAG >/dev/null 2>&1; then
+                echo "✅ Imagen ya existe en ECR: $HASH_TAG"
               else
-                echo "🚀 Build y push de nueva imagen para $dir con tag $IMAGE_TAG..."
-                docker build -t "$IMAGE_URI" -f "$DOCKERFILE" "$dir"
-                docker push "$IMAGE_URI"
+                echo "🚀 Build y push de nueva imagen: $HASH_TAG"
+                docker build -t "$IMAGE_HASH_URI" -f "$DOCKERFILE" "$dir"
+                docker push "$IMAGE_HASH_URI"
+
+                # Crear también el tag lógico (usado por Terraform)
+                docker tag "$IMAGE_HASH_URI" "$IMAGE_LOGICAL_URI"
+                docker push "$IMAGE_LOGICAL_URI"
+
+                # (Opcional) Actualizar Lambda directamente
+                if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
+                  echo "🔄 Actualizando Lambda: $LAMBDA_NAME"
+                  aws lambda update-function-code \
+                    --function-name "$LAMBDA_NAME" \
+                    --image-uri "$IMAGE_LOGICAL_URI"
+                else
+                  echo "⚠️  Lambda $LAMBDA_NAME no existe, se omite update."
+                fi
               fi
-
-              # (Opcional) Actualizar el tag "latest"
-              LATEST_TAG="${{ env.ECR_REPO }}:${dir%/}"
-              docker tag "$IMAGE_URI" "$LATEST_TAG"
-              docker push "$LATEST_TAG"
-
-              # Actualizar función Lambda para usar la nueva imagen
-              LAMBDA_NAME="${dir%/}"  # Asumiendo que el nombre de la función es igual al nombre del folder
-
-              echo "🔍 Verificando si existe la función Lambda: $LAMBDA_NAME"
-              if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
-                echo "🔄 Actualizando función Lambda: $LAMBDA_NAME"
-                aws lambda update-function-code \
-                  --function-name "$LAMBDA_NAME" \
-                  --image-uri "$LATEST_TAG"
-              else
-                echo "⚠️  Función Lambda $LAMBDA_NAME no existe, se omite update."
-              fi
-
             fi
           done
                 
