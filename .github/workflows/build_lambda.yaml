@@ -41,6 +41,9 @@ jobs:
         run: |
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             docker login --username AWS --password-stdin ${ECR_REPO}
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and Push Changed Lambda Images
         run: |
@@ -71,7 +74,16 @@ jobs:
                 echo "✅ Imagen ya existe en ECR: $HASH_TAG"
               else
                 echo "🚀 Build y push de nueva imagen: $HASH_TAG"
-                docker build -t "$IMAGE_HASH_URI" -f "$DOCKERFILE" "$dir"
+
+                docker buildx build \
+                --platform linux/amd64 \
+                --builder default \
+                --cache-from=type=registry,ref=$ECR_REPO:buildcache \
+                --cache-to=type=registry,ref=$ECR_REPO:buildcache,mode=max \
+                --push \
+                -t "$IMAGE_URI" \
+                -f "$DOCKERFILE" "$dir"
+                
                 docker push "$IMAGE_HASH_URI"
 
                 # Crear también el tag lógico (usado por Terraform)
