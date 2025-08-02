@@ -80,16 +80,9 @@ resource "aws_s3_bucket" "bank_payments" {
 ########### 2. Redshift Serverless ###########
 # Creamos el namespace
 resource "aws_redshiftserverless_namespace" "etl_namespace" {
-  namespace_name      = "pdf-etl-namespace"
-  db_name             = "dev"
-  iam_roles           = [aws_iam_role.lambda_exec.arn]
-}
-
-resource "aws_redshiftserverless_namespace" "etl_namespace" {
-  namespace_name      = "pdf-etl-namespace"
-  db_name             = "dev"
-  admin_username      = var.redshift_user
-  admin_user_password = var.redshift_password
+  namespace_name = "pdf-etl-namespace"
+  db_name        = "dev"
+  iam_roles = [aws_iam_role.lambda_exec.arn]
 }
 
 # Creamos el workgroup

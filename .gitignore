@@ -1,7 +1,9 @@
 /ai_agent/test.py
 /ai_agent/test2.py
+/ai_agent/fix_redshift.py
 /extract_data_pdf/upd_gcp_token.py
 /extract_data_pdf/token.json
 /extract_data_pdf/credentials.json
+/redshift_to_bq/test.py
 /transform_data_pdf/fix.py
 /pdfs_carrefour/
