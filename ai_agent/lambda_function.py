@@ -102,6 +102,14 @@ def generate_sql_with_openai(question: str) -> str:
 def query_redshift(sql: str) -> str:
     try:
         print(f"🔍 Ejecutando SQL en Redshift:\n{sql}")  # Debug
+
+        response = redshift_data.execute_statement(
+            Database='dev',
+            WorkgroupName='pdf-etl-workgroup',
+            Sql="SELECT CURRENT_USER;",  # <-- Consulta para debug
+        )
+        print(f"Usuario actual: {response}")
+
         response = redshift_data.execute_statement(
             Database='dev',
             WorkgroupName='pdf-etl-workgroup',

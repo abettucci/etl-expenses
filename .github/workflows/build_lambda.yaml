@@ -11,6 +11,8 @@ env:
   ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
   TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TF_VAR_redshift_user : ${{ secrets.redshift_user }}
+  TF_VAR_redshift_password: ${{ secrets.redshift_password }}
 
 jobs:
   build-lambda-images:
@@ -199,6 +201,8 @@ jobs:
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_redshift_user : ${{ secrets.redshift_user }}
+          TF_VAR_redshift_password: ${{ secrets.redshift_password }}
 
       - name: Terraform Apply
         run: |
@@ -210,6 +214,8 @@ jobs:
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_redshift_user : ${{ secrets.redshift_user }}
+          TF_VAR_redshift_password: ${{ secrets.redshift_password }}
 
       - name: Get Webhook URL (Robust)
         id: webhook

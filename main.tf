@@ -34,6 +34,18 @@ variable "email" {
   sensitive   = true
 }
 
+variable "redshift_user" {
+  description = "username redshift database"
+  type        = string
+  sensitive   = true
+}
+
+variable "redshift_password" {
+  description = "redshift database password"
+  type        = string
+  sensitive   = true
+}
+
 variable "TELEGRAM_BOT_TOKEN" {
   description = "TELEGRAM_BOT_TOKEN"
   type        = string
@@ -68,11 +80,16 @@ resource "aws_s3_bucket" "bank_payments" {
 ########### 2. Redshift Serverless ###########
 # Creamos el namespace
 resource "aws_redshiftserverless_namespace" "etl_namespace" {
-  namespace_name = "pdf-etl-namespace"
-  db_name        = "dev"
-  admin_username = "admin"
-  admin_user_password = "aQM82%tWS$bK"
-  iam_roles = [aws_iam_role.lambda_exec.arn]
+  namespace_name      = "pdf-etl-namespace"
+  db_name             = "dev"
+  iam_roles           = [aws_iam_role.lambda_exec.arn]
+}
+
+resource "aws_redshiftserverless_namespace" "etl_namespace" {
+  namespace_name      = "pdf-etl-namespace"
+  db_name             = "dev"
+  admin_username      = var.redshift_user
+  admin_user_password = var.redshift_password
 }
 
 # Creamos el workgroup
