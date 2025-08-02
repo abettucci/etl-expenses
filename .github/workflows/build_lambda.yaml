@@ -57,7 +57,8 @@ jobs:
               echo "🔍 Procesando $dir..."
               HASH=$(cat "$dir/lambda_function.py" "$dir/requirements.txt" "$DOCKERFILE" | sha256sum | awk '{print $1}')
               IMAGE_TAG=$HASH
-              IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${IMAGE_TAG}"
+              IMAGE_URI="${{ env.ECR_REPO }}:${IMAGE_TAG}"
+
 
               echo "🔍 Verificando si la imagen $IMAGE_TAG ya existe en ECR..."
               if aws ecr describe-images --repository-name "${{ env.ECR_REPO }}" --image-ids imageTag=$IMAGE_TAG >/dev/null 2>&1; then
@@ -69,7 +70,7 @@ jobs:
               fi
 
               # (Opcional) Actualizar el tag "latest"
-              LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${dir%/}"
+              LATEST_TAG="${{ env.ECR_REPO }}:${dir%/}"
               docker tag "$IMAGE_URI" "$LATEST_TAG"
               docker push "$LATEST_TAG"
 
