@@ -294,8 +294,8 @@ resource "aws_lambda_function" "load_report_and_pdf" {
 }
 
 # 4.8 Lambda Dispatcher que extrae los datos del body del POST request del webhook de reportes de MP y dispara el step function de MP
-resource "aws_lambda_function" "dispatcher" {
-  function_name = "dispatcher"
+resource "aws_lambda_function" "webhook_mp_report" {
+  function_name = "webhook_mp_report"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:webhook_mp_report-latest"
@@ -312,7 +312,7 @@ resource "aws_lambda_function" "dispatcher" {
 
 # 4.9 Lambda Compensation flow que limpia archivos temporales y el envia marca de que el proceso fallo por mail
 resource "aws_lambda_function" "compensation_flow" {
-  function_name = "compensation-flow"
+  function_name = "compensation_flow"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:compensation_flow-latest"
@@ -322,8 +322,8 @@ resource "aws_lambda_function" "compensation_flow" {
 }
 
 # 4.10 Lambda data load de redshift a big query para visualizar los datos
-resource "aws_lambda_function" "redshift-to-bq" {
-  function_name = "redshift-to-bq"
+resource "aws_lambda_function" "redshift_to_bq" {
+  function_name = "redshift_to_bq"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:redshift_to_bq-latest"
@@ -334,7 +334,7 @@ resource "aws_lambda_function" "redshift-to-bq" {
 
 # 4.11 Lambda para procesar el agente de IA y resolver las consultas sobre los datos en Redshift
 resource "aws_lambda_function" "ai_agent" {
-  function_name = "ai-agent"
+  function_name = "ai_agent"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:ai_agent-latest"
@@ -696,12 +696,17 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
         Resource = [
           aws_lambda_function.pdf_extractor.arn,
           aws_lambda_function.pdf_processor.arn,
+
           aws_lambda_function.mp_report_extractor.arn,
           aws_lambda_function.mp_report_processor.arn,
+
           aws_lambda_function.bank_payments_extractor.arn,
           aws_lambda_function.bank_payments_processor.arn,
+
           aws_lambda_function.load_report_and_pdf.arn,
-          aws_lambda_function.redshift-to-bq.arn
+          aws_lambda_function.redshift_to_bq.arn,
+
+          aws_lambda_function.ai_agent.arn
         ]
       }
     ]
@@ -908,7 +913,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation-flow",
+        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
         "End": true
       }
     }
@@ -986,7 +991,7 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation-flow",
+        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
         "End": true
       }
     }
@@ -1059,7 +1064,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation-flow",
+        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
         "End": true
       }
     }
