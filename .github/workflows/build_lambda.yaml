@@ -3,11 +3,6 @@ name: Build and Push Lambda Docker Images Optimized
 on:
   push:
     branches: [main]
-    paths:
-      - '**.py'
-      - '**/Dockerfile'
-      - '**/requirements.txt'
-      - '.github/workflows/build_lambda.yaml'
   workflow_dispatch:
 
 env:
@@ -18,99 +13,84 @@ env:
   TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
 jobs:
-  build-and-push:
+  build-lambda-images:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
-
+    strategy:
+      matrix:
+        image: ["pdf_extractor-latest|extract_data_pdf/extract_data_pdf.dockerfile", "pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "bank_payments_extractor-latest|extract_data_bank_pay/extract_data_bank_pay.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile", "ai_agent-latest|ai_agent/ai_agent.dockerfile", "redshift_to_bq-latest|redshift_to_bq/redshift_to_bq.dockerfile"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v2
+        
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+          aws-region: ${{secrets.AWS_REGION}} 
+          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
+          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
 
-      - name: Create new buildx builder
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v1
+        
+      - name: Extract tag and dockerfile
+        id: extract
         run: |
-          if ! docker buildx inspect lambda-builder >/dev/null 2>&1; then
-            docker buildx create --use --name lambda-builder --driver docker-container
+          IFS='|' read -r IMAGE_TAG DOCKERFILE <<< "${{ matrix.image }}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "DOCKERFILE=$DOCKERFILE" >> $GITHUB_ENV
+
+      - name: Pull remote image
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          docker pull $ECR_REPO:$IMAGE_TAG || echo "No previous image"
+
+      - name: Build Docker image
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          docker build \
+            --build-arg aws_account_id=${{ secrets.AWS_ACCOUNT_ID }} \
+            --build-arg github_secret=${{ secrets.GITHUB_API_SECRET }} \
+            -t local-build:$IMAGE_TAG \
+            -f $DOCKERFILE .
+        
+      - name: Get local image ID
+        id: local_image
+        run: |
+          IMAGE_ID=$(docker images --no-trunc --quiet local-build:$IMAGE_TAG)
+          echo "LOCAL_IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
+
+      - name: Check remote image
+        run: |
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          REMOTE_ID=$(docker inspect --format='{{.Id}}' $ECR_REPO:$IMAGE_TAG 2>/dev/null || true)
+      
+          if [ -z "$REMOTE_ID" ]; then
+            echo "No remote image found for $IMAGE_TAG"
           else
-            docker buildx use lambda-builder
+            echo "REMOTE_IMAGE_ID=$REMOTE_ID" >> $GITHUB_ENV
           fi
 
-      - name: Login to ECR
+      - name: Compare and push if different
+        if: env.LOCAL_IMAGE_ID != env.REMOTE_IMAGE_ID
         run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-            docker login --username AWS --password-stdin ${ECR_REPO}
-
-      - name: Build and Push Changed Lambda Images
+          ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
+          docker tag local-build:$IMAGE_TAG $ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REPO:$IMAGE_TAG
+      
+      - name: Update de imagen de funcion lambda
         run: |
-          set -e
-
-          for dir in */ ; do
-            if [ -f "$dir/lambda_function.py" ] && [ -f "$dir/requirements.txt" ]; then
-              DOCKERFILE=$(find "$dir" -iname "*.dockerfile" -o -iname "Dockerfile" | head -n1)
-              if [ ! -f "$DOCKERFILE" ]; then
-                echo "Skipping $dir (no Dockerfile found)"
-                continue
-              fi
-
-              echo "🔍 Procesando $dir..."
-              HASH=$(find "$dir" \( -name "lambda_function.py" -o -name "requirements.txt" -o -iname "*dockerfile*" \) \
-              -exec cat {} + | sha256sum | awk '{print $1}')
-
-              # Nombrar tags
-              LAMBDA_NAME="${dir%/}"
-              HASH_TAG="$HASH"
-              LOGICAL_TAG="$LAMBDA_NAME"
-              REPO="${{ env.ECR_REPO }}"
-              IMAGE_HASH_URI="$REPO:$HASH_TAG"
-              IMAGE_LOGICAL_URI="$REPO:$LOGICAL_TAG"
-
-              # Verificar si ya existe la imagen con hash
-              if aws ecr describe-images --repository-name "$(basename $REPO)" --image-ids imageTag=$HASH_TAG >/dev/null 2>&1; then
-                echo "✅ Imagen ya existe en ECR: $HASH_TAG"
-              else
-                echo "🚀 Build y push de nueva imagen: $HASH_TAG"
-
-                docker buildx build \
-                --platform linux/amd64 \
-                --cache-from=type=registry,ref=$ECR_REPO:buildcache \
-                --cache-to=type=registry,ref=$ECR_REPO:buildcache,mode=max \
-                --push \
-                -t "$IMAGE_HASH_URI" \
-                -f "$DOCKERFILE" "$dir"
-
-                docker push "$IMAGE_HASH_URI"
-
-                # Crear también el tag lógico (usado por Terraform)
-                docker tag "$IMAGE_HASH_URI" "$IMAGE_LOGICAL_URI"
-                docker push "$IMAGE_LOGICAL_URI"
-
-                # (Opcional) Actualizar Lambda directamente
-                if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
-                  echo "🔄 Actualizando Lambda: $LAMBDA_NAME"
-                  aws lambda update-function-code \
-                    --function-name "$LAMBDA_NAME" \
-                    --image-uri "$IMAGE_LOGICAL_URI"
-                else
-                  echo "⚠️  Lambda $LAMBDA_NAME no existe, se omite update."
-                fi
-              fi
-            fi
-          done
-                
+          # (Opcional) Actualizar Lambda directamente
+          if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
+            echo "🔄 Actualizando Lambda: $LAMBDA_NAME"
+            aws lambda update-function-code \
+              --function-name "$LAMBDA_NAME" \
+              --image-uri "$IMAGE_LOGICAL_URI"
+          else
+            echo "⚠️  Lambda $LAMBDA_NAME no existe, se omite update."
+          fi
+                  
   terraform-deploy:
-    needs: [build-and-push]
+    needs: [build-lambda-images]
     runs-on: ubuntu-latest
     
     steps:
