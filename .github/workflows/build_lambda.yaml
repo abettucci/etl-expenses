@@ -87,7 +87,7 @@ jobs:
                 --cache-from=type=registry,ref=$ECR_REPO:buildcache \
                 --cache-to=type=registry,ref=$ECR_REPO:buildcache,mode=max \
                 --push \
-                -t "$IMAGE_URI" \
+                -t "$IMAGE_HASH_URI" \
                 -f "$DOCKERFILE" "$dir"
 
                 docker push "$IMAGE_HASH_URI"
