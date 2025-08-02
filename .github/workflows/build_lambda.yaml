@@ -77,10 +77,15 @@ jobs:
               # Actualizar función Lambda para usar la nueva imagen
               LAMBDA_NAME="${dir%/}"  # Asumiendo que el nombre de la función es igual al nombre del folder
 
-              echo "🔄 Actualizando función Lambda: $LAMBDA_NAME"
-              aws lambda update-function-code \
-                --function-name "$LAMBDA_NAME" \
-                --image-uri "$IMAGE_URI"
+              echo "🔍 Verificando si existe la función Lambda: $LAMBDA_NAME"
+              if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
+                echo "🔄 Actualizando función Lambda: $LAMBDA_NAME"
+                aws lambda update-function-code \
+                  --function-name "$LAMBDA_NAME" \
+                  --image-uri "$LATEST_TAG"
+              else
+                echo "⚠️  Función Lambda $LAMBDA_NAME no existe, se omite update."
+              fi
 
             fi
           done
