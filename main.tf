@@ -70,6 +70,9 @@ resource "aws_s3_bucket" "bank_payments" {
 resource "aws_redshiftserverless_namespace" "etl_namespace" {
   namespace_name = "pdf-etl-namespace"
   db_name        = "dev"
+  admin_username = "admin"
+  admin_user_password = "aQM82%tWS$bK"
+  iam_roles = [aws_iam_role.lambda_exec.arn]
 }
 
 # Creamos el workgroup

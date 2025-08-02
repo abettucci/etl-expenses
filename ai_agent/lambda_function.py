@@ -44,8 +44,9 @@ def generate_sql_with_openai(question: str) -> str:
         mp_columns = get_table_columns_by_prefix('etl_database', 'mp_reports_')
         market_tickets_columns = get_table_columns_by_prefix('etl_database', 'market_tickets_')
 
-        print(f"bank_columns: {bank_columns}")
-        print(f"mp_columns: {mp_columns}")
+        # print(f"bank_columns: {bank_columns}")
+        # print(f"mp_columns: {mp_columns}")
+        # print(f"market_tickets_columns: {market_tickets_columns}")
 
         # Prompt para generar SQL
         prompt = f"""
@@ -189,15 +190,12 @@ def send_telegram_message(chat_id, text, token):
 
 def lambda_handler(event, context):
     try:
-        print("== Evento recibido por Lambda ==")
-        print(json.dumps(event))
-
+        print("Evento recibido por Lambda")
         data = json.loads(event["body"])
         text = data["message"]["text"]
-        chat_id = data["message"]["chat"]["id"]
 
-        print('text: ', text)
-        print('chat_id: ', chat_id)
+        print('Mensaje input: ', text)
+        print('Chat_id: ', data["message"]["chat"]["id"])
 
         # Manejar comando /start
         if text == "/start":
