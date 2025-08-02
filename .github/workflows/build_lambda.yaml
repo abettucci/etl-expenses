@@ -164,16 +164,16 @@ jobs:
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace || true
           terraform import aws_lambda_permission.allow_api_gateway ai-agent/AllowAPIGatewayInvoke || true
 
-          terraform import aws_lambda_function.dispatcher dispatcher || true
-          terraform import aws_lambda_function.compensation_flow compensation-flow || true
+          terraform import aws_lambda_function.webhook_mp_report webhook_mp_report || true
+          terraform import aws_lambda_function.compensation_flow compensation_flow || true
           terraform import aws_lambda_function.pdf_extractor pdf_extractor || true
           terraform import aws_lambda_function.pdf_processor pdf_processor || true
           terraform import aws_lambda_function.mp_report_extractor mp_report_extractor || true
           terraform import aws_lambda_function.mp_report_processor mp_report_processor || true
           terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor || true
           terraform import aws_lambda_function.bank_payments_processor bank_payments_processor || true
-          terraform import aws_lambda_function.redshift-to-bq redshift-to-bq || true
-          terraform import aws_lambda_function.ai_agent ai-agent || true
+          terraform import aws_lambda_function.redshift_to_bq redshift_to_bq || true
+          terraform import aws_lambda_function.ai_agent ai_agent || true
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf || true
           
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
