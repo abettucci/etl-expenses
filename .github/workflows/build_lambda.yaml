@@ -41,7 +41,7 @@ jobs:
 
       - name: Create new buildx builder
         run: |
-          docker buildx create --use --name lambda-builder
+          docker buildx create --use --name lambda-builder --driver docker-container --use
 
       - name: Login to ECR
         run: |
