@@ -51,7 +51,8 @@ jobs:
             --build-arg aws_account_id=${{ secrets.AWS_ACCOUNT_ID }} \
             --build-arg github_secret=${{ secrets.GITHUB_API_SECRET }} \
             -t local-build:$IMAGE_TAG \
-            -f $DOCKERFILE .
+            -f $DOCKERFILE \
+            ./$(dirname $DOCKERFILE)
         
       - name: Get local image ID
         id: local_image
