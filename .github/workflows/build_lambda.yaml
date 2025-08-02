@@ -8,7 +8,6 @@ on:
       - '**/Dockerfile'
       - '**/requirements.txt'
       - '.github/workflows/build_lambda.yaml'
-
   workflow_dispatch:
 
 env:
@@ -36,14 +35,18 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create new buildx builder
+        run: |
+          docker buildx create --use --name lambda-builder
 
       - name: Login to ECR
         run: |
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             docker login --username AWS --password-stdin ${ECR_REPO}
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Build and Push Changed Lambda Images
         run: |
@@ -83,7 +86,7 @@ jobs:
                 --push \
                 -t "$IMAGE_URI" \
                 -f "$DOCKERFILE" "$dir"
-                
+
                 docker push "$IMAGE_HASH_URI"
 
                 # Crear también el tag lógico (usado por Terraform)
