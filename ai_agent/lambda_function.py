@@ -58,13 +58,14 @@ def generate_sql_with_openai(question: str) -> str:
         - carrefour_data: {', '.join(market_tickets_columns)}
 
         Reglas de oro:
+        0. Utilizar valores para filtrar en las queries solo de valores existentes en las tablas.
         1. Usa solo estas columnas y las tablas mencionadas.
         2. Genera SQL válido para Redshift.
-        3. Si la pregunta es sobre gastos del banco/santander, usa bank_payments.
-        4. Si la pregunta es sobre transacciones/pagos a traves de mercado pago, usa mp_data.
-        5. Si la pregunta es sobre gastos del supermercado/carrefour, usa carrefour_data.
+        3. Si la pregunta es sobre gastos del banco/santander, usa la tabla bank_payments y NO tenes que filtrar nada como comercio = 'banco santander' ni nada por el estilo.
+        4. Si la pregunta es sobre transacciones/pagos a traves de mercado pago, usa la tabla mp_data y NO tenes que filtrar nada como comercio = 'mercado pago' ni nada por el estilo.
+        5. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data y NO tenes que filtrar nada como comercio = 'carrefour' ni nada por el estilo.
         5. Limita los resultados a máximo 20 filas.
-        6. Incluye fechas relevantes cuando sea apropiado.
+        6. Si la consulta pide filtrar por fecha algun resultado, utiliza la columna que tenga tipo de dato fecha considerando la fecha pedida. Por ejemplo si se piden datos del ultimo mes, hacer el calculo del filtro de ultimo mes utilizando la columna de fecha que haya en la tabla correspondiente. No utilizar filtros de fechas en caso de no pedirse ningun filtro de fechas, tampoco utilizar fechas que no existen en los datos. 
 
         Genera solo el SQL, sin explicaciones adicionales:
         """
@@ -106,8 +107,9 @@ def query_redshift(sql: str) -> str:
         response = redshift_data.execute_statement(
             Database='dev',
             WorkgroupName='pdf-etl-workgroup',
-            Sql="SELECT CURRENT_USER;",  # <-- Consulta para debug
+            Sql="SELECT CURRENT_USER;",  
         )
+
         print(f"Usuario actual: {response}")
 
         response = redshift_data.execute_statement(
@@ -115,6 +117,14 @@ def query_redshift(sql: str) -> str:
             WorkgroupName='pdf-etl-workgroup',
             Sql=sql
         )
+
+        # response = redshift_data.execute_statement(
+        #     Database='dev',
+        #     WorkgroupName='pdf-etl-workgroup',
+        #     SecretArn='arn:aws:secretsmanager:...:secret:lambda_user_secret',
+        #     Sql=sql
+        # )
+
         query_id = response['Id']
         
         while True:
@@ -201,9 +211,10 @@ def lambda_handler(event, context):
         print("Evento recibido por Lambda")
         data = json.loads(event["body"])
         text = data["message"]["text"]
+        chat_id = data["message"]["chat"]["id"]
 
         print('Mensaje input: ', text)
-        print('Chat_id: ', data["message"]["chat"]["id"])
+        print('Chat_id: ', chat_id)
 
         # Manejar comando /start
         if text == "/start":
