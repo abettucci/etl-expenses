@@ -36,78 +36,76 @@ jobs:
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             docker login --username AWS --password-stdin ${ECR_REPO}
 
-      - name: Build and Push Lambda images
+      - name: Build and Push Lambda Images
+
+on:
+  push:
+    paths:
+      - '**.py'
+      - '**/Dockerfile'
+      - '**/requirements.txt'
+      - '.github/workflows/build_lambda.yaml'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+      ECR_REPO: your-ecr-repo-name
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Changed Lambda Images
         run: |
-          set -x
-          # Lista de directorios con Lambdas (ajustada a tu estructura)
-          LAMBDA_DIRS=(
-            "ai_agent"
-            "compensation_flow" 
-            "extract_data_bank_pay"
-            "extract_data_mp"
-            "extract_data_pdf"
-            "load_data"
-            "redshift_to_bq"
-            "transform_data_bank_pay"
-            "transform_data_mp"
-            "transform_data_pdf"
-            "webhook_mp_report"
-          )
-      
-          for LAMBDA_DIR in "${LAMBDA_DIRS[@]}"; do
-            echo "📁 Processing: $LAMBDA_DIR"
-            DOCKERFILE="${LAMBDA_DIR}/${LAMBDA_DIR}.dockerfile"
-            
-            if [[ ! -f "$DOCKERFILE" ]]; then
-              echo "⚠️ No Dockerfile found, skipping"
-              continue
-            fi
+          set -e
 
-            # 1. Calcular hash del contenido relevante
-            CONTENT_HASH=$(find $LAMBDA_DIR -type f \( -name '*.py' -o -name 'requirements.txt' -o -name $DOCKERFILE \) \
-                        -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
-            SHORT_HASH=${CONTENT_HASH:0:12}
+          for dir in */ ; do
+            if [ -f "$dir/lambda_function.py" ] && [ -f "$dir/requirements.txt" ]; then
+              DOCKERFILE=$(find "$dir" -iname "*.dockerfile" -o -iname "Dockerfile" | head -n1)
+              if [ ! -f "$DOCKERFILE" ]; then
+                echo "Skipping $dir (no Dockerfile found)"
+                continue
+              fi
 
-            # 2. Verificar si la imagen actual en ECR tiene el mismo hash
-            CURRENT_HASH=$(aws ecr describe-images --repository-name etl-expenses \
-                        --image-ids imageTag="${LAMBDA_DIR}-latest" \
-                        --query 'imageDetails[].imageTags[?contains(@, `hash-`)]' \
-                        --output text | cut -d'-' -f2 || true)
+              echo "🔍 Procesando $dir..."
+              HASH=$(cat "$dir/lambda_function.py" "$dir/requirements.txt" "$DOCKERFILE" | sha256sum | awk '{print $1}')
+              IMAGE_TAG=$HASH
+              IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${IMAGE_TAG}"
 
-            if [[ "$SHORT_HASH" == "$CURRENT_HASH" ]]; then
-              echo "✅ No changes detected for $LAMBDA_DIR, skipping build"
-              continue
-            fi
+              echo "🔍 Verificando si la imagen $IMAGE_TAG ya existe en ECR..."
+              if aws ecr describe-images --repository-name "${{ env.ECR_REPO }}" --image-ids imageTag=$IMAGE_TAG >/dev/null 2>&1; then
+                echo "✅ Imagen ya existe en ECR, se omite build: $IMAGE_TAG"
+              else
+                echo "🚀 Build y push de nueva imagen para $dir con tag $IMAGE_TAG..."
+                docker build -t "$IMAGE_URI" -f "$DOCKERFILE" "$dir"
+                docker push "$IMAGE_URI"
+              fi
 
-            # 3. Eliminar imagen anterior (si existe)
-            echo "🧹 Removing previous image..."
-            aws ecr batch-delete-image \
-              --repository-name etl-expenses \
-              --image-ids imageTag="${LAMBDA_DIR}-latest" 2>/dev/null || true
+              # (Opcional) Actualizar el tag "latest"
+              LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${dir%/}"
+              docker tag "$IMAGE_URI" "$LATEST_TAG"
+              docker push "$LATEST_TAG"
 
-            # 4. Construir nueva imagen con metadata de hash
-            echo "🏗️ Building new image (hash: $SHORT_HASH)..."
-            docker build -t "${ECR_REPO}:${LAMBDA_DIR}-latest" \
-                        --label "build-hash=$SHORT_HASH" \
-                        -f "$DOCKERFILE" "$LAMBDA_DIR"
+              # Actualizar función Lambda para usar la nueva imagen
+              LAMBDA_NAME="${dir%/}"  # Asumiendo que el nombre de la función es igual al nombre del folder
 
-            # 5. Tag adicional con hash (solo para referencia)
-            docker tag "${ECR_REPO}:${LAMBDA_DIR}-latest" "${ECR_REPO}:${LAMBDA_DIR}-hash-$SHORT_HASH"
-
-            # 6. Push de la imagen
-            echo "🚀 Pushing image..."
-            docker push "${ECR_REPO}:${LAMBDA_DIR}-latest"
-            
-            # 7. Opcional: Push del tag con hash (puedes omitir esto si no lo necesitas)
-            docker push "${ECR_REPO}:${LAMBDA_DIR}-hash-$SHORT_HASH" || true
-
-            # 8. Actualizar Lambda
-            if aws lambda get-function --function-name ${LAMBDA_DIR//_/-} &>/dev/null; then
-              echo "🔄 Updating Lambda function..."
+              echo "🔄 Actualizando función Lambda: $LAMBDA_NAME"
               aws lambda update-function-code \
-                --function-name ${LAMBDA_DIR//_/-} \
-                --image-uri "${ECR_REPO}:${LAMBDA_DIR}-latest" \
-                --region ${{ env.AWS_REGION }}
+                --function-name "$LAMBDA_NAME" \
+                --image-uri "$IMAGE_URI"
+
             fi
           done
                 
