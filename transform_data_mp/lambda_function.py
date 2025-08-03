@@ -2,6 +2,32 @@ import boto3
 import io
 import json
 import pandas as pd
+import unicodedata
+import re
+
+def normalize_columns_auto(df):
+    """
+    Normaliza TODAS las columnas del DataFrame automáticamente:
+    - Elimina tildes y caracteres especiales
+    - Convierte a MAYÚSCULAS
+    - Reemplaza espacios y guiones por _
+    - Elimina símbolos problemáticos
+    """
+    normalized_columns = []
+    for col in df.columns:
+        # Paso 1: Normalizar Unicode (quitar tildes)
+        col = unicodedata.normalize('NFKD', str(col)).encode('ASCII', 'ignore').decode('ASCII')
+        # Paso 2: Reemplazar caracteres no alfanuméricos (excepto _)
+        col = re.sub(r'[^\w\s]', '', col)
+        # Paso 3: Espacios/guiones a _
+        col = re.sub(r'[\s-]+', '_', col)
+        # Paso 4: Convertir a MAYÚSCULAS y eliminar _ duplicados
+        col = col.upper().strip('_')
+        col = re.sub(r'_{2,}', '_', col)
+        normalized_columns.append(col)
+    
+    df.columns = normalized_columns
+    return df
 
 def format_report_file_name(s3_filename):
     base = s3_filename.rsplit('_', 1)[0]
@@ -50,6 +76,7 @@ def transform_mp_report_data():
         obj = s3_client.get_object(Bucket=bucket_name, Key=csv_file)
         content = obj['Body'].read()
         report_df = pd.read_csv(io.BytesIO(content), encoding='utf-8', delimiter=';')
+        report_df = normalize_columns_auto(report_df)
         s3_filename = csv_file.split('/')[-1]
         s3_report_file_name, report_id, report_date = format_report_file_name(s3_filename)
         move_to_processed(s3_client, csv_file, bucket_name)
@@ -60,6 +87,7 @@ def transform_mp_report_data():
         obj = s3_client.get_object(Bucket=bucket_name, Key=xlsx_file)
         content = obj['Body'].read()
         report_df = pd.read_excel(io.BytesIO(content))
+        report_df = normalize_columns_auto(report_df)
         s3_filename = xlsx_file.split('/')[-1]
         s3_report_file_name, report_id, report_date = format_report_file_name(s3_filename)
         move_to_processed(s3_client, xlsx_file, bucket_name)

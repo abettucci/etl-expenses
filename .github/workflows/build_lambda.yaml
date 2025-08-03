@@ -82,6 +82,10 @@ jobs:
       
       - name: Update de imagen de funcion lambda
         run: |
+          # Extraer el nombre base (ej: "pdf_extractor-latest" -> "pdf_extractor")
+          LAMBDA_NAME=$(echo "$IMAGE_TAG" | cut -d'-' -f1)
+          IMAGE_LOGICAL_URI="$ECR_REPO:$IMAGE_TAG"
+
           # (Opcional) Actualizar Lambda directamente
           if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
             echo "🔄 Actualizando Lambda: $LAMBDA_NAME"
