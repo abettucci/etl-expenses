@@ -3,6 +3,8 @@ import boto3
 import io
 import json
 
+from ai_agent import lambda_function
+
 def format_value(val):
     if val is None or pd.isna(val):
         return 'NULL'

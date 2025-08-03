@@ -1114,8 +1114,25 @@ resource "aws_glue_crawler" "mp_reports_crawler" {
   table_prefix  = "mp_reports_"
 
   s3_target {
-    path = "s3://${aws_s3_bucket.mp_reports.bucket}/raw/"
+    path = "s3://${aws_s3_bucket.mp_reports.bucket}/processed/"
   }
+
+  configuration = jsonencode({
+    Version = 1.0,
+    CrawlerOutput = {
+      Partitions = { AddOrUpdateBehavior = "InheritFromTable" }
+    },
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    },
+    OutputSchema = {
+      CsvClassifier = {
+        Delimiter        = ",",
+        QuoteSymbol      = "\"",
+        ContainsHeader   = "PRESENT"
+      }
+    }
+  })
 
   schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
 }

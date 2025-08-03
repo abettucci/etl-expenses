@@ -1,33 +1,16 @@
 import boto3
 import io
 import json
+from openai.types.chat.parsed_chat_completion import ContentType
 import pandas as pd
 import unicodedata
-import re
 
-def normalize_columns_auto(df):
-    """
-    Normaliza TODAS las columnas del DataFrame automáticamente:
-    - Elimina tildes y caracteres especiales
-    - Convierte a MAYÚSCULAS
-    - Reemplaza espacios y guiones por _
-    - Elimina símbolos problemáticos
-    """
-    normalized_columns = []
-    for col in df.columns:
-        # Paso 1: Normalizar Unicode (quitar tildes)
-        col = unicodedata.normalize('NFKD', str(col)).encode('ASCII', 'ignore').decode('ASCII')
-        # Paso 2: Reemplazar caracteres no alfanuméricos (excepto _)
-        col = re.sub(r'[^\w\s]', '', col)
-        # Paso 3: Espacios/guiones a _
-        col = re.sub(r'[\s-]+', '_', col)
-        # Paso 4: Convertir a MAYÚSCULAS y eliminar _ duplicados
-        col = col.upper().strip('_')
-        col = re.sub(r'_{2,}', '_', col)
-        normalized_columns.append(col)
-    
-    df.columns = normalized_columns
-    return df
+def normalize_columns_auto(column_name):
+    # Elimina tildes y convierte a ASCII
+    column_name = unicodedata.normalize('NFKD', column_name).encode('ASCII', 'ignore').decode('utf-8')
+    # Reemplaza espacios por _
+    column_name = column_name.replace(' ', '_')
+    return column_name.upper()
 
 def format_report_file_name(s3_filename):
     base = s3_filename.rsplit('_', 1)[0]
@@ -42,21 +25,33 @@ def format_report_file_name(s3_filename):
     return report_file_name, report_id, report_date
 
 def move_to_processed(s3_client, file_key, bucket_name):
-    # Mover archivo de /Raw a /Processed
     destination_folder = 'processed/'        
+    
     try:
+        if file_key.endswith('.csv'):
+            obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
+            content = obj['Body'].read()
+            report_df = pd.read_csv(io.BytesIO(content), encoding='utf-8', delimiter=';')
+
+        elif file_key.endswith('.xlsx'):
+            obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
+            content = obj['Body'].read()
+            report_df = pd.read_excel(io.BytesIO(content))
+
+        report_df.columns = [normalize_columns_auto(col) for col in report_df.columns]
+        csv_buffer = io.BytesIO()
+        report_df.to_csv(csv_buffer, sep=',', index=False, encoding='utf-8-sig')
+
         filename = file_key.split('/')[-1]
         new_key = destination_folder + filename
         
-        # Copiar y eliminar en una sola operación (más eficiente)
-        s3_client.copy_object(
-            Bucket=bucket_name,
-            CopySource={'Bucket': bucket_name, 'Key': file_key},
-            Key=new_key
+        s3_client.put_object(
+            Body=csv_buffer.getvalue(), 
+            Bucket=bucket_name, 
+            Key=new_key,
+            ContentType='text/csv'
         )
-        
-        # s3_client.delete_object(Bucket=bucket_name, Key=file_key)
-        
+                
         print(f"PDF movido: {file_key} -> {new_key}")
     except Exception as e:
             print(f"Error al mover {file_key}: {str(e)}")
@@ -73,10 +68,6 @@ def transform_mp_report_data():
     for csv_file in csvs:
         print('Nombre archivo leido: ', csv_file)
         print(f"📄 Procesando: {csv_file}")
-        obj = s3_client.get_object(Bucket=bucket_name, Key=csv_file)
-        content = obj['Body'].read()
-        report_df = pd.read_csv(io.BytesIO(content), encoding='utf-8', delimiter=';')
-        report_df = normalize_columns_auto(report_df)
         s3_filename = csv_file.split('/')[-1]
         s3_report_file_name, report_id, report_date = format_report_file_name(s3_filename)
         move_to_processed(s3_client, csv_file, bucket_name)
@@ -84,10 +75,6 @@ def transform_mp_report_data():
     for xlsx_file in xlsx:
         print('Nombre archivo leido: ', xlsx_file)
         print(f"📄 Procesando: {xlsx_file}")
-        obj = s3_client.get_object(Bucket=bucket_name, Key=xlsx_file)
-        content = obj['Body'].read()
-        report_df = pd.read_excel(io.BytesIO(content))
-        report_df = normalize_columns_auto(report_df)
         s3_filename = xlsx_file.split('/')[-1]
         s3_report_file_name, report_id, report_date = format_report_file_name(s3_filename)
         move_to_processed(s3_client, xlsx_file, bucket_name)
