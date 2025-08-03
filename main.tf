@@ -1117,24 +1117,33 @@ resource "aws_glue_crawler" "mp_reports_crawler" {
     path = "s3://${aws_s3_bucket.mp_reports.bucket}/processed/"
   }
 
+  # Opcionalmente podés agregar configuración básica de agrupamiento
   configuration = jsonencode({
     Version = 1.0,
     CrawlerOutput = {
-      Partitions = { AddOrUpdateBehavior = "InheritFromTable" }
+      Partitions = {
+        AddOrUpdateBehavior = "InheritFromTable"
+      }
     },
     Grouping = {
       TableGroupingPolicy = "CombineCompatibleSchemas"
-    },
-    OutputSchema = {
-      CsvClassifier = {
-        Delimiter        = ",",
-        QuoteSymbol      = "\"",
-        ContainsHeader   = "PRESENT"
-      }
     }
   })
 
+  classifiers = [aws_glue_classifier.csv_classifier.name]
+
   schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
+}
+
+resource "aws_glue_classifier" "csv_classifier" {
+  name = "mercadopago_csv_classifier"
+
+  csv_classifier {
+    allow_single_column = false
+    contains_header     = "PRESENT"
+    delimiter           = ","
+    quote_symbol        = "\""
+  }
 }
 
 resource "aws_glue_crawler" "bank_payments_crawler" {
