@@ -31,16 +31,16 @@ def move_to_processed(s3_client, file_key, bucket_name):
         if file_key.endswith('.csv'):
             obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
             content = obj['Body'].read()
-            report_df = pd.read_csv(io.BytesIO(content), encoding='utf-8', delimiter=';')
+            report_df = pd.read_csv(io.BytesIO(content), encoding='utf-8', delimiter=',')
 
         elif file_key.endswith('.xlsx'):
             obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
             content = obj['Body'].read()
             report_df = pd.read_excel(io.BytesIO(content))
-
+        
         report_df.columns = [normalize_columns_auto(col) for col in report_df.columns]
         csv_buffer = io.BytesIO()
-        report_df.to_csv(csv_buffer, sep=',', index=False, encoding='utf-8-sig')
+        report_df.to_csv(csv_buffer, sep=',', index=False, encoding='utf-8')
 
         filename = file_key.split('/')[-1]
         new_key = destination_folder + filename
@@ -83,7 +83,7 @@ def transform_mp_report_data():
 
 def lambda_handler(event,context):
     try:
-        key = transform_mp_report_data()
+        key = transform_mp_report_data()        
         return {
             "statusCode": 200,
             "body": {

@@ -27,7 +27,6 @@ def get_table_columns_by_prefix(database: str, table_prefix: str) -> list:
             for table in page['TableList']:
                 table_name = table['Name']
                 if table_name.startswith(table_prefix):
-                    print(f"✅ Usando tabla encontrada: {table_name}")
                     return [col['Name'] for col in table['StorageDescriptor']['Columns']]
         print(f"⚠️ No se encontró ninguna tabla con prefijo '{table_prefix}' en el catálogo.")
         return []
@@ -43,10 +42,6 @@ def generate_sql_with_openai(question: str) -> str:
         bank_columns = get_table_columns_by_prefix('etl_database', 'bank_payments_')
         mp_columns = get_table_columns_by_prefix('etl_database', 'mp_reports_')
         market_tickets_columns = get_table_columns_by_prefix('etl_database', 'market_tickets_')
-
-        # print(f"bank_columns: {bank_columns}")
-        # print(f"mp_columns: {mp_columns}")
-        # print(f"market_tickets_columns: {market_tickets_columns}")
 
         # Prompt para generar SQL
         prompt = f"""
@@ -69,9 +64,7 @@ def generate_sql_with_openai(question: str) -> str:
 
         Genera solo el SQL, sin explicaciones adicionales:
         """
-        
-        print(f"🤖 Enviando prompt a OpenAI GPT...")
-        
+                
         # Llamar a OpenAI
         response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",  # Modelo económico y rápido
@@ -93,7 +86,6 @@ def generate_sql_with_openai(question: str) -> str:
         if sql.startswith('```sql'):
             sql = sql.replace('```sql', '').replace('```', '').strip()
         
-        print(f"✅ SQL generado por OpenAI: {sql}")
         return sql
         
     except Exception as e:
@@ -102,31 +94,13 @@ def generate_sql_with_openai(question: str) -> str:
 
 def query_redshift(sql: str) -> str:
     try:
-        print(f"🔍 Ejecutando SQL en Redshift:\n{sql}")  # Debug
-
-        response = redshift_data.execute_statement(
-            Database='dev',
-            WorkgroupName='pdf-etl-workgroup',
-            Sql="SELECT CURRENT_USER;",  
-        )
-
-        print(f"Usuario actual: {response}")
-
         response = redshift_data.execute_statement(
             Database='dev',
             WorkgroupName='pdf-etl-workgroup',
             Sql=sql
         )
 
-        # response = redshift_data.execute_statement(
-        #     Database='dev',
-        #     WorkgroupName='pdf-etl-workgroup',
-        #     SecretArn='arn:aws:secretsmanager:...:secret:lambda_user_secret',
-        #     Sql=sql
-        # )
-
         query_id = response['Id']
-        
         while True:
             status = redshift_data.describe_statement(Id=query_id)
             if status['Status'] == 'FINISHED':
@@ -140,37 +114,32 @@ def query_redshift(sql: str) -> str:
                 return error_msg
     except Exception as e:
         error_msg = f"⚠️ Error inesperado:\n```\n{str(e)}\n```"
-        print(error_msg)  # Debug
+        print(error_msg)  # Debug en CloudWatch
         return error_msg
 
 def format_redshift_results(results: dict) -> str:
     columns = [col['name'] for col in results['ColumnMetadata']]
-    formatted_rows = []
-    
+    formatted_lines = []
+
     for record in results['Records']:
-        row = []
-        for field in record:
-            # Manejar todos los tipos de datos de Redshift Data API
+        for col_name, field in zip(columns, record):
             if 'stringValue' in field:
-                row.append(str(field['stringValue']))
+                value = str(field['stringValue'])
             elif 'longValue' in field:
-                row.append(str(field['longValue']))
+                value = f"{field['longValue']:,}".replace(",", ".")
             elif 'doubleValue' in field:
-                row.append(str(field['doubleValue']))
+                rounded = round(field['doubleValue'])
+                value = f"{rounded:,}".replace(",", ".")
             elif 'booleanValue' in field:
-                row.append("Sí" if field['booleanValue'] else "No")
+                value = "Sí" if field['booleanValue'] else "No"
             elif 'isNull' in field and field['isNull']:
-                row.append("NULL")
+                value = "NULL"
             else:
-                row.append("?")
-        formatted_rows.append(" | ".join(row))
-    
-    return (
-        "📊 *Resultados:*\n" +
-        "| " + " | ".join(columns) + " |\n" +
-        "|" + "|".join(["---"] * len(columns)) + "|\n" +
-        "\n".join(["| " + row + " |" for row in formatted_rows])
-    )
+                value = "?"
+
+            formatted_lines.append(f"*{col_name}:* {value}")
+
+    return "📊 *Resultados:*\n" + "\n".join(formatted_lines)
 
 # Manejo de Telegram - versión con OpenAI
 def handle_message(text: str) -> str:
@@ -182,15 +151,7 @@ def handle_message(text: str) -> str:
     
     response = query_redshift(sql)
 
-    return f"""
-        🔍 *Consulta:* {question}
-
-        ```sql
-        {sql}
-        ```
-
-        {response}
-    """
+    return sql, response
 
 def send_telegram_message(chat_id, text, token):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
