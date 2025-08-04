@@ -912,7 +912,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
             "Next": "CompensationFlow"
           }
         ],
-        Next     = ""Export Redshift data to BigQuery"
+        Next     = "Export Redshift data to BigQuery"
       },
       "Export Redshift data to BigQuery" = {
         Type     = "Task",
