@@ -203,7 +203,7 @@ def lambda_handler(event, context):
             send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
 
-        response_text = handle_message(text)
+        sql, response_text = handle_message(text)
         result = send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
 
         if result is None:
