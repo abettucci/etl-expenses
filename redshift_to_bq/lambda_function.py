@@ -1,6 +1,7 @@
 import boto3
 import pandas as pd
 from google.cloud import bigquery
+from google.cloud.exceptions import NotFound
 import time
 import json
 from google.oauth2.credentials import Credentials
@@ -20,7 +21,7 @@ def update_secret(updated_token_json, SECRET_NAME, REGION_NAME):
     )
 
 def auth_google(SECRET_NAME):
-    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly','https://www.googleapis.com/auth/bigquery']
     REGION_NAME = 'us-east-2'    
     token_info = get_secret(SECRET_NAME, REGION_NAME)
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
@@ -135,7 +136,7 @@ def lambda_handler(event, context):
         redshift_data = boto3.client('redshift-data')
         tabla = event["tabla"]
 
-        creds = auth_google('gcp_credentials')
+        creds = auth_google('gcp_api_credentials')
 
         response = redshift_data.execute_statement(
             Database='dev',
@@ -171,15 +172,64 @@ def lambda_handler(event, context):
 
         # Después de obtener tu dataframe df, antes de cargarlo a BigQuery:
         df = convert_column_types(df, tabla)
+
         project_id = 'hazel-pillar-400222'
+        dataset_id = 'etl_expenses_no_redshift'
 
         client = bigquery.Client(credentials=creds, project=f'{project_id}')
-        # # table_id = 'hazel-pillar-400222.etl_expenses_no_redshift.bank_payments'
-        table_id = f'{project_id}.etl_expenses_no_redshift.{tabla}'
+        table_id = f'{project_id}.{dataset_id}.{tabla}'
+        staging_table_id = f'{project_id}.{dataset_id}.{tabla}_staging'
 
-        job = client.load_table_from_dataframe(df, table_id)
-        job.result()  # Esperar a que termine
-        print("✅ Carga exitosa a BigQuery")
+        try:
+            client.get_table(table_id)
+            table_exists = True
+        except NotFound:
+            table_exists = False
+
+        # Primero vemos si existe la tabla, si no existe la creamos de forma dinamica con las columnas del dataframe
+        if not table_exists:
+            print("🆕 La tabla no existe. Creándola...")
+            job_config = bigquery.LoadJobConfig(
+                write_disposition="WRITE_EMPTY",
+                autodetect=True
+            )
+            job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
+            job.result()
+            print("✅ Tabla creada y datos cargados.")
+
+        # Si ya existe la tabla, hacemos un merge para no repetir registros y reducir el procesamiento innecesario
+        else:
+            print("🔁 Tabla ya existe. Cargando a staging y haciendo MERGE...")
+
+            # 1. Cargar a tabla staging
+            job_config = bigquery.LoadJobConfig(
+                write_disposition="WRITE_TRUNCATE",
+                autodetect=True
+            )
+            job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
+            job.result()
+
+            # 2. Ejecutar MERGE
+            # Elegimos una o varias columnas clave para evitar duplicados
+            # Ejemplo usando 'report_id' como clave
+            if tabla == 'mp_data':
+                pk = 'report_id'
+            elif tabla == 'bank_payments':
+                pk = 'id'
+            else: # carrefour_data
+                pk = 'nro_ticket'
+
+            merge_sql = f"""
+            MERGE `{table_id}` T
+            USING `{staging_table_id}` S
+            ON T.{pk} = S.{pk}
+            WHEN NOT MATCHED THEN
+            INSERT ROW
+            """
+
+            query_job = client.query(merge_sql)
+            query_job.result()
+            print("✅ MERGE ejecutado correctamente.")
 
     except Exception as e:
         print("⚠️ Error:", str(e))

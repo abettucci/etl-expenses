@@ -912,6 +912,18 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
             "Next": "CompensationFlow"
           }
         ],
+        Next     = ""Export Redshift data to BigQuery"
+      },
+      "Export Redshift data to BigQuery" = {
+        Type     = "Task",
+        Resource = aws_lambda_function.redshift_to_bq.arn,
+        Catch: [
+          {
+            "ErrorEquals": ["States.ALL"],
+            "ResultPath": "$.error-info",
+            "Next": "CompensationFlow"
+          }
+        ],
         Next     = "Run Market Tickets Crawler"
       },
       # Ultimo step ejecuta Glue Crawler
@@ -990,6 +1002,18 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
             "Next": "CompensationFlow"
           }
         ],
+        Next     = "Export Redshift data to BigQuery"
+      },
+      "Export Redshift data to BigQuery" = {
+        Type     = "Task",
+        Resource = aws_lambda_function.redshift_to_bq.arn,
+        Catch: [
+          {
+            "ErrorEquals": ["States.ALL"],
+            "ResultPath": "$.error-info",
+            "Next": "CompensationFlow"
+          }
+        ],
         Next     = "Run MP Reports Crawler"
       },
       # Ultimo step ejecuta Glue Crawler
@@ -1056,6 +1080,18 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
       "Load Gmail Bank Payments" = {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Catch: [
+          {
+            "ErrorEquals": ["States.ALL"],
+            "ResultPath": "$.error-info",
+            "Next": "CompensationFlow"
+          }
+        ],
+        Next     = "Export Redshift data to BigQuery"
+      },
+      "Export Redshift data to BigQuery" = {
+        Type     = "Task",
+        Resource = aws_lambda_function.redshift_to_bq.arn,
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
