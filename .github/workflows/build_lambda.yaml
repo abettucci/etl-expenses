@@ -140,12 +140,12 @@ jobs:
               
               # Import Lambda permission with correct format
               echo "🔐 Importing Lambda permission for API Gateway..."
-              terraform import aws_lambda_permission.allow_api_gateway "ai-agent/AllowAPIGatewayInvoke" || true
+              terraform import aws_lambda_permission.allow_api_gateway "ai-_gent/AllowAPIGatewayInvoke" || true
               
               # Verify the import
               if [ $? -ne 0 ]; then
                 echo "⚠️ Failed to import Lambda permission, trying alternative format..."
-                terraform import aws_lambda_permission.allow_api_gateway "arn:aws:lambda:${{ env.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai-agent/AllowAPIGatewayInvoke" || true
+                terraform import aws_lambda_permission.allow_api_gateway "arn:aws:lambda:${{ env.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai_agent/AllowAPIGatewayInvoke" || true
               fi
             else
               echo "⚠️ Webhook resource not found in API Gateway"
@@ -168,7 +168,7 @@ jobs:
           terraform import aws_iam_policy.lambda_s3_access arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:policy/lambda_s3_access || true
 
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace || true
-          terraform import aws_lambda_permission.allow_api_gateway ai-agent/AllowAPIGatewayInvoke || true
+          terraform import aws_lambda_permission.allow_api_gateway ai_agent/AllowAPIGatewayInvoke || true
 
           terraform import aws_lambda_function.webhook_mp_report webhook_mp_report || true
           terraform import aws_lambda_function.compensation_flow compensation_flow || true
@@ -194,6 +194,8 @@ jobs:
           terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler || true
           terraform import aws_glue_crawler.mp_reports_crawler mp-reports-crawler || true
           terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler || true
+
+          terraform import aws_glue_classifier.mercadopago_csv mercadopago_csv_classifier
 
           terraform import aws_redshiftserverless_workgroup.etl_workgroup pdf-etl-workgroup || true
 
