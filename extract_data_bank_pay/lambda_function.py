@@ -50,35 +50,35 @@ def find_html_part(payload):
 
 # Funcion para extraer los PDFs especificos de Gmail
 def extract_bank_payments_from_gmail(redshift_data):
-    creds = auth_google('gcp_api_credentials_2')
+    creds = auth_google('gcp_api_credentials')
     gmail_service = build('gmail', 'v1', credentials=creds)
     s3_client = boto3.client('s3')
     bucket_name = 'bank-payments'
     folder = 'raw/'
 
-    # Query para crear la tabla de pagos del banco en Redshift
-    crear_tabla_pagos_query = """
-        CREATE TABLE bank_payments (
-            id           VARCHAR(32) PRIMARY KEY,
-            message_id   VARCHAR(255),
-            fecha_pago   DATE,
-            hora_pago    TIME,
-            monto        DECIMAL(12,2),
-            divisa       VARCHAR(5),
-            tarjeta      VARCHAR(50),
-            nro_tarjeta  VARCHAR(10),
-            comercio     VARCHAR(100),
-            cuotas       INT,
-            extraido_en  TIMESTAMP
-        );
-    """
+    # # Query para crear la tabla de pagos del banco en Redshift
+    # crear_tabla_pagos_query = """
+    #     CREATE TABLE bank_payments (
+    #         id           VARCHAR(32) PRIMARY KEY,
+    #         message_id   VARCHAR(255),
+    #         fecha_pago   DATE,
+    #         hora_pago    TIME,
+    #         monto        DECIMAL(12,2),
+    #         divisa       VARCHAR(5),
+    #         tarjeta      VARCHAR(50),
+    #         nro_tarjeta  VARCHAR(10),
+    #         comercio     VARCHAR(100),
+    #         cuotas       INT,
+    #         extraido_en  TIMESTAMP
+    #     );
+    # """
 
-    # Ejecutar consulta
-    response = redshift_data.execute_statement(
-        Database='dev',
-        WorkgroupName='pdf-etl-workgroup',
-        Sql=crear_tabla_pagos_query
-    )
+    # # Ejecutar consulta
+    # response = redshift_data.execute_statement(
+    #     Database='dev',
+    #     WorkgroupName='pdf-etl-workgroup',
+    #     Sql=crear_tabla_pagos_query
+    # )
 
     # Obtenemos la ultima fecha de la tabla de tickets ya ingestados de Redshift        
     date_query = """
@@ -207,3 +207,5 @@ def lambda_handler(event, context):
             "statusCode": 500,
             "body": json.dumps({"error": str(e)})
         }
+    
+print(lambda_handler('',''))

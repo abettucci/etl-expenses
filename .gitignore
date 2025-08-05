@@ -2,5 +2,7 @@
 /extract_data_pdf/upd_gcp_token.py
 /extract_data_pdf/token.json
 /extract_data_pdf/credentials.json
+/extract_data_pdf/test.py
+/transform_data_bank_pay/test.py
 /redshift_to_bq/test.py
 /pdfs_carrefour/

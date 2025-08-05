@@ -95,7 +95,10 @@ def convert_column_types(df, table_name):
             target_type = type_mapping[col]
             try:
                 if target_type.startswith('datetime'):
-                    df[col] = pd.to_datetime(df[col])
+                    if col == 'fecha' and table_name == 'carrefour_data':
+                        df[col] = pd.to_datetime(df[col], format='%d/%m/%y')
+                    else:
+                        df[col] = pd.to_datetime(df[col])
                 else:
                     df[col] = df[col].astype(target_type)
             except (ValueError, TypeError) as e:

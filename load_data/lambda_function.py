@@ -22,12 +22,12 @@ def load_to_redshift_pdf_ticket(redshift_data, df, pdf_key):
         INSERT INTO carrefour_data VALUES (
             '{row['nro_ticket']}',
             '{row['fecha']}',
-            '{row['categ'].replace("'", "''")}',
-            '{row['prod'].replace("'", "''")}',
-            '{row['cant']}',
+            '{row['categoria'].replace("'", "''")}',
+            '{row['producto'].replace("'", "''")}',
+            '{row['cantidad']}',
             '{row['peso']}',
-            '{row['p_unit']}',
-            '{row['p_total']}',
+            '{row['precio_unit']}',
+            '{row['monto_total']}',
             '{row['total_ticket_bruto']}',
             '{row['total_ticket_meli']}'
         )
@@ -363,9 +363,14 @@ def lambda_handler(event,context):
         # Conexion a Redshift
         redshift_data = boto3.client('redshift-data')
 
-        etl_flow = event['body']['etl_flow']
-        bucket = event['body']['bucket']
-        key = event['body']['key']
+        body = json.loads(event['body'])
+        etl_flow = body['etl_flow']
+        bucket = body['bucket']
+        key = body['key']
+
+        # etl_flow = event['body']['etl_flow']
+        # bucket = event['body']['bucket']
+        # key = event['body']['key']
         
         print(f"📥 Descargando archivo desde S3: s3://{bucket}/{key}")
         s3 = boto3.client('s3')
@@ -385,10 +390,10 @@ def lambda_handler(event,context):
 
             # create_redshift_table_from_df(df, 'mp_data', redshift_data, 'dev', 'pdf-etl-workgroup')
             insert_df_into_redshift(df, 'mp_data', redshift_data, 'dev', 'pdf-etl-workgroup', report_id, report_date)
-
         elif etl_flow == 'TICKET':
             report_id, report_date = '', ''
             print('Se lee el pdf convertido en csv en S3 y se mergea a la tabla de carrefour_data')
+            # print(f"Columnas del DataFrame: {df.columns.tolist()}")
             load_to_redshift_pdf_ticket(redshift_data, df, key)
         else: # es un gasto del banco
             print('Se lee el mail convertido en csv en S3 y se mergea a la tabla de bank_payments')
@@ -400,3 +405,18 @@ def lambda_handler(event,context):
             "statusCode": 500,
             "body": json.dumps({"error": str(e)})
         }
+
+# s3_client = boto3.client('s3')
+# bucket_name = 'market-tickets'
+# folder = 'processed/'
+# response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+# csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
+# for csv_key in csvs:
+#     event = {
+#         "body": json.dumps({
+#             "etl_flow": 'TICKET',
+#             "bucket": 'market-tickets',
+#             "key": csv_key
+#         })
+#     }
+#     print(lambda_handler(event,''))

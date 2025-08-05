@@ -49,7 +49,7 @@ def extract_gmail_pdfs(redshift_data):
     bucket_name = 'market-tickets'
     folder = 'raw/'
 
-    sender_email = "contacto@m.tarjetacarrefour.com.ar"
+    senders = ["atencion_clientes@m.contactocarrefour.com.ar", "contacto@m.tarjetacarrefour.com.ar"]
     subject_contains = "Hola, te enviamos el ticket digital de tu compra."
 
     # Obtenemos la ultima fecha de la tabla de tickets ya ingestados de Redshift        
@@ -99,7 +99,7 @@ def extract_gmail_pdfs(redshift_data):
             print("Error al consultar Redshift:", desc['Error'])
             fecha_ultimo_ticket_cargado = (datetime.now() - timedelta(days=7)) # Fallback: últimos 7 días
             break
-        
+    
     if fecha_ultimo_ticket_cargado is None:
         fecha_actual = datetime.now()
         date_str = fecha_actual - timedelta(weeks=1)
@@ -107,48 +107,57 @@ def extract_gmail_pdfs(redshift_data):
     else:
         date_str = fecha_ultimo_ticket_cargado.strftime('%Y/%m/%d')
 
-    query = f'from:{sender_email} subject:"{subject_contains}" after:{date_str}'
-    results = gmail_service.users().messages().list(userId='me', q=query).execute()
-    messages = results.get('messages', [])
+    print('Utlima fecha cargada en tabla redshift carrefour: ', date_str)
 
-    print(f"Total de mails de tickets de carrefour posterior a {date_str}: {len(messages)}")
+    for sender_email in senders:
+        query = f'from:{sender_email} subject:"{subject_contains}" after:{date_str}'
+        results = gmail_service.users().messages().list(userId='me', q=query).execute()
+        messages = results.get('messages', [])
 
-    for msg in messages:
-        message = gmail_service.users().messages().get(userId='me', id=msg['id']).execute()
-        parts = message['payload'].get('parts', [])
+        print(f"Total de mails de tickets de carrefour posterior a {date_str}: {len(messages)}")
 
-        headers = {h['name']: h['value'] for h in message['payload']['headers']}
-        date = datetime.fromtimestamp(int(message['internalDate']) / 1000).strftime('%Y-%m-%d')
+        for msg in messages:
+            message = gmail_service.users().messages().get(userId='me', id=msg['id']).execute()
+            parts = message['payload'].get('parts', [])
 
-        filename = f'Ticket_{date}.pdf'
-        s3_key = f'{folder}{filename}'
+            headers = {h['name']: h['value'] for h in message['payload']['headers']}
+            date = datetime.fromtimestamp(int(message['internalDate']) / 1000).strftime('%d-%m-%y')
+            
+            print('Analizando mail de fecha: ', date)
 
-        for part in parts:
-            if part.get('mimeType') == 'text/html':
-                data = part['body']['data']
-                decoded_data = base64.urlsafe_b64decode(data).decode('utf-8')
-                soup = BeautifulSoup(decoded_data, 'html.parser')
-                links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.tarjetacarrefour.com.ar/x/c/' in a['href']]
+            filename = f'Ticket_{date}.pdf'
+            s3_key = f'{folder}{filename}'
 
-                for url in links:
-                    try:
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                        }
-                        response = requests.get(url, headers=headers)
-                        if response.content[:4] == b'%PDF' and len(response.content) > 1024 :
-                            try:
-                                s3_client.head_object(Bucket=bucket_name, Key=s3_key)
-                                print("⚠️ El archivo ya existe en S3, se omite la subida.")
-                            except s3_client.exceptions.ClientError as e:
-                                if e.response['Error']['Code'] == '404':
-                                    # Subir archivo PDF a S3
-                                    s3_client.upload_fileobj(BytesIO(response.content), bucket_name, s3_key)
-                                    print(f"✅ Archivo subido a S3: {s3_key}")
-                        else:
-                            print(f"⚠️ Archivo inválido desde URL: {url}")
-                    except Exception as e:
-                        print(f"❌ Error al descargar desde URL {url}: {e}")
+            for part in parts:
+                if part.get('mimeType') == 'text/html':
+                    data = part['body']['data']
+                    decoded_data = base64.urlsafe_b64decode(data).decode('utf-8')
+                    soup = BeautifulSoup(decoded_data, 'html.parser')
+
+                    if sender_email == "atencion_clientes@m.contactocarrefour.com.ar":
+                        links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.contactocarrefour.com.ar/x/c/' in a['href']]
+                    else:
+                        links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.tarjetacarrefour.com.ar/x/c/' in a['href']]
+                    
+                    for url in links:
+                        try:
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                            }
+                            response = requests.get(url, headers=headers)
+                            if response.content[:4] == b'%PDF' and len(response.content) > 1024 :
+                                try:
+                                    s3_client.head_object(Bucket=bucket_name, Key=s3_key)
+                                    print("⚠️ El archivo ya existe en S3, se omite la subida.")
+                                except s3_client.exceptions.ClientError as e:
+                                    if e.response['Error']['Code'] == '404':
+                                        # Subir archivo PDF a S3
+                                        s3_client.upload_fileobj(BytesIO(response.content), bucket_name, s3_key)
+                                        print(f"✅ Archivo subido a S3: {s3_key}")
+                            else:
+                                print(f"⚠️ Archivo inválido desde URL: {url}")
+                        except Exception as e:
+                            print(f"❌ Error al descargar desde URL {url}: {e}")
 
 def lambda_handler(event, context):
     try:

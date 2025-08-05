@@ -16,8 +16,6 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
             pdf_reader = PdfReader(io.BytesIO(pdf_content))
             
             for pagina in pdf_reader.pages:
-                print(pagina)
-
                 try:
                     texto_pagina = pagina.extract_text()
                     if texto_pagina:
@@ -166,7 +164,7 @@ def process_pdf_file(s3, bucket, pdf_key):
         print(f"❌ Error procesando {pdf_key}: {str(e)}")
         return False
 
-def transform_mp_report_data():    
+def transform_pdf_data():    
     s3 = boto3.client('s3')
     bucket = 'market-tickets'
     
@@ -185,7 +183,7 @@ def transform_mp_report_data():
 
 def lambda_handler(event, context):
     try:
-        transform_mp_report_data()
+        transform_pdf_data()
         return {
             "statusCode": 200,
             "body": json.dumps({
@@ -202,3 +200,5 @@ def lambda_handler(event, context):
                 "success": False
             })
         }
+
+print(lambda_handler('',''))
