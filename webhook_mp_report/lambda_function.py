@@ -36,11 +36,15 @@ def lambda_handler(event, context):
                     "statusCode": 400,
                     "body": json.dumps({"error": "Faltan el campo requerido firma_enviada"})
                 }
-        
-        file = body_json.get("files", "")
-        file_name = file.get("name", "")
-        file_url = file.get("url", "")
-        file_type = file.get("type", "")
+
+        files = body_json.get("files", [])
+        if files:  # me aseguro que no esté vacío
+            file = files[0]  # primer elemento de la lista
+            file_name = file.get("name", "")
+            file_url = file.get("url", "")
+            file_type = file.get("type", "")
+        else:
+            file_name = file_url = file_type = ""
         
         # Input que le pasás a la Step Function
         step_input = {
@@ -79,3 +83,4 @@ def lambda_handler(event, context):
     except Exception as e:
 
         print(f"⚠️ Error al recibir webhook y enviar datos a step function: {e}")
+
