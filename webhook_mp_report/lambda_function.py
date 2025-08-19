@@ -12,6 +12,8 @@ def lambda_handler(event, context):
     raw_body = event["body"]
     body_json = json.loads(raw_body)
 
+    print(body_json)
+
     try:
         # 2. Extraer los campos necesarios para la firma (Extraer parámetros del POST)
         try:
@@ -75,4 +77,5 @@ def lambda_handler(event, context):
             'body': json.dumps('Step Function started successfully!')
         }
     except Exception as e:
+
         print(f"⚠️ Error al recibir webhook y enviar datos a step function: {e}")
