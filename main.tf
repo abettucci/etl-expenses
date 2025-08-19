@@ -344,7 +344,7 @@ resource "aws_lambda_function" "compensation_flow" {
   environment {
     variables = {
       AWS_ACCOUNT_ID = var.aws_account_id
-      AWS_REGION = var.aws_region
+      AWS_REGION_ID = var.aws_region
     }
   }
 }
@@ -1281,3 +1281,4 @@ output "webhook_url" {
   value = "${aws_api_gateway_deployment.webhook_deployment.invoke_url}/webhook"
   description = "URL del webhook para configurar en Telegram"
 }
+
