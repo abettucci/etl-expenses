@@ -56,7 +56,7 @@ def format_string_io_to_df(reader):
     return report_df
 
 # Funcion para guardar el reporte de Mercado Pago en un bucket de S3
-def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, key, file_format, report_id, report_date):
+def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, key, file_format, report_id=None, report_date=None):
     url = f"https://api.mercadopago.com/v1/account/settlement_report/{report_file_name}"
     payload = {}
     headers = {'Authorization': 'Bearer ' + access_token}
@@ -94,54 +94,73 @@ def format_report_file_name(s3_filename):
 
     return report_file_name, report_id, report_date
 
-# (MODIFICAR POR EL WEBHOOK) Funcion que extrae los reportes de la lista de reportes y analiza cual es el ultimo a ingestar en Redshift
-def extract_mercado_pago_reports():    
+# (MODIFICADO POR EL WEBHOOK) Funcion que extrae los reportes de la lista de reportes y analiza cual es el ultimo a ingestar en Redshift
+def extract_mercado_pago_reports(event): 
     access_token = auth_mp()
-    reportes = get_reports(access_token)
 
-    # Reportes ya viene ordenado de fecha mas reciente a fecha mas antigua de creacion
-    set_s3_reports_extracted = set()
-    for reporte in reportes:
-        created_from = reporte.get("created_from", None)
-        if created_from == 'schedule':
-            report_date = reporte.get("end_date", None) # 2025-06-09T02:59:59Z
-            last_report_date = datetime.strptime(report_date, '%Y-%m-%dT%H:%M:%SZ')
-            last_report_date -= timedelta(days=1)
-            last_report_date = last_report_date.strftime('%Y-%m-%d')            
-            report_file_name = reporte.get("file_name", None)
-            file_format = reporte.get("format", None)
-            report_id = reporte.get("id", None)
+    file_name = event['file_name']
+    file_url = event['file_url']
+    file_type = event['file_type']
+
+    print('file_name: ', file_name)
+    print('file_url: ', file_url)
+    print('file_type: ', file_type)
+    
+    s3_client = boto3.client('s3')
+    bucket_name = 'mercadopago-reports'
+    folder = 'raw/'
+    key = f'{folder}{file_name}'
+    
+    print(key)
+
+    save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, '', '')
+
+    # reportes = get_reports(access_token)
+
+    # # Reportes ya viene ordenado de fecha mas reciente a fecha mas antigua de creacion
+    # set_s3_reports_extracted = set()
+    # for reporte in reportes:
+    #     created_from = reporte.get("created_from", None)
+    #     if created_from == 'schedule':
+    #         report_date = reporte.get("end_date", None) # 2025-06-09T02:59:59Z
+    #         last_report_date = datetime.strptime(report_date, '%Y-%m-%dT%H:%M:%SZ')
+    #         last_report_date -= timedelta(days=1)
+    #         last_report_date = last_report_date.strftime('%Y-%m-%d')            
+    #         report_file_name = reporte.get("file_name", None)
+    #         file_format = reporte.get("format", None)
+    #         report_id = reporte.get("id", None)
             
-            # Obtenemos los ids de los reportes ya ingestados en S3       
-            s3_client = boto3.client('s3')
-            bucket_name = 'mercadopago-reports'
-            folder = 'raw/'
-            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
-            csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
-            xlsx = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.xlsx')]
-            for csv_file in csvs:
-                s3_filename = csv_file.split('/')[-1]
-                s3_report_file_name, s3_report_id, report_date = format_report_file_name(s3_filename)
-                set_s3_reports_extracted.add(s3_report_id)
-            for xlsx_file in xlsx:
-                s3_filename = xlsx_file.split('/')[-1]
-                s3_report_file_name, s3_report_id, report_date = format_report_file_name(s3_filename)
-                set_s3_reports_extracted.add(s3_report_id)
+    #         # Obtenemos los ids de los reportes ya ingestados en S3       
+    #         s3_client = boto3.client('s3')
+    #         bucket_name = 'mercadopago-reports'
+    #         folder = 'raw/'
+    #         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+    #         csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
+    #         xlsx = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.xlsx')]
+    #         for csv_file in csvs:
+    #             s3_filename = csv_file.split('/')[-1]
+    #             s3_report_file_name, s3_report_id, report_date = format_report_file_name(s3_filename)
+    #             set_s3_reports_extracted.add(s3_report_id)
+    #         for xlsx_file in xlsx:
+    #             s3_filename = xlsx_file.split('/')[-1]
+    #             s3_report_file_name, s3_report_id, report_date = format_report_file_name(s3_filename)
+    #             set_s3_reports_extracted.add(s3_report_id)
 
-            # Chequeamos si la fecha del ultimo reporte automatico creado ya existe en la base de datos
-            if str(report_id) not in set_s3_reports_extracted:
-                # Agregamos el report id al nombre del archivo
-                name_part, ext = report_file_name.rsplit('.', 1)
-                formatted_report_file_name = f"{name_part}_{last_report_date}_{report_id}.{ext}"
-                s3_key = f'{folder}{formatted_report_file_name}'
-                # Guardamos en S3
-                print(save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, s3_key, file_format, report_id, last_report_date))
-            else:
-                print(f'Archivo {report_id} ya cargado a S3')
+    #         # Chequeamos si la fecha del ultimo reporte automatico creado ya existe en la base de datos
+    #         if str(report_id) not in set_s3_reports_extracted:
+    #             # Agregamos el report id al nombre del archivo
+    #             name_part, ext = report_file_name.rsplit('.', 1)
+    #             formatted_report_file_name = f"{name_part}_{last_report_date}_{report_id}.{ext}"
+    #             s3_key = f'{folder}{formatted_report_file_name}'
+    #             # Guardamos en S3
+    #             print(save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, s3_key, file_format, report_id, last_report_date))
+    #         else:
+    #             print(f'Archivo {report_id} ya cargado a S3')
 
+# En el event vienen los parametros enviados por la lambda del webhook de MP
 def lambda_handler(event, context):
     try:
-        extract_mercado_pago_reports()
+        extract_mercado_pago_reports(event)
     except Exception as e:
         print("⚠️ Error:", str(e))
         return {

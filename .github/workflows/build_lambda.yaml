@@ -10,6 +10,7 @@ env:
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
   TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  TF_VAR_CIFRADO_SECRET_MP : ${{ secrets.CIFRADO_SECRET_MP }}
   TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TF_VAR_redshift_user : ${{ secrets.redshift_user }}
   TF_VAR_redshift_password: ${{ secrets.redshift_password }}
@@ -50,8 +51,6 @@ jobs:
         run: |
           ECR_REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/etl-expenses"
           docker build \
-            --build-arg aws_account_id=${{ secrets.AWS_ACCOUNT_ID }} \
-            --build-arg github_secret=${{ secrets.GITHUB_API_SECRET }} \
             -t local-build:$IMAGE_TAG \
             -f $DOCKERFILE \
             ./$(dirname $DOCKERFILE)
@@ -207,6 +206,7 @@ jobs:
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_CIFRADO_SECRET_MP : ${{ secrets.CIFRADO_SECRET_MP }}
           TF_VAR_redshift_user : ${{ secrets.redshift_user }}
           TF_VAR_redshift_password: ${{ secrets.redshift_password }}
 
@@ -220,6 +220,7 @@ jobs:
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_CIFRADO_SECRET_MP : ${{ secrets.CIFRADO_SECRET_MP }}
           TF_VAR_redshift_user : ${{ secrets.redshift_user }}
           TF_VAR_redshift_password: ${{ secrets.redshift_password }}
 

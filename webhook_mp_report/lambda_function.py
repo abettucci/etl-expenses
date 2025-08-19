@@ -6,8 +6,6 @@ import boto3
 def lambda_handler(event, context):
     step_function_arn = os.environ['STEP_FUNCTION_ARN']
     step_functions_client = boto3.client('stepfunctions')
-    
-    # Extraer parámetros del POST
     CIFRADO_SECRET = os.environ["CIFRADO_SECRET_MP"]
     
     # 1. Obtener el cuerpo del request
@@ -15,7 +13,7 @@ def lambda_handler(event, context):
     body_json = json.loads(raw_body)
 
     try:
-        # 2. Extraer los campos necesarios para la firma
+        # 2. Extraer los campos necesarios para la firma (Extraer parámetros del POST)
         try:
             transaction_id = body_json.get("transaction_id", "")
             generation_date = body_json.get("generation_date", "")
@@ -49,26 +47,28 @@ def lambda_handler(event, context):
             "file_type" : file_type
         }
 
-        # # 3. Construir la cadena exacta que MercadoPago usó para la firma
-        # cadena_para_firma = f"{transaction_id}-{CIFRADO_SECRET}-{generation_date}"
-        # cadena_para_firma_bytes = cadena_para_firma.encode("utf-8")
+        # 3. Construir la cadena exacta que MercadoPago usó para la firma
+        cadena_para_firma = f"{transaction_id}-{CIFRADO_SECRET}-{generation_date}"
+        cadena_para_firma_bytes = cadena_para_firma.encode("utf-8")
 
-        # print("🔑 Cadena para firma:", cadena_para_firma)
+        print("🔑 Cadena para firma:", cadena_para_firma)
 
-        # # 4. Verificar con bcrypt.checkpw()
-        # if not bcrypt.checkpw(cadena_para_firma_bytes, firma_enviada.encode("utf-8")):
-        #     print("❌ Firma inválida")
-        #     return {
-        #         "statusCode": 403,
-        #         "body": json.dumps({"message": "Firma inválida"})
-        #     }
+        # 4. Verificar con bcrypt.checkpw()
+        if not bcrypt.checkpw(cadena_para_firma_bytes, firma_enviada.encode("utf-8")):
+            print("❌ Firma inválida")
+            return {
+                "statusCode": 403,
+                "body": json.dumps({"message": "Firma inválida"})
+            }
 
-        # print("✅ Webhook válido!")
+        print("✅ Webhook válido!")
         
         response = step_functions_client.start_execution(
             stateMachineArn=step_function_arn,
             input=json.dumps(step_input)
         )
+        
+        print(response)
         
         return {
             'statusCode': 200,

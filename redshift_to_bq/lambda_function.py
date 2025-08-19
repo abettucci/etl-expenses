@@ -2,8 +2,10 @@ import boto3
 import pandas as pd
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
+from google.api_core.exceptions import GoogleAPICallError
 import time
 import json
+import warnings
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
@@ -134,13 +136,87 @@ def convert_column_types(df, table_name):
     
     return df
 
+def table_merge_staging_to_production_bq(bq_client, update_columns, target_table, source_table, pk, tbl_project_dataset):
+    target_table = f'{tbl_project_dataset}.{target_table}'
+
+    # Get the target table schema to identify TIMESTAMP columns
+    target_table_ref = bq_client.get_table(target_table)
+    timestamp_cols = [field.name for field in target_table_ref.schema 
+                     if field.field_type == 'TIMESTAMP']
+
+    print(timestamp_cols)
+
+    # Create the SET clause with CAST for TIMESTAMP columns
+    set_clause_parts = []
+    timestamp_cols_insert = timestamp_cols
+
+    for col in update_columns:
+        if col.upper() in timestamp_cols:
+            timestamp_cols_insert -= col.upper()
+            set_clause_parts.append(f"{col.upper()} = CAST(S.{col.upper()} AS TIMESTAMP)")
+        else:
+            set_clause_parts.append(f"{col.upper()} = S.{col.upper()}")
+    set_clause = ", ".join(set_clause_parts + ["UPD_DTTM = CURRENT_TIMESTAMP()"])
+    
+    # Create the INSERT clause with CAST for TIMESTAMP columns
+    insert_cols = ", ".join([pk] + update_columns + timestamp_cols_insert)
+    insert_vals_parts = [f"S.{pk}"]
+
+    timestamp_vals_insert = ["CURRENT_TIMESTAMP()", "CURRENT_TIMESTAMP()"]
+    insert_vals_parts = []
+
+    for col in update_columns:
+        if col.upper() in timestamp_cols:
+            # sacar el primer elemento de timestamp_vals_insert
+            ts_val = timestamp_vals_insert.pop(0)
+            insert_vals_parts.append(ts_val)  
+        else:
+            insert_vals_parts.append(f"S.{col.upper()}")
+
+    insert_vals = ", ".join(insert_vals_parts)
+
+    merge_sql = f"""
+        MERGE INTO `{target_table}` T
+        USING `{source_table}` S
+        ON T.{pk} = S.{pk}
+        WHEN MATCHED THEN
+            UPDATE SET {set_clause}
+        WHEN NOT MATCHED THEN
+            INSERT ({insert_cols})
+            VALUES ({insert_vals})
+            """ 
+    
+    print('\n')
+    print(merge_sql)
+
+    try:
+        job = bq_client.query(merge_sql)
+        result = job.result()
+        print(f"✅ Merge completado. Filas afectadas: {result.num_dml_affected_rows}")
+        return True
+    except GoogleAPICallError as e:
+        print(f"❌ Error en MERGE: {str(e)}")
+        return False
+    except Exception as e:
+        print(f"⚠️ Error inesperado: {str(e)}")
+        return False
+
 def lambda_handler(event, context):
     try:
-        redshift_data = boto3.client('redshift-data')
         tabla = event["tabla"]
 
         creds = auth_google('gcp_api_credentials')
+        project_id = 'hazel-pillar-400222'
+        
+        stg_dataset_id = 'STG'
+        stg_project_dataset = f'{project_id}.{stg_dataset_id}'
 
+        tbl_dataset_id = 'TBL'
+        tbl_project_dataset = f'{project_id}.{tbl_dataset_id}'
+
+        client = bigquery.Client(credentials=creds, project=f'{project_id}')
+
+        redshift_data = boto3.client('redshift-data')
         response = redshift_data.execute_statement(
             Database='dev',
             WorkgroupName='pdf-etl-workgroup',
@@ -172,67 +248,154 @@ def lambda_handler(event, context):
                 parsed_row.append(value)
             parsed_rows.append(dict(zip(column_names, parsed_row)))
         df = pd.DataFrame(parsed_rows)
-
-        # Después de obtener tu dataframe df, antes de cargarlo a BigQuery:
         df = convert_column_types(df, tabla)
 
-        project_id = 'hazel-pillar-400222'
-        dataset_id = 'etl_expenses_no_redshift'
+        for column, dtype in df.dtypes.items():
+            print(column, dtype)
 
-        client = bigquery.Client(credentials=creds, project=f'{project_id}')
-        table_id = f'{project_id}.{dataset_id}.{tabla}'
-        staging_table_id = f'{project_id}.{dataset_id}.{tabla}_staging'
-
+        # Primero vemos si existe la tabla
+        staging_table_id = f'{stg_project_dataset}.{tabla}'
         try:
-            client.get_table(table_id)
+            client.get_table(staging_table_id)
             table_exists = True
         except NotFound:
             table_exists = False
 
-        # Primero vemos si existe la tabla, si no existe la creamos de forma dinamica con las columnas del dataframe
+        # Si no existe la tabla, la creamos de forma dinamica con las columnas del dataframe y luego transferimos los datos de redshift a bigquery a traves de pandas df
         if not table_exists:
-            print("🆕 La tabla no existe. Creándola...")
+            print(f"🆕 La tabla en staging {staging_table_id} no existe. Creándola...")
+            
+            # Manejar advertencia de pandas-gbq
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=FutureWarning)
+                
+                for col in ["INS_DTTM", "UPD_DTTM"]:
+                    if col not in df.columns:
+                        if col.lower() not in df.columns:
+                            df[col] = pd.Timestamp.now(tz='UTC')
+                        else:
+                            # existe pero en miinuscula
+                            df[col] = df[col].upper()
+
+                # Si no se provee schema, inferirlo del DataFrame
+                schema = []
+                for column, dtype in df.dtypes.items():
+                    # Mapear tipos de pandas a BigQuery
+                    if pd.api.types.is_integer_dtype(dtype):
+                        bq_type = "INTEGER"
+                    elif pd.api.types.is_float_dtype(dtype):
+                        bq_type = "FLOAT"
+                    elif pd.api.types.is_bool_dtype(dtype):
+                        bq_type = "BOOLEAN"
+                    elif pd.api.types.is_datetime64_any_dtype(dtype):
+                        bq_type = "TIMESTAMP"
+                    else:
+                        bq_type = "STRING"  # Default para otros tipos
+                    
+                    schema.append(bigquery.SchemaField(column, bq_type))
+                        
             job_config = bigquery.LoadJobConfig(
+                schema = schema,
                 write_disposition="WRITE_EMPTY",
-                autodetect=True
+                autodetect=False
             )
-            job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
+
+            job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             job.result()
             print("✅ Tabla creada y datos cargados.")
 
-        # Si ya existe la tabla, hacemos un merge para no repetir registros y reducir el procesamiento innecesario
+        # Si la tabla ya existe, solo transferimos los datos de redshift a bigquery a traves de pandas df
         else:
-            print("🔁 Tabla ya existe. Cargando a staging y haciendo MERGE...")
-
-            # 1. Cargar a tabla staging
+            # Creo que deberia hacer un merge aca?
             job_config = bigquery.LoadJobConfig(
                 write_disposition="WRITE_TRUNCATE",
                 autodetect=True
             )
             job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             job.result()
+            print("✅ Tabla ya existe, datos cargados.")
+    
+        # Hacemos el merge de la tabla de staging de BQ a la tabla productiva de BQ
+        if tabla == 'mp_data':
+            pk = 'REPORT_ID'
+        elif tabla == 'carrefour_data':
+            pk = 'nro_ticket'
+        elif tabla == 'dim_producto':
+            pk = 'product_id'
+        elif tabla == 'archivos_ingestados':
+            pk = 'id'
+        else: # tabla = bank_payments
+            pk = 'id'
 
-            # 2. Ejecutar MERGE
-            # Elegimos una o varias columnas clave para evitar duplicados
-            # Ejemplo usando 'report_id' como clave
-            if tabla == 'mp_data':
-                pk = 'report_id'
-            elif tabla == 'bank_payments':
-                pk = 'id'
-            else: # carrefour_data
-                pk = 'nro_ticket'
+        update_columns = [col for col in df.columns if col not in [pk, 'INS_DTTM', 'UPD_DTTM']]
 
-            merge_sql = f"""
-            MERGE `{table_id}` T
-            USING `{staging_table_id}` S
-            ON T.{pk} = S.{pk}
-            WHEN NOT MATCHED THEN
-            INSERT ROW
-            """
+        # Crear tabla productiva si no existe
+        prod_table_id = f'{tbl_project_dataset}.{tabla}'
+        try:
+            client.get_table(prod_table_id)
+            prod_table_exists = True
+        except NotFound:
+            prod_table_exists = False
 
-            query_job = client.query(merge_sql)
-            query_job.result()
-            print("✅ MERGE ejecutado correctamente.")
+        if not prod_table_exists:
+            print(f"🆕 La tabla en produccion {prod_table_id} no existe. Creándola...")
+
+            for col in ["INS_DTTM", "UPD_DTTM"]:
+                if col not in df.columns:
+                    if col.lower() not in df.columns:
+                        df[col] = pd.Timestamp.now(tz='UTC')
+                    else:
+                        # existe pero en miinuscula
+                        df[col] = df[col].upper()
+
+            # Usar el mismo esquema que la tabla de staging
+            schema = []
+            for column, dtype in df.dtypes.items():
+                if pd.api.types.is_integer_dtype(dtype):
+                    bq_type = "INTEGER"
+                elif pd.api.types.is_float_dtype(dtype):
+                    bq_type = "FLOAT"
+                elif pd.api.types.is_bool_dtype(dtype):
+                    bq_type = "BOOLEAN"
+                elif pd.api.types.is_datetime64_any_dtype(dtype):
+                    bq_type = "TIMESTAMP"
+                else:
+                    bq_type = "STRING"
+                schema.append(bigquery.SchemaField(column, bq_type))
+
+            job_config = bigquery.LoadJobConfig(
+                schema=schema,
+                write_disposition="WRITE_EMPTY",
+                autodetect=False
+            )
+            job = client.load_table_from_dataframe(df, prod_table_id, job_config=job_config)
+            job.result()
+            print(f"✅ Tabla productiva {prod_table_id} creada.")
+
+        result = table_merge_staging_to_production_bq(client, update_columns, tabla, staging_table_id, pk, tbl_project_dataset)
+
+        # Si el merge se ejecutó bien,
+        if result:
+            # Borramos los datos de la tabla de staging
+            try:
+                query = f"TRUNCATE TABLE `{staging_table_id}`"
+                job = client.query(query)
+                job.result()
+                print(f"✅ Tabla {staging_table_id} truncada exitosamente de BigQuery")
+                
+            except GoogleAPICallError as e:
+                print(f"❌ Error truncando la tabla {staging_table_id}: {str(e)}")
+
+            # Y tambien borramos los datos de la tabla de redshift que se transfirieron
+            try:
+                redshift_data.execute_statement(
+                    Database='dev',
+                    WorkgroupName='pdf-etl-workgroup',
+                    Sql=f"TRUNCATE TABLE {tabla}"
+                )    
+                print(f"✅ Tabla {tabla} truncada exitosamente de redshift")
+            except Exception as e:
+                print(f"❌ Error truncando la tabla {tabla} de redshift: {str(e)}") 
 
     except Exception as e:
         print("⚠️ Error:", str(e))
@@ -240,3 +403,14 @@ def lambda_handler(event, context):
             "statusCode": 500,
             "body": json.dumps({"error": str(e)})
         }
+
+# event = {
+#     "body": json.dumps({
+#         "tabla": 'carrefour_data'
+#     })
+# }
+
+# event = {"tabla": 'carrefour_data'}
+# event = {"tabla": 'archivos_ingestados'}
+
+# print(lambda_handler(event, ''))

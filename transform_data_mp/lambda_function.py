@@ -1,7 +1,6 @@
 import boto3
 import io
 import json
-from openai.types.chat.parsed_chat_completion import ContentType
 import pandas as pd
 import unicodedata
 

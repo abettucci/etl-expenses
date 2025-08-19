@@ -58,6 +58,13 @@ variable "OPENAI_API_KEY" {
   sensitive   = true
 }
 
+variable "CIFRADO_SECRET_MP" {
+  description = "CIFRADO_SECRET_MP"
+  type        = string
+  sensitive   = true
+}
+
+
 ########### 1. Buckets de S3 ###########
 # 1.1 Bucket para PDF de Gmail
 resource "aws_s3_bucket" "market_tickets" {
@@ -319,6 +326,7 @@ resource "aws_lambda_function" "webhook_mp_report" {
   environment {
     variables = {
       STEP_FUNCTION_ARN = aws_sfn_state_machine.mp_report_etl_flow.arn
+      CIFRADO_SECRET_MP = var.CIFRADO_SECRET_MP
     }
   }
 }
@@ -332,6 +340,13 @@ resource "aws_lambda_function" "compensation_flow" {
   
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
+
+  environment {
+    variables = {
+      AWS_ACCOUNT_ID = var.aws_account_id
+      AWS_REGION = var.aws_region
+    }
+  }
 }
 
 # 4.10 Lambda data load de redshift a big query para visualizar los datos

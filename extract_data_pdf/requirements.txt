@@ -5,3 +5,5 @@ google-auth-oauthlib
 google.auth
 oauth2client
 openpyxl
+pandas
+requests

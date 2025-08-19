@@ -5,6 +5,8 @@ import json
 import pandas as pd
 import hashlib
 from PyPDF2 import PdfReader
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', None)
 
 def calcular_hash_pdf(content_bytes):
     return hashlib.sha256(content_bytes).hexdigest()
@@ -75,42 +77,67 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
             else:
                 lineas_items = []
 
-            for linea in lineas_items:
+            i = 0
+            
+            # print(lineas_items)
+
+            while i < len(lineas_items):
+                linea = lineas_items[i]
+                
                 if linea in categorias:
                     categoria_actual = linea
-                elif any(c in linea for c in ['x', '$']) and any(c.isdigit() for c in linea):
-                    # Procesar línea de item
-                    try:
-                        partes = linea.split()
-                        cantidad = peso = precio = monto_total = 0
-                        
-                        if 'x' in linea:
-                            if linea.count('x') == 1:
-                                cantidad, precio = linea.split('x')
-                                cantidad = float(cantidad.strip())
-                                precio = float(precio.split()[0].replace(',', '.'))
-                            else:
-                                partes = linea.split('x')
-                                peso = float(partes[1].strip())
-                                precio = float(partes[2].split()[0].replace(',', '.'))
-                        
-                        if '(' in linea and ')' in linea:
-                            monto_total = linea[linea.rfind(')')+1:].strip()
-                            monto_total = float(monto_total.replace(',', '.'))
-                        
-                        item = {
-                            "categoria": categoria_actual,
-                            "producto": nombre_item,
-                            "cantidad": cantidad,
-                            "peso": peso,
-                            "precio_unit": precio,
-                            "monto_total": monto_total
-                        }
-                        lista_items.append(item)
-                    except Exception as e:
-                        print(f"Error procesando línea: {linea} - {str(e)}")
-                else:
+                    i += 1
+                    continue
+
+                # Detectar nombre del producto
+                if not any(c in linea for c in ['x', '$']) or not any(c.isdigit() for c in linea):
                     nombre_item = linea
+                    i += 1
+                    continue
+
+                try:
+                    # Línea de precio
+                    partes = linea.split()
+                    cantidad = peso = precio = monto_total = 0.0
+
+                    if 'x' in linea:
+                        if linea.count('x') == 1:
+                            cantidad, precio = linea.split('x')
+                            cantidad = float(cantidad.strip())
+                            precio = float(precio.split()[0].replace(',', '.'))
+                        else:
+                            partes = linea.split('x')
+                            peso = float(partes[1].strip())
+                            precio = float(partes[2].split()[0].replace(',', '.'))
+
+                    if '(' in linea and ')' in linea:
+                        monto_total = linea[linea.rfind(')')+1:].strip()
+                        monto_total = float(monto_total.replace(',', '.'))
+
+                    # Ver si la siguiente línea parece ser un EAN válido (solo números, 8 o más dígitos)
+                    ean = ""
+                    if i + 1 < len(lineas_items):
+                        linea_siguiente = lineas_items[i + 1]
+                        if linea_siguiente.isdigit() and len(linea_siguiente) >= 8:
+                            ean = linea_siguiente
+                            i += 1  # Saltamos también esta línea
+
+                    item = {
+                        "categoria": categoria_actual,
+                        "producto": nombre_item,
+                        "cantidad": cantidad,
+                        "peso": peso,
+                        "precio_unit": precio,
+                        "monto_total": monto_total,
+                        "ean": ean,
+                        "product_id" : "",
+                        "grupo_producto": ""
+                    }
+                    lista_items.append(item)
+                except Exception as e:
+                    print(f"Error procesando línea: {linea} - {str(e)}")
+                
+                i += 1
 
             # Crear DataFrame
             if lista_items:
@@ -123,6 +150,10 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
                     df['total_ticket_bruto'] = round(total_bruto, 2)
                     df['total_ticket_meli'] = round(total_bruto * 0.3, 2)
                 
+                df['ean'] = df['ean'].astype(str)
+                df['grupo_producto'] = df['grupo_producto'].astype(str)
+                df['product_id'] = pd.to_numeric(df['product_id'], errors='coerce').astype('Int64')  
+
                 return df
             return pd.DataFrame()
 
@@ -139,13 +170,12 @@ def process_pdf_file(s3, bucket, pdf_key):
         if not pdf_content.startswith(b'%PDF'):
             print(f"⚠️ El archivo {pdf_key} no es un PDF válido")
             return False
-
         df = transform_pdf_to_dataframe(pdf_content, pdf_key)
-        
+
         if df.empty:
             print(f"⚠️ No se pudo extraer datos del PDF: {pdf_key}")
             return False
-
+        
         # Guardar CSV
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer, index=False, sep=',', encoding='utf-8')
@@ -162,7 +192,6 @@ def process_pdf_file(s3, bucket, pdf_key):
 
     except Exception as e:
         print(f"❌ Error procesando {pdf_key}: {str(e)}")
-        return False
 
 def transform_pdf_data():    
     s3 = boto3.client('s3')
@@ -178,6 +207,7 @@ def transform_pdf_data():
     pdfs = [obj['Key'] for obj in response.get('Contents', []) 
             if obj['Key'].lower().endswith('.pdf') and obj['Size'] > 0]
     
+    # Guardamos cada archivo individual en la carpeta 'processed'
     for pdf_key in pdfs:
         process_pdf_file(s3, bucket, pdf_key)
 
@@ -201,4 +231,4 @@ def lambda_handler(event, context):
             })
         }
 
-print(lambda_handler('',''))
+# print(lambda_handler('',''))

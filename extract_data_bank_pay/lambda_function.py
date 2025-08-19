@@ -208,4 +208,4 @@ def lambda_handler(event, context):
             "body": json.dumps({"error": str(e)})
         }
     
-print(lambda_handler('',''))
+# print(lambda_handler('',''))

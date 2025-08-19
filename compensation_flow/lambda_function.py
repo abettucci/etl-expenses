@@ -7,7 +7,7 @@ from datetime import datetime
 
 # Importamos las variables del github secrets
 aws_region = os.environ["AWS_REGION"]
-aws_account_id = os.environ["AWS_ACCOUNT_ID"]
+aws_account_id = os.environ["aws_account_id"]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

@@ -1,6 +1,2 @@
 pandas
-boto3
-requests
-datetime
-botocore
-pytz
+rapidfuzz
