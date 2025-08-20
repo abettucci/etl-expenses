@@ -448,8 +448,7 @@ resource "aws_iam_role_policy" "secrets_token_access" {
           "secretsmanager:UpdateSecret"
         ]
         Resource = [
-          "arn:aws:secretsmanager:us-east-2:${var.aws_account_id}:secret:gcp_api_credentials-*",
-          "arn:aws:secretsmanager:us-east-2:${var.aws_account_id}:secret:gcp_api_credentials_2-*"
+          "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:gcp_api_credentials"
         ]
       }
     ]
@@ -615,6 +614,15 @@ resource "aws_iam_role_policy" "redshift_spectrum_glue_access" {
         ],
         Resource = "*"
       },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath"
+        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/mercado_pago/token"
+      }
       {
         Effect = "Allow",
         Action = [
