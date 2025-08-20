@@ -4,7 +4,7 @@ FROM public.ecr.aws/lambda/python:3.9
 
 # Agregar dependencias específicas para esta función
 COPY requirements.txt .
-RUN pip install -r requirements.txt --no-cache-dir --no-deps
+RUN pip install -r requirements.txt --no-cache-dir
 
 # Copia el código específico de esta función
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}
