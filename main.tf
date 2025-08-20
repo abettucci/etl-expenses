@@ -622,7 +622,7 @@ resource "aws_iam_role_policy" "redshift_spectrum_glue_access" {
           "ssm:GetParametersByPath"
         ]
         Resource = "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/mercado_pago/token"
-      }
+      },
       {
         Effect = "Allow",
         Action = [
