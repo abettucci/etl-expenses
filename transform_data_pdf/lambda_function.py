@@ -223,12 +223,6 @@ def lambda_handler(event, context):
         }
     except Exception as e:
         print("⚠️ Error:", str(e))
-        return {
-            "statusCode": 500,
-            "body": json.dumps({
-                "error": str(e),
-                "success": False
-            })
-        }
+        raise Exception(str(e))
 
 # print(lambda_handler('',''))

@@ -81,6 +81,6 @@ def lambda_handler(event, context):
             'body': json.dumps('Step Function started successfully!')
         }
     except Exception as e:
-
         print(f"⚠️ Error al recibir webhook y enviar datos a step function: {e}")
+        raise Exception(str(e))
 

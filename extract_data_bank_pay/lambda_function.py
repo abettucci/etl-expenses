@@ -203,9 +203,6 @@ def lambda_handler(event, context):
         extract_bank_payments_from_gmail(redshift_data)
     except Exception as e:
         print("⚠️ Error:", str(e))
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
+        raise Exception(str(e))
     
 # print(lambda_handler('',''))

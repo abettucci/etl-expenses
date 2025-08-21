@@ -705,10 +705,8 @@ def lambda_handler(event,context):
             insert_df_into_redshift(df, column_names_insert, 'bank_payments', redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
     except Exception as e:
         print("⚠️ Error:", str(e))
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
+        raise Exception(str(e))
+
 
 # s3_client = boto3.client('s3')
 # bucket_name = 'market-tickets'
