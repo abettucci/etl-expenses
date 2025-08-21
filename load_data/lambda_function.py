@@ -14,7 +14,8 @@ def format_value(val):
     if val is None or pd.isna(val):
         return 'NULL'
     if isinstance(val, str):
-        return f"'{val.replace("'", "''")}'"
+        # Escapar comillas simples en SQL ( ' -> '' )
+        return "'" + val.replace("'", "''") + "'"
     if isinstance(val, pd.Timestamp):
         return f"'{val.isoformat(sep=' ')}'"
     return str(val)  # para números
