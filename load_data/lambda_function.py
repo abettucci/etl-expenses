@@ -609,28 +609,36 @@ def lambda_handler(event,context):
         # Conexion a Redshift
         redshift_data = boto3.client('redshift-data')
 
-        body = json.loads(event['body'])
-        etl_flow = body['etl_flow']
-        bucket = body['bucket']
-        key = body['key']
+        # body = json.loads(event['body'])
+        # etl_flow = body['etl_flow']
+        # bucket = body['bucket']
+        # key = body['key']
 
-        # etl_flow = event['body']['etl_flow']
-        # bucket = event['body']['bucket']
-        # key = event['body']['key']
+        etl_flow = event['body']['etl_flow']
+        bucket = event['body']['bucket']
+        key = event['body']['key']
+
+        print('etl_flow: ', etl_flow)
+        print('bucket: ', bucket)
+        print('key: ', key)
         
         # print(f"📥 Descargando archivo desde S3: s3://{bucket}/{key}")
         s3 = boto3.client('s3')
         response = s3.get_object(Bucket=bucket, Key=key)
 
-        if key.endswith(".csv"):
-            df = pd.read_csv(
-                io.BytesIO(response['Body'].read()),
-                dtype={
+        if etl_flow == 'MP':
+            dtype = {}
+        elif etl_flow == 'TICKET':
+            dtype = {
                      'ean': str,
                      'grupo_producto': str,
                      'product_id': 'Int64'
                  }
-            )
+        else:
+            dtype = {}
+
+        if key.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(response['Body'].read()),dtype=dtype)
         elif key.endswith(".xlsx"):
             df = pd.read_excel(io.BytesIO(response['Body'].read()))
         else:
