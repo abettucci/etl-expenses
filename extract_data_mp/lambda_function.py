@@ -63,7 +63,7 @@ def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, ke
     response = requests.get(url, headers=headers, data=payload)
     response.raise_for_status()
 
-    if file_format == 'CSV':
+    if file_format.upper() IN ('FILE/CSV','CSV'):
         s3_client.put_object(
             Bucket=bucket_name,
             Key=key,
@@ -71,7 +71,7 @@ def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, ke
             ContentType='text/csv'
         )
         print(f'Reporte {report_id} de fecha {report_date}, subido a S3')
-    elif file_format == 'XLSX':
+    elif file_format.upper() in ('FILE/XLSX','XLSX'):
         s3_client.put_object(
             Bucket=bucket_name,
             Key=key,
