@@ -1005,6 +1005,9 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       "Transform MP Reports" = {
         Type     = "Task",
         Resource = aws_lambda_function.mp_report_processor.arn,
+        Parameters = {
+          "key.$": "$.key"
+        },
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
@@ -1018,6 +1021,11 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       "Load MP Reports" = {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Parameters = {
+          "etl_flow.$" = "$.body.etl_flow"
+          "bucket.$"   = "$.body.bucket"
+          "key.$"      = "$.body.key"
+        },
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
