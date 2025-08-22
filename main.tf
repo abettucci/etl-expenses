@@ -16,13 +16,13 @@ data "aws_caller_identity" "current" {}
 ########### 0. Definicion de Variables ###########
 
 # Definimos las variables que van a utilizar algunos recursos para referenciar a las ARN
-variable "AWS_ACCOUNT_ID" {
+variable "aws_account_id" {
   description = "AWS Account ID"
   type        = string
   sensitive   = true
 }
 
-variable "AWS_REGION" {
+variable "aws_region" {
   description = "AWS REGION"
   type        = string
   sensitive   = true
@@ -343,8 +343,8 @@ resource "aws_lambda_function" "compensation_flow" {
 
   environment {
     variables = {
-      ACCOUNT_ID = var.AWS_ACCOUNT_ID
-      REGION_ID = var.AWS_REGION
+      ACCOUNT_ID = var.aws_account_id
+      REGION_ID = var.aws_region
     }
   }
 }
@@ -448,7 +448,7 @@ resource "aws_iam_role_policy" "secrets_token_access" {
           "secretsmanager:UpdateSecret"
         ]
         Resource = [
-          "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:gcp_api_credentials"
+          "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:gcp_api_credentials"
         ]
       }
     ]
@@ -621,7 +621,7 @@ resource "aws_iam_role_policy" "redshift_spectrum_glue_access" {
           "ssm:GetParameters",
           "ssm:GetParametersByPath"
         ]
-        Resource = "arn:aws:ssm:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:parameter/mercado_pago/token"
+        Resource = "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/mercado_pago/token"
       },
       {
         Effect = "Allow",
@@ -961,7 +961,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
         "End": true
       }
     }
@@ -1061,7 +1061,7 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
         "End": true
       }
     }
@@ -1146,7 +1146,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
         "End": true
       }
     }
