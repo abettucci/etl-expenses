@@ -119,7 +119,9 @@ def extract_mercado_pago_reports(event):
 def lambda_handler(event, context):
     try:
         key = extract_mercado_pago_reports(event)
-        return {"key": key}
+        return {
+            "key": key
+        }
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))

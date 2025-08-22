@@ -82,12 +82,9 @@ def lambda_handler(event,context):
     try:
         new_key = transform_mp_report_data(event)        
         return {
-            "statusCode": 200,
-            "body": {
-                "etl_flow": 'MP',
-                "bucket": 'mercadopago-reports',
-                "key": new_key
-            }
+            "etl_flow": 'MP',
+            "bucket": 'mercadopago-reports',
+            "key": new_key
         }
     except Exception as e:
         print("⚠️ Error:", str(e))
