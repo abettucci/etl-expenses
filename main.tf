@@ -1022,9 +1022,11 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
         Parameters = {
-          "etl_flow.$" = "$.etl_flow"
-          "bucket.$"   = "$.bucket"
-          "key.$"      = "$.key"
+          "etl_flow.$"    = "$.etl_flow"
+          "bucket.$"      = "$.bucket"
+          "key.$"         = "$.key"
+          "report_id.$"   = "$.report_id"
+          "report_date.$" = "$.report_date"
         },
         Catch: [
           {
