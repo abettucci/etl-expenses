@@ -615,9 +615,9 @@ def lambda_handler(event,context):
         # bucket = body['bucket']
         # key = body['key']
 
-        etl_flow = event['body']['etl_flow']
-        bucket = event['body']['bucket']
-        key = event['body']['key']
+        etl_flow = event['etl_flow']
+        bucket = event['bucket']
+        key = event['key']
 
         print('etl_flow: ', etl_flow)
         print('bucket: ', bucket)
