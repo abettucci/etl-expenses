@@ -106,7 +106,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.aws_region }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   
@@ -144,7 +144,7 @@ jobs:
               # Verify the import
               if [ $? -ne 0 ]; then
                 echo "⚠️ Failed to import Lambda permission, trying alternative format..."
-                terraform import aws_lambda_permission.allow_api_gateway "arn:aws:lambda:${{ env.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai_agent/AllowAPIGatewayInvoke" || true
+                terraform import aws_lambda_permission.allow_api_gateway "arn:aws:lambda:${{ env.aws_region }}:${{ secrets.AWS_ACCOUNT_ID }}:function:ai_agent/AllowAPIGatewayInvoke" || true
               fi
             else
               echo "⚠️ Webhook resource not found in API Gateway"
@@ -201,8 +201,8 @@ jobs:
           terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs || true  
         
         env:
-          TF_VAR_aws_account_id: ${{ env.AWS_ACCOUNT_ID }}
-          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_aws_account_id: ${{ env.aws_account_id }}
+          TF_VAR_aws_region: ${{ env.aws_region }}
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -215,8 +215,8 @@ jobs:
           set -x
           terraform apply -auto-approve
         env:
-          TF_VAR_aws_account_id: ${{ env.AWS_ACCOUNT_ID }}
-          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_aws_account_id: ${{ env.aws_account_id }}
+          TF_VAR_aws_region: ${{ env.aws_region }}
           TF_VAR_email: ${{ secrets.EMAIL }}
           TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
