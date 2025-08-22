@@ -76,7 +76,7 @@ def transform_mp_report_data(event):
     s3_report_file_name, report_id, report_date = format_report_file_name(s3_filename)
     move_to_processed(s3_client, key, bucket_name)
 
-    return s3_report_file_name
+    return key
 
 def lambda_handler(event,context):
     try:
