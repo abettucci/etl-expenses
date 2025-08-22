@@ -1,8 +1,8 @@
 import boto3
 import io
-import os
 import pandas as pd
 import unicodedata
+import re
 
 def normalize_columns_auto(column_name):
     # Elimina tildes y convierte a ASCII
@@ -14,12 +14,24 @@ def normalize_columns_auto(column_name):
 def format_report_file_name(s3_filename):
     base = s3_filename.rsplit('_', 1)[0]
     extension = s3_filename.split('.')[-1]
-    report_file_name = f"{base}.{extension}"
-    
-    report_id = s3_filename.rsplit('_', 1)[-1].rsplit('.', 1)[0]
 
-    parts = s3_filename.rsplit('_', 2)
-    report_date = parts[-2]
+    if "_" in s3_filename:
+        # "settlement-279729559-2025-04-14-014721_2025-04-13_51102371.csv"
+        base = s3_filename.rsplit("_", 1)[0]  # hasta antes del último _
+        report_id = s3_filename.rsplit("_", 1)[-1].rsplit(".", 1)[0]
+        report_date = s3_filename.split("_")[-2]
+
+    else:
+        # Caso 2: formato manual
+        # "settlement-279729559-manual-2025-08-22-111914.csv"
+        base = s3_filename.rsplit("-", 1)[0]  # hasta antes del último "-"
+        report_id = s3_filename.rsplit("-", 1)[-1].rsplit(".", 1)[0]
+
+        # buscar la fecha con regex
+        match = re.search(r"\d{4}-\d{2}-\d{2}", s3_filename)
+        report_date = match.group(0) if match else None
+
+    report_file_name = f"{base}.{extension}"
 
     return report_file_name, report_id, report_date
 
