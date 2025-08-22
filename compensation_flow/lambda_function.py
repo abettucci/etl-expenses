@@ -6,8 +6,8 @@ import psycopg2
 from datetime import datetime
 
 # Importamos las variables del github secrets
-aws_region = os.environ["AWS_REGION"]
-aws_account_id = os.environ["aws_account_id"]
+aws_region = os.environ["REGION_ID"]
+aws_account_id = os.environ["ACCOUNT_ID"]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
