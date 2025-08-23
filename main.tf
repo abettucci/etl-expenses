@@ -16,31 +16,31 @@ data "aws_caller_identity" "current" {}
 ########### 0. Definicion de Variables ###########
 
 # Definimos las variables que van a utilizar algunos recursos para referenciar a las ARN
-variable "aws_account_id" {
+variable "AWS_ACCOUNT_ID" {
   description = "AWS Account ID"
   type        = string
   sensitive   = true
 }
 
-variable "aws_region" {
+variable "AWS_REGION" {
   description = "AWS REGION"
   type        = string
   sensitive   = true
 }
 
-variable "email" {
+variable "EMAIL" {
   description = "email"
   type        = string
   sensitive   = true
 }
 
-variable "redshift_user" {
+variable "REDSHIFT_USER" {
   description = "username redshift database"
   type        = string
   sensitive   = true
 }
 
-variable "redshift_password" {
+variable "REDSHIFT_PASSWORD" {
   description = "redshift database password"
   type        = string
   sensitive   = true
@@ -60,6 +60,12 @@ variable "OPENAI_API_KEY" {
 
 variable "CIFRADO_SECRET_MP" {
   description = "CIFRADO_SECRET_MP"
+  type        = string
+  sensitive   = true
+}
+
+variable "SNS_TOPIC" {
+  description = "SNS_TOPIC"
   type        = string
   sensitive   = true
 }
@@ -343,8 +349,9 @@ resource "aws_lambda_function" "compensation_flow" {
 
   environment {
     variables = {
-      ACCOUNT_ID = var.aws_account_id
-      REGION_ID = var.aws_region
+      ACCOUNT_ID = var.AWS_ACCOUNT_ID
+      REGION_ID = var.AWS_REGION
+      SNS_TOPIC = var.SNS_TOPIC
     }
   }
 }
@@ -448,7 +455,7 @@ resource "aws_iam_role_policy" "secrets_token_access" {
           "secretsmanager:UpdateSecret"
         ]
         Resource = [
-          "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:gcp_api_credentials-*"
+          "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:gcp_api_credentials-*"
         ]
       }
     ]
@@ -621,7 +628,7 @@ resource "aws_iam_role_policy" "redshift_spectrum_glue_access" {
           "ssm:GetParameters",
           "ssm:GetParametersByPath"
         ]
-        Resource = "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/mercado_pago/token"
+        Resource = "arn:aws:ssm:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:parameter/mercado_pago/token"
       },
       {
         Effect = "Allow",
@@ -961,7 +968,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
+        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
         "End": true
       }
     }
@@ -1064,7 +1071,7 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
+        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
         "End": true
       }
     }
@@ -1149,7 +1156,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
       # Step compensatorio por si falla algun step del job
       CompensationFlow: {
         "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:compensation_flow",
+        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
         "End": true
       }
     }
@@ -1243,7 +1250,7 @@ resource "aws_sns_topic" "stepfunction_alerts" {
 resource "aws_sns_topic_subscription" "email_subscription" {
   topic_arn = aws_sns_topic.stepfunction_alerts.arn
   protocol  = "email"
-  endpoint  = "${var.email}"
+  endpoint  = "${var.EMAIL}"
 }
 
 # 11.3 Calculo de metricas de errores de ejecucion del ETL de PDFs en Cloudwatch

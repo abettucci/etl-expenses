@@ -6,13 +6,14 @@ import psycopg2
 from datetime import datetime
 
 # Importamos las variables del github secrets
-aws_region = os.environ["aws_region"]
-aws_account_id = os.environ["aws_account_id"]
+aws_region = os.environ["REGION_ID"]
+aws_account_id = os.environ["ACCOUNT_ID"]
+sns_topic = os.environ["SNS_TOPIC"]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 sns_client = boto3.client('sns')
-SNS_TOPIC_ARN = f'arn:aws:sns:{aws_region}:{aws_account_id}:stepfunction-alerts'
+SNS_TOPIC_ARN = f'arn:aws:sns:{aws_region}:{aws_account_id}:{sns_topic}'
 
 # Iniciamos los servicios de AWS para realizar las operaciones de compensacion
 s3_client = boto3.client('s3')

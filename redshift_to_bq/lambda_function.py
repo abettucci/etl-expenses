@@ -6,6 +6,7 @@ from google.api_core.exceptions import GoogleAPICallError
 import time
 import json
 import warnings
+import pyarrow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
