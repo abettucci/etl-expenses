@@ -205,9 +205,7 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
         print(f"⚠️ Error inesperado: {str(e)}")
         return False
 
-def upload_dataframe_to_bigquery(df, table_id, schema=None):
-    client = bigquery.Client()
-    
+def upload_dataframe_to_bigquery(client, df, table_id, schema=None):    
     buffer = io.StringIO()
     df.to_csv(buffer, index=False)
     buffer.seek(0)
@@ -334,7 +332,7 @@ def lambda_handler(event, context):
             # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             # job.result()
 
-            upload_dataframe_to_bigquery(df, "project.dataset.table", schema)
+            upload_dataframe_to_bigquery(client, df, "project.dataset.table", schema)
 
             # df.to_gbq(
             #     destination_table=f"{stg_dataset_id}.{tabla}", 
@@ -355,7 +353,7 @@ def lambda_handler(event, context):
             # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             # job.result()
 
-            upload_dataframe_to_bigquery(df, "project.dataset.table", schema)
+            upload_dataframe_to_bigquery(client, df, "project.dataset.table", schema)
 
             # df.to_gbq(
             #     destination_table=f"{stg_dataset_id}.{tabla}", 
@@ -420,7 +418,7 @@ def lambda_handler(event, context):
             # job = client.load_table_from_dataframe(df, prod_table_id, job_config=job_config)
             # job.result()
 
-            upload_dataframe_to_bigquery(df, "project.dataset.table", schema)
+            upload_dataframe_to_bigquery(client, df, "project.dataset.table", schema)
 
             # df.to_gbq(
             #     destination_table=f"{tbl_dataset_id}.{tabla}", 
