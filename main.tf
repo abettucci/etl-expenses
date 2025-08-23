@@ -448,7 +448,7 @@ resource "aws_iam_role_policy" "secrets_token_access" {
           "secretsmanager:UpdateSecret"
         ]
         Resource = [
-          "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:gcp_api_credentials"
+          "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:gcp_api_credentials-*"
         ]
       }
     ]

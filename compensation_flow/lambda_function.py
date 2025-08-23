@@ -6,13 +6,13 @@ import psycopg2
 from datetime import datetime
 
 # Importamos las variables del github secrets
-aws_region = os.environ["REGION_ID"]
-aws_account_id = os.environ["ACCOUNT_ID"]
+aws_region = os.environ["aws_region"]
+aws_account_id = os.environ["aws_account_id"]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 sns_client = boto3.client('sns')
-SNS_TOPIC_ARN = f'arn:aws:sns:{aws_region}:{aws_account_id}:etl_alerts'
+SNS_TOPIC_ARN = f'arn:aws:sns:{aws_region}:{aws_account_id}:stepfunction-alerts'
 
 # Iniciamos los servicios de AWS para realizar las operaciones de compensacion
 s3_client = boto3.client('s3')
@@ -56,6 +56,7 @@ def cleanup_s3_temp_files(bucket_name, prefix):
         logger.info("No temporary files found to delete.")
 
 def lambda_handler(event, context):
+    print(event)
     logger.info("Compensation flow triggered due to failure in ETL process.")
     error_detail = json.dumps(event.get('error-info', {}))
     logger.error(f"Compensation triggered due to: {error_detail}")
