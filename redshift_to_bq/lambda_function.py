@@ -3,6 +3,7 @@ import pandas as pd
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
+from pandas_gbq import to_gbq
 import time
 import json
 import warnings
@@ -302,8 +303,14 @@ def lambda_handler(event, context):
                 autodetect=False
             )
 
-            job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
-            job.result()
+            # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
+            # job.result()
+            df.to_gbq(
+                destination_table=f"{stg_dataset_id}.{tabla}", 
+                project_id=project_id,
+                if_exists="replace"
+            )
+
             print("✅ Tabla creada y datos cargados.")
 
         # Si la tabla ya existe, solo transferimos los datos de redshift a bigquery a traves de pandas df
@@ -313,8 +320,14 @@ def lambda_handler(event, context):
                 write_disposition="WRITE_TRUNCATE",
                 autodetect=True
             )
-            job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
-            job.result()
+            # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
+            # job.result()
+
+            df.to_gbq(
+                destination_table=f"{stg_dataset_id}.{tabla}", 
+                project_id=project_id,
+                if_exists="replace"
+            )
             print("✅ Tabla ya existe, datos cargados.")
     
         # Hacemos el merge de la tabla de staging de BQ a la tabla productiva de BQ
@@ -370,8 +383,14 @@ def lambda_handler(event, context):
                 write_disposition="WRITE_EMPTY",
                 autodetect=False
             )
-            job = client.load_table_from_dataframe(df, prod_table_id, job_config=job_config)
-            job.result()
+            # job = client.load_table_from_dataframe(df, prod_table_id, job_config=job_config)
+            # job.result()
+
+            df.to_gbq(
+                destination_table=f"{tbl_dataset_id}.{tabla}", 
+                project_id=project_id,
+                if_exists="replace"
+            )
             print(f"✅ Tabla productiva {prod_table_id} creada.")
 
         result = table_merge_staging_to_production_bq(client, update_columns, tabla, staging_table_id, pk, tbl_project_dataset)

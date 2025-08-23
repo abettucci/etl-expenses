@@ -1,3 +1,4 @@
 pandas
 google-cloud-bigquery
 google-auth
+pandas_gbq
