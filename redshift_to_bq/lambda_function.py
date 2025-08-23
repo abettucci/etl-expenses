@@ -6,7 +6,6 @@ from google.api_core.exceptions import GoogleAPICallError
 import time
 import json
 import warnings
-import pyarrow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
@@ -102,6 +101,8 @@ def convert_column_types(df, table_name):
                         df[col] = pd.to_datetime(df[col], format='%d/%m/%y')
                     else:
                         df[col] = pd.to_datetime(df[col])
+                elif target_type == 'string':
+                    target_type = 'str'
                 else:
                     df[col] = df[col].astype(target_type)
             except (ValueError, TypeError) as e:
@@ -133,7 +134,7 @@ def convert_column_types(df, table_name):
                 pass
             
             # Si no es numérico ni fecha, lo dejamos como string
-            df[col] = df[col].astype('string')
+            df[col] = df[col].astype('str')
     
     return df
 
