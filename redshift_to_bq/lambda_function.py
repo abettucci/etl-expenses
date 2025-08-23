@@ -332,7 +332,7 @@ def lambda_handler(event, context):
             # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             # job.result()
 
-            upload_dataframe_to_bigquery(client, df, "project.dataset.table", schema)
+            upload_dataframe_to_bigquery(client, df, staging_table_id, schema)
 
             # df.to_gbq(
             #     destination_table=f"{stg_dataset_id}.{tabla}", 
@@ -353,7 +353,7 @@ def lambda_handler(event, context):
             # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             # job.result()
 
-            upload_dataframe_to_bigquery(client, df, "project.dataset.table", schema)
+            upload_dataframe_to_bigquery(client, df, staging_table_id, schema)
 
             # df.to_gbq(
             #     destination_table=f"{stg_dataset_id}.{tabla}", 
@@ -418,7 +418,7 @@ def lambda_handler(event, context):
             # job = client.load_table_from_dataframe(df, prod_table_id, job_config=job_config)
             # job.result()
 
-            upload_dataframe_to_bigquery(client, df, "project.dataset.table", schema)
+            upload_dataframe_to_bigquery(client, df, prod_table_id, schema)
 
             # df.to_gbq(
             #     destination_table=f"{tbl_dataset_id}.{tabla}", 
