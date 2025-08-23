@@ -203,7 +203,7 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
 
 def lambda_handler(event, context):
     try:
-        tabla = event["tabla"]
+        tabla = event["table_name"]
 
         creds = auth_google('gcp_api_credentials')
         project_id = 'hazel-pillar-400222'

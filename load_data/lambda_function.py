@@ -630,6 +630,7 @@ def lambda_handler(event,context):
         response = s3.get_object(Bucket=bucket, Key=key)
 
         if etl_flow == 'MP':
+            table_name = 'mp_data'
             dtype = {}
         elif etl_flow == 'TICKET':
             dtype = {
@@ -637,8 +638,10 @@ def lambda_handler(event,context):
                      'grupo_producto': str,
                      'product_id': 'Int64'
                  }
+            table_name = 'carrefour_data'
         else:
             dtype = {}
+            table_name = 'bank_payments'
 
         if key.endswith(".csv"):
             df = pd.read_csv(io.BytesIO(response['Body'].read()),dtype=dtype)
@@ -655,23 +658,23 @@ def lambda_handler(event,context):
             columnas_sql = ",\n  ".join(column_defs)
 
             print(f'Se lee el csv {key} o xlsx de reporte de mp convertido en S3 y se mergea a la tabla de mp_data')
-            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, 'mp_data', redshift_data, 'dev', 'pdf-etl-workgroup','REPORT_ID')
+            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup','REPORT_ID')
 
             column_names_insert = [clean_column_name(col) for col in df.columns]
             column_names_insert += ["REPORT_ID", "REPORT_DATE"]
             columnas_sql_insert = ", ".join(column_names_insert)
-            insert_df_into_redshift(df, columnas_sql_insert, 'mp_data', redshift_data, 'dev', 'pdf-etl-workgroup', report_id, report_date)
+            insert_df_into_redshift(df, columnas_sql_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', report_id, report_date)
         elif etl_flow == 'TICKET':
             report_id, report_date = '', ''
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
             column_defs += ["operation_id VARCHAR(255)"]
             columnas_sql = ",\n  ".join(column_defs)
 
-            print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de carrefour_data')
-            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, 'carrefour_data', redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
+            print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
+            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
 
             # column_names_insert = [clean_column_name(col) for col in df.columns]
-            insert_df_into_redshift(df, '', 'carrefour_data', redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
+            insert_df_into_redshift(df, '', table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
 
             # Cargamos el valor de nro_ticket a la tabla de archivos ingestados para no duplicar datos en una proxima carga
             # estandarizar nombre columna "id", "fecha_insert", "fecha_update" donde id para carrefour va a ser nro_ticket, para mp va a ser report_id
@@ -693,18 +696,23 @@ def lambda_handler(event,context):
             # Agregamos la columna nueva que creamos "operation_id" a la tabla de carrefour_data 
             # para evitar insertar registros repetidos de cada archivo => deberiamos hacer un check de esta
             # columna dentro del insert_df_into_redshift que se hace en carrefour_data
-            aggregate_table_in_redshift('carrefour_data', redshift_data, 'dev', 'pdf-etl-workgroup')
-            add_concatenated_column('carrefour_data', redshift_data, 'dev', 'pdf-etl-workgroup')
+            aggregate_table_in_redshift(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
+            add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
               
         else: # es un gasto del banco
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
             columnas_sql = ",\n  ".join(column_defs)
             
-            print(f'Se lee el mail {key} convertido en csv en S3 y se mergea a la tabla de bank_payments')
-            create_redshift_table_from_df(df, columnas_sql, 'bank_payments', redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
+            print(f'Se lee el mail {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
+            create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
 
             column_names_insert = [clean_column_name(col) for col in df.columns]
-            insert_df_into_redshift(df, column_names_insert, 'bank_payments', redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
+            insert_df_into_redshift(df, column_names_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
+
+        return {
+            'table_name': table_name
+        }
+
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))

@@ -1040,6 +1040,9 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       "Export Redshift data to BigQuery" = {
         Type     = "Task",
         Resource = aws_lambda_function.redshift_to_bq.arn,
+        Parameters = {
+          "table_name.$" = "$.table_name"
+        }
         Next     = "Run MP Reports Crawler",
         Catch: [
           {
