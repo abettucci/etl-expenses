@@ -162,7 +162,9 @@ jobs:
           terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_lambda_policy || true
           terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_start_policy || true
           terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_glue_policy || true
-          terraform import aws_iam_policy.lambda_redshift_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_ecr_access || true
+          terraform import aws_iam_policy.lambda_ecr_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_ecr_access || true
+          terraform import aws_iam_policy.lambda_redshift_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_redshift_access || true
+
           terraform import aws_iam_policy.lambda_bedrock_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_bedrock_access || true
           terraform import aws_iam_policy.lambda_s3_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_s3_access || true
 
@@ -185,8 +187,8 @@ jobs:
           terraform import aws_iam_role.step_function_role step_function_role || true
           terraform import aws_iam_role.glue_service_role glue_service_role || true
 
-          terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION}:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
-          terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION}:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
+          terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
+          terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
           terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
 
           terraform import aws_glue_catalog_database.etl_database "$TF_VAR_AWS_ACCOUNT_ID:etl_database" || true
