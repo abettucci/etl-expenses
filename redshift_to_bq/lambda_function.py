@@ -50,7 +50,7 @@ def convert_column_types(df, table_name):
         type_mapping = {
             'source_id': 'string',
             'report_id': 'string',
-            'report_date': 'datetime64[ns]',
+            'report_date': 'date',
             'settlement_date': 'datetime64[ns]',
             'payment_method_type': 'string',
             'transaction_type': 'string',
@@ -70,8 +70,8 @@ def convert_column_types(df, table_name):
             'comercio' : 'string',
             'cuotas': 'int64',
             'extraido_en': 'datetime64[ns]',
-            'fecha_pago': 'datetime64[ns]',
-            'hora_pago': 'datetime64[ns]',
+            'fecha_pago': 'date',
+            'hora_pago': 'string',
             'id' : 'string',
             'message_id' : 'string',
             'monto': 'float64',
@@ -82,7 +82,7 @@ def convert_column_types(df, table_name):
         # Mapeo de tipos para la tabla carrefour_data
         type_mapping = {
             'nro_ticket': 'int64',
-            'fecha': 'datetime64[ns]',
+            'fecha': 'date',
             'categ': 'string',
             'prod': 'string',
             'cant': 'int64',
