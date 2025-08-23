@@ -364,7 +364,7 @@ def lambda_handler(event, context):
     
         # Hacemos el merge de la tabla de staging de BQ a la tabla productiva de BQ
         if tabla == 'mp_data':
-            pk = 'REPORT_ID'
+            pk = 'report_id'
         elif tabla == 'carrefour_data':
             pk = 'nro_ticket'
         elif tabla == 'dim_producto':
