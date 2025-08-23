@@ -3,7 +3,8 @@ import pandas as pd
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
-from pandas_gbq import to_gbq
+# from pandas_gbq import to_gbq
+import io
 import time
 import json
 import warnings
@@ -204,6 +205,33 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
         print(f"⚠️ Error inesperado: {str(e)}")
         return False
 
+def upload_dataframe_to_bigquery(df, table_id, schema=None):
+    client = bigquery.Client()
+    
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    
+    job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.CSV,
+        skip_leading_rows=1,  # Para saltar el header
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        autodetect=True if schema is None else False,
+        schema=schema
+    )
+    
+    # Convertir StringIO a BytesIO (load_table_from_file espera bytes)
+    bytes_buffer = io.BytesIO(buffer.getvalue().encode('utf-8'))
+    
+    job = client.load_table_from_file(
+        bytes_buffer, 
+        table_id, 
+        job_config=job_config
+    )
+    job.result()
+    
+    print(f"Cargados {df.shape[0]} filas en {table_id}")
+
 def lambda_handler(event, context):
     try:
         tabla = event["table_name"]
@@ -297,37 +325,43 @@ def lambda_handler(event, context):
                     
                     schema.append(bigquery.SchemaField(column, bq_type))
                         
-            job_config = bigquery.LoadJobConfig(
-                schema = schema,
-                write_disposition="WRITE_EMPTY",
-                autodetect=False
-            )
+            # job_config = bigquery.LoadJobConfig(
+            #     schema = schema,
+            #     write_disposition="WRITE_EMPTY",
+            #     autodetect=False
+            # )
 
             # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             # job.result()
-            df.to_gbq(
-                destination_table=f"{stg_dataset_id}.{tabla}", 
-                project_id=project_id,
-                if_exists="replace"
-            )
+
+            upload_dataframe_to_bigquery(df, "project.dataset.table", schema)
+
+            # df.to_gbq(
+            #     destination_table=f"{stg_dataset_id}.{tabla}", 
+            #     project_id=project_id,
+            #     if_exists="replace"
+            # )
 
             print("✅ Tabla creada y datos cargados.")
 
         # Si la tabla ya existe, solo transferimos los datos de redshift a bigquery a traves de pandas df
         else:
             # Creo que deberia hacer un merge aca?
-            job_config = bigquery.LoadJobConfig(
-                write_disposition="WRITE_TRUNCATE",
-                autodetect=True
-            )
+            # job_config = bigquery.LoadJobConfig(
+            #     write_disposition="WRITE_TRUNCATE",
+            #     autodetect=True
+            # )
+
             # job = client.load_table_from_dataframe(df, staging_table_id, job_config=job_config)
             # job.result()
 
-            df.to_gbq(
-                destination_table=f"{stg_dataset_id}.{tabla}", 
-                project_id=project_id,
-                if_exists="replace"
-            )
+            upload_dataframe_to_bigquery(df, "project.dataset.table", schema)
+
+            # df.to_gbq(
+            #     destination_table=f"{stg_dataset_id}.{tabla}", 
+            #     project_id=project_id,
+            #     if_exists="replace"
+            # )
             print("✅ Tabla ya existe, datos cargados.")
     
         # Hacemos el merge de la tabla de staging de BQ a la tabla productiva de BQ
@@ -378,19 +412,22 @@ def lambda_handler(event, context):
                     bq_type = "STRING"
                 schema.append(bigquery.SchemaField(column, bq_type))
 
-            job_config = bigquery.LoadJobConfig(
-                schema=schema,
-                write_disposition="WRITE_EMPTY",
-                autodetect=False
-            )
+            # job_config = bigquery.LoadJobConfig(
+            #     schema=schema,
+            #     write_disposition="WRITE_EMPTY",
+            #     autodetect=False
+            # )
             # job = client.load_table_from_dataframe(df, prod_table_id, job_config=job_config)
             # job.result()
 
-            df.to_gbq(
-                destination_table=f"{tbl_dataset_id}.{tabla}", 
-                project_id=project_id,
-                if_exists="replace"
-            )
+            upload_dataframe_to_bigquery(df, "project.dataset.table", schema)
+
+            # df.to_gbq(
+            #     destination_table=f"{tbl_dataset_id}.{tabla}", 
+            #     project_id=project_id,
+            #     if_exists="replace"
+            # )
+
             print(f"✅ Tabla productiva {prod_table_id} creada.")
 
         result = table_merge_staging_to_production_bq(client, update_columns, tabla, staging_table_id, pk, tbl_project_dataset)
