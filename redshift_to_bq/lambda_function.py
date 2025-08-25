@@ -6,7 +6,7 @@ from google.api_core.exceptions import GoogleAPICallError
 import io
 import time
 import json
-from datetime import datetime
+import datetime
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
@@ -243,10 +243,12 @@ def build_bq_schema_from_df(df):
             bq_type = "BOOLEAN"
         elif pd.api.types.is_datetime64_any_dtype(dtype):
             bq_type = "TIMESTAMP"
-        elif dtype == "object" and df[column].apply(lambda x: isinstance(x, (datetime.date,))).all():
+        elif all(isinstance(x, datetime.date) and not isinstance(x, datetime.datetime) for x in df[column].dropna()):
+            # ojo: datetime.date pero NO datetime.datetime
             bq_type = "DATE"
         else:
             bq_type = "STRING"  # default
+
         schema.append(bigquery.SchemaField(column, bq_type))
 
     return schema
