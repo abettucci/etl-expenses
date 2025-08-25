@@ -348,7 +348,7 @@ def lambda_handler(event, context):
         print("✅ Datos cargados")
 
         ################# TABLA  PRODUCTIVA ######################
-        df, schema, table_exists = check_exists_and_prepare_schema_for_bq(df, client, tabla, prod_table_id)    
+        df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(df, client, tabla, prod_table_id)    
 
         # Crear tabla productiva si no existe
         if not table_exists:
