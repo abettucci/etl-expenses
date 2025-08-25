@@ -198,7 +198,7 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
         print(f"⚠️ Error inesperado: {str(e)}")
         return False
 
-def check_exists_and_prepare_schema_for_bq(client, tabla, staging_table_id):
+def check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id):
     df = convert_column_types(df, tabla)
 
     for column, dtype in df.dtypes.items():
@@ -332,7 +332,7 @@ def lambda_handler(event, context):
         df = get_df_from_redshift_table(redshift_data, tabla)
         
         ################# TABLA  STAGING ######################
-        df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(client, tabla, staging_table_id)        
+        df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id)        
 
         # Si no existe la tabla, la creamos de forma dinamica con las columnas del dataframe y luego transferimos los datos de redshift a bigquery a traves de pandas df
         if not table_exists:
@@ -346,7 +346,7 @@ def lambda_handler(event, context):
         print("✅ Datos cargados")
 
         ################# TABLA  PRODUCTIVA ######################
-        df, schema, table_exists = check_exists_and_prepare_schema_for_bq(client, tabla, prod_table_id)    
+        df, schema, table_exists = check_exists_and_prepare_schema_for_bq(df, client, tabla, prod_table_id)    
 
         # Crear tabla productiva si no existe
         if not table_exists:
