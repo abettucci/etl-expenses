@@ -48,22 +48,56 @@ def convert_column_types(df, table_name):
 
     if table_name == 'mp_data':
         type_mapping = {
-            'source_id': 'string',
-            'report_id': 'string',
-            'report_date': 'date',            # solo fecha
-            'settlement_date': 'datetime64[ns]',
-            'payment_method_type': 'string',
-            'transaction_type': 'string',
-            'transaction_amount': 'float64',
-            'transaction_date': 'datetime64[ns]',
-            'real_amount': 'float64',
-            'pos_id': 'string',
-            'store_id': 'string',
-            'store_name': 'string',
-            'payer_name': 'string',
-            'business_unit': 'string',
-            'sub_unit': 'string'
+            'EXTERNAL_REFERENCE': 'string',
+            'SOURCE_ID': 'int64',
+            'USER_ID': 'int64',
+            'PAYMENT_METHOD_TYPE': 'string',
+            'PAYMENT_METHOD': 'string',
+            'SITE': 'string',
+            'TRANSACTION_TYPE': 'string',
+            'TRANSACTION_AMOUNT': 'float64',
+            'TRANSACTION_CURRENCY': 'string',
+            'SELLER_AMOUNT': 'float64',
+            'TRANSACTION_DATE': 'datetime64[ns]',   # estaba como object, asumo que es fecha
+            'FEE_AMOUNT': 'float64',
+            'SETTLEMENT_NET_AMOUNT': 'float64',
+            'SETTLEMENT_CURRENCY': 'string',
+            'SETTLEMENT_DATE': 'datetime64[ns]',    # estaba como object, lo paso a fecha
+            'REAL_AMOUNT': 'float64',
+            'COUPON_AMOUNT': 'float64',
+            'METADATA': 'string',
+            'MKP_FEE_AMOUNT': 'float64',
+            'FINANCING_FEE_AMOUNT': 'float64',
+            'SHIPPING_FEE_AMOUNT': 'float64',
+            'TAXES_AMOUNT': 'float64',
+            'INSTALLMENTS': 'int64',
+            'TAX_DETAIL': 'float64',
+            'POS_ID': 'float64',
+            'STORE_ID': 'float64',
+            'STORE_NAME': 'float64',
+            'EXTERNAL_POS_ID': 'float64',
+            'POS_NAME': 'float64',
+            'EXTERNAL_STORE_ID': 'float64',
+            'ORDER_ID': 'float64',
+            'SHIPPING_ID': 'float64',
+            'SHIPMENT_MODE': 'float64',
+            'PACK_ID': 'float64',
+            'TAXES_DISAGGREGATED': 'string',
+            'POI_ID': 'float64',
+            'POI_WALLET_NAME': 'float64',
+            'POI_BANK_NAME': 'float64',
+            'CARD_INITIAL_NUMBER': 'float64',
+            'OPERATION_TAGS': 'float64',
+            'PAYER_ID_TYPE': 'string',
+            'PAYER_ID_NUMBER': 'float64',
+            'PAYER_NAME': 'string',
+            'BUSINESS_UNIT': 'string',
+            'SUB_UNIT': 'string',
+            'MONEY_RELEASE_DATE': 'datetime64[ns]',  # estaba como object, lo paso a fecha
+            'PRODUCT_SKU': 'float64',
+            'SALE_DETAIL': 'float64'
         }
+
     elif table_name == 'bank_payments':
         type_mapping = {
             'comercio' : 'string',
@@ -116,27 +150,7 @@ def convert_column_types(df, table_name):
             except (ValueError, TypeError) as e:
                 print(f"⚠️ No se pudo convertir la columna {col} a {target_type}: {e}")
                 continue
-        else:
-            # inferencia automática (igual que antes)
-            try:
-                numeric_vals = pd.to_numeric(df[col], errors='raise')
-                if (numeric_vals % 1 == 0).all():
-                    df[col] = numeric_vals.astype('int64')
-                else:
-                    df[col] = numeric_vals.astype('float64')
-                print(f"✅ Convertida columna {col} a numérico")
-                continue
-            except (ValueError, TypeError):
-                pass
-            
-            try:
-                datetime_vals = pd.to_datetime(df[col], errors='raise')
-                df[col] = datetime_vals
-                print(f"✅ Convertida columna {col} a datetime")
-                continue
-            except (ValueError, TypeError):
-                pass
-            
+        else: # si una columna no esta en el mapping, la considero string por default
             df[col] = df[col].astype('str')
     
     return df
@@ -207,9 +221,6 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
 
 def check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id):
     df = convert_column_types(df, tabla)
-
-    for column, dtype in df.dtypes.items():
-        print(column, dtype)
 
     table_has_data = False
     table_exists = False
@@ -413,14 +424,3 @@ def lambda_handler(event, context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
-
-# event = {
-#     "body": json.dumps({
-#         "tabla": 'carrefour_data'
-#     })
-# }
-
-# event = {"tabla": 'carrefour_data'}
-# event = {"tabla": 'archivos_ingestados'}
-
-# print(lambda_handler(event, ''))

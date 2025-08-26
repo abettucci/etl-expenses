@@ -605,15 +605,65 @@ def insert_df_into_redshift(df, columnas_sql, table_name, redshift_data, databas
         except Exception as e:
             print(f"❌ Error insertando fila en tabla: {str(e)}")
 
+def column_name_mapping(df):
+    column_mapping = {
+        "NUMERO_DE_IDENTIFICACION": "EXTERNAL_REFERENCE",
+        "ID_DE_OPERACION_EN_MERCADO_PAGO": "SOURCE_ID",
+        "CODIGO_DE_LA_CUENTA_DEL_VENDEDOR": "USER_ID",
+        "TIPO_DE_MEDIO_DE_PAGO": "PAYMENT_METHOD_TYPE",
+        "MEDIO_DE_PAGO": "PAYMENT_METHOD",
+        "PAIS_DE_ORIGEN_DE_LA_CUENTA_DE_MERCADO_PAGO": "SITE",
+        "TIPO_DE_OPERACION": "TRANSACTION_TYPE",
+        "VALOR_DE_LA_COMPRA": "TRANSACTION_AMOUNT",
+        "MONEDA": "TRANSACTION_CURRENCY",
+        "MONTO_RECIBIDO_POR_COMPRAS_POR_SPLIT": "SELLER_AMOUNT",
+        "FECHA_DE_ORIGEN": "TRANSACTION_DATE",
+        "COMISION_MAS_IVA": "FEE_AMOUNT",
+        "MONTO_NETO_DE_LA_OPERACION_QUE_IMPACTO_TU_DINERO": "SETTLEMENT_NET_AMOUNT",
+        "MONEDA_DE_LA_LIQUIDACION": "SETTLEMENT_CURRENCY",
+        "FECHA_DE_APROBACION": "SETTLEMENT_DATE",
+        "MONTO_NETO_DE_OPERACION": "REAL_AMOUNT",
+        "CUPON_DE_DESCUENTO": "COUPON_AMOUNT",
+        "DATOS_EXTRA": "METADATA",
+        "COMISION_DE_MERCADO_LIBRE_MAS_IVA": "MKP_FEE_AMOUNT",
+        "COMISION_POR_OFRECER_CUOTAS_SIN_INTERES": "FINANCING_FEE_AMOUNT",
+        "COSTO_DE_ENVIO": "SHIPPING_FEE_AMOUNT",
+        "IMPUESTOS_COBRADOS_POR_RETENCIONES_IIBB": "TAXES_AMOUNT",
+        "CUOTAS": "INSTALLMENTS",
+        "DETALLE_DE_IMPUESTOS": "TAX_DETAIL",
+        "ID_DE_CAJA": "POS_ID",
+        "ID_DE_LA_SUCURSAL": "STORE_ID",
+        "NOMBRE_DE_LA_SUCURSAL": "STORE_NAME",
+        "ID_DE_CAJA_DEFINIDO_POR_EL_USUARIO": "EXTERNAL_POS_ID",
+        "NOMBRE_DE_CAJA": "POS_NAME",
+        "ID_DE_SUCURSAL_DEFINIDO_POR_EL_USUARIO": "EXTERNAL_STORE_ID",
+        "ID_DE_LA_ORDEN": "ORDER_ID",
+        "ID_DEL_ENVIO": "SHIPPING_ID",
+        "MODO_DE_ENVIO": "SHIPMENT_MODE",
+        "ID_DEL_PAQUETE": "PACK_ID",
+        "IMPUESTOS_DESAGREGADOS": "TAXES_DISAGGREGATED",
+        "NUMERO_DE_SERIE_DEL_LECTOR_(S/N)": "POI_ID",
+        "BILLETERA_VIRTUAL": "POI_WALLET_NAME",
+        "BANCO_DE_ORIGEN": "POI_BANK_NAME",
+        "NUMERO_INICIAL_DE_TARJETA": "CARD_INITIAL_NUMBER",
+        "OPERATION_TAGS": "OPERATION_TAGS",  # ya coincide
+        "TIPO_DE_IDENTIFICACION_DEL_PAGADOR": "PAYER_ID_TYPE",
+        "NUMERO_DE_IDENTIFICACION_DEL_PAGADOR": "PAYER_ID_NUMBER",
+        "PAGADOR": "PAYER_NAME",
+        "CANAL_DE_VENTA": "BUSINESS_UNIT",
+        "PLATAFORMA_DE_COBRO": "SUB_UNIT",
+        "FECHA_DE_LIBERACION_DEL_DINERO": "MONEY_RELEASE_DATE",
+        "CODIGO_DE_PRODUCTO_SKU": "PRODUCT_SKU",
+        "DETALLE_DE_LA_VENTA": "SALE_DETAIL"
+    }
+
+    df.rename(columns=column_mapping, inplace=True)
+
+    return df
+
 def lambda_handler(event,context):
     try:
-        # Conexion a Redshift
         redshift_data = boto3.client('redshift-data')
-
-        # body = json.loads(event['body'])
-        # etl_flow = body['etl_flow']
-        # bucket = body['bucket']
-        # key = body['key']
 
         etl_flow = event['etl_flow']
         bucket = event['bucket']
@@ -653,6 +703,8 @@ def lambda_handler(event,context):
         if etl_flow == 'MP':
             report_id = event['report_id']
             report_date = event['report_date']
+
+            df = column_name_mapping(df)
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
             column_defs += ["REPORT_ID VARCHAR(500)", "REPORT_DATE VARCHAR(500)"]
             columnas_sql = ",\n  ".join(column_defs)
@@ -716,22 +768,3 @@ def lambda_handler(event,context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
-
-
-# s3_client = boto3.client('s3')
-# bucket_name = 'market-tickets'
-# folder = 'processed/'
-# response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
-# csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
-
-
-# for csv_key in csvs:
-#     event = {
-#         "body": json.dumps({
-#             "etl_flow": 'TICKET',
-#             "bucket": 'market-tickets',
-#             "key": csv_key
-#         })
-#     }
-
-#     lambda_handler(event,'')

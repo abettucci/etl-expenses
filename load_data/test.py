@@ -65,19 +65,19 @@ redshift_data = boto3.client('redshift-data')
 # redshift_data.execute_statement(
 #     Database='dev',
 #     WorkgroupName='pdf-etl-workgroup',
-#     Sql="DROP TABLE archivos_ingestados"
+#     Sql="DROP TABLE bank_payments"
 # )     
 
-redshift_data.execute_statement(
-    Database='dev',
-    WorkgroupName='pdf-etl-workgroup',
-    Sql="TRUNCATE TABLE carrefour_data"
-)     
+# redshift_data.execute_statement(
+#     Database='dev',
+#     WorkgroupName='pdf-etl-workgroup',
+#     Sql="TRUNCATE TABLE carrefour_data"
+# )     
 
 # query = """
 # SELECT column_name, data_type
 # FROM information_schema.columns
-# WHERE table_name = 'archivos_ingestados';
+# WHERE table_name = 'mp_data';
 # """     
 
 # query = """
