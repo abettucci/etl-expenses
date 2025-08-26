@@ -44,6 +44,8 @@ def convert_column_types(df, table_name):
     Intenta convertir las columnas del dataframe a los tipos de datos apropiados
     basado en el nombre de la tabla y los nombres de las columnas.
     """
+    print(df.dtypes)
+
     if table_name == 'mp_data':
         type_mapping = {
             'source_id': 'string',
@@ -89,6 +91,12 @@ def convert_column_types(df, table_name):
             'total_ticket_meli': 'float64'
         }
     
+    audit_cols_mappings = {
+        'INS_DTTM': 'datetime64[ns]',
+        'UPD_DTTM': 'datetime64[ns]'
+    }
+    type_mapping.update(audit_cols_mappings)
+
     for col in df.columns:
         if col in type_mapping:
             target_type = type_mapping[col]
@@ -157,10 +165,9 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
     
     # Create the INSERT clause with CAST for TIMESTAMP columns
     insert_cols = ", ".join([pk] + update_columns + timestamp_cols_insert)
-    insert_vals_parts = [f"S.{pk}"]
-
+    
     timestamp_vals_insert = ["CURRENT_TIMESTAMP()", "CURRENT_TIMESTAMP()"]
-    insert_vals_parts = []
+    insert_vals_parts = [f"S.{pk}"]
 
     for col in update_columns:
         if col.upper() in timestamp_cols:
@@ -225,6 +232,8 @@ def check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id):
             else:
                 # existe pero en miinuscula
                 df[col] = df[col].upper()
+
+    print(df.dtypes)
 
     # Si no se provee schema, inferirlo del DataFrame
     schema = build_bq_schema_from_df(df)
