@@ -193,6 +193,57 @@ resource "aws_api_gateway_deployment" "webhook_deployment" {
   stage_name  = "prod"
 }
 
+### REPETIMOS PARA LA API QUE RECIBE LOS WEBHOOKS DE GMAIL API ###
+resource "aws_api_gateway_rest_api" "gmail_api" {
+  name        = "gmail-webhook-api"
+  description = "API para recibir push de Gmail"
+}
+
+resource "aws_api_gateway_resource" "gmail_webhook" {
+  rest_api_id = aws_api_gateway_rest_api.gmail_api.id
+  parent_id   = aws_api_gateway_rest_api.gmail_api.root_resource_id
+  path_part   = "webhook"
+}
+
+# Método POST en /webhook
+resource "aws_api_gateway_method" "post_webhook" {
+  rest_api_id   = aws_api_gateway_rest_api.gmail_api.id
+  resource_id   = aws_api_gateway_resource.gmail_webhook.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+# Integración con Lambda
+resource "aws_api_gateway_integration" "lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.gmail_api.id
+  resource_id             = aws_api_gateway_resource.gmail_webhook.id
+  http_method             = aws_api_gateway_method.post_webhook.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.bank_payments_extractor.invoke_arn
+}
+
+# Permitir a API Gateway invocar la Lambda
+resource "aws_lambda_permission" "api_gateway_invoke" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"  
+  function_name = aws_lambda_function.bank_payments_extractor.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.gmail_api.execution_arn}/*/*"
+}
+
+# Deployment de la API
+resource "aws_api_gateway_deployment" "gmail_api_deployment" {
+  depends_on = [aws_api_gateway_integration.lambda_integration]
+
+  rest_api_id = aws_api_gateway_rest_api.gmail_api.id
+  stage_name  = "prod"
+}
+
+output "api_invoke_url" {
+  value = "${aws_api_gateway_deployment.gmail_api_deployment.invoke_url}"
+}
+
 ########### 4. Lambdas basadas en imágenes Docker ###########
 # 4.1 Lambda para extraer PDFs de Gmail
 resource "aws_lambda_function" "pdf_extractor" {
@@ -1309,4 +1360,3 @@ output "webhook_url" {
   value = "${aws_api_gateway_deployment.webhook_deployment.invoke_url}/webhook"
   description = "URL del webhook para configurar en Telegram"
 }
-

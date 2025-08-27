@@ -4,5 +4,6 @@
 /extract_data_pdf/credentials.json
 /extract_data_pdf/test.py
 /transform_data_bank_pay/test.py
+/extract_data_bank_pay/setup_gmail_watch.py
 /redshift_to_bq/test.py
 /pdfs_carrefour/
