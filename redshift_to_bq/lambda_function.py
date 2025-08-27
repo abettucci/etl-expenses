@@ -167,31 +167,18 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
 
     # Create the SET clause with CAST for TIMESTAMP columns
     set_clause_parts = []
-    timestamp_cols_insert = timestamp_cols
-
     for col in update_columns:
-        if col.upper() in timestamp_cols:
-            timestamp_cols_insert -= col.upper()
-            set_clause_parts.append(f"{col.upper()} = CAST(S.{col.upper()} AS TIMESTAMP)")
-        else:
+        if col.upper() not in timestamp_cols:
             set_clause_parts.append(f"{col.upper()} = S.{col.upper()}")
     set_clause = ", ".join(set_clause_parts + ["UPD_DTTM = CURRENT_TIMESTAMP()"])
     
     # Create the INSERT clause with CAST for TIMESTAMP columns
-    insert_cols = ", ".join([pk] + update_columns + timestamp_cols_insert)
-    
-    timestamp_vals_insert = ["CURRENT_TIMESTAMP()", "CURRENT_TIMESTAMP()"]
-    insert_vals_parts = [f"S.{pk}"]
-
+    insert_cols = ", ".join([pk] + update_columns + timestamp_cols)
+    insert_vals_parts = []
     for col in update_columns:
-        if col.upper() in timestamp_cols:
-            # sacar el primer elemento de timestamp_vals_insert
-            ts_val = timestamp_vals_insert.pop(0)
-            insert_vals_parts.append(ts_val)  
-        else:
+        if col.upper() not in timestamp_cols:
             insert_vals_parts.append(f"S.{col.upper()}")
-
-    insert_vals = ", ".join(insert_vals_parts)
+    insert_vals = ", ".join("S.{pk}" + insert_vals_parts + ["INS_DTTM = CURRENT_TIMESTAMP()", "UPD_DTTM = CURRENT_TIMESTAMP()"])
 
     merge_sql = f"""
         MERGE INTO `{target_table}` T
