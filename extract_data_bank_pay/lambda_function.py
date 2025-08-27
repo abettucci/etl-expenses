@@ -5,7 +5,6 @@ import base64
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
 import pandas as pd
-import os
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 pd.set_option('display.max_columns', None)
@@ -212,7 +211,7 @@ def process_email(message_id, gmail_service):
 
 def lambda_handler(event, context):
     try:
-        print(f"Mensaje Pub/Sub:: {json.dumps(event)}")
+        print(f"Mensaje Pub/Sub: {json.dumps(event)}")
 
         creds = auth_google('gcp_api_credentials')
         gmail_service = build('gmail', 'v1', credentials=creds)

@@ -4,11 +4,48 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 4.0"
     }
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
   }
 }
 
 provider "aws" {
   region = "us-east-2"
+}
+
+provider "google" {
+  project = "tu-proyecto"
+  region  = "us-central1"
+}
+
+# Service Account
+resource "google_service_account" "pubsub_sa" {
+  account_id   = "pubsub-worker"
+  display_name = "PubSub Worker SA"
+}
+
+# Pub/Sub Topic
+resource "google_pubsub_topic" "gmail_events" {
+  name = "gmail-events"
+}
+
+# Pub/Sub Subscription
+resource "google_pubsub_subscription" "gmail_subscription" {
+  name  = "sub-to-api-gateway"
+  topic = google_pubsub_topic.gmail_events.id
+  
+  push_config {
+    push_endpoint = "${aws_api_gateway_rest_api.gmail_api.execution_arn}"
+  }
+}
+
+# IAM Binding en el tópico
+resource "google_pubsub_topic_iam_member" "sa_publisher" {
+  topic = google_pubsub_topic.gmail_events.name
+  role  = "roles/pubsub.publisher"
+  member = "serviceAccount:${google_service_account.pubsub_sa.email}"
 }
 
 data "aws_caller_identity" "current" {}
