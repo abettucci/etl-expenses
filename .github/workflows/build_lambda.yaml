@@ -115,7 +115,10 @@ jobs:
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: 1.5.6
-
+      
+      # - name: Configure GCP Credentials
+      #   run: echo "${{ secrets.GCP_CREDENTIALS }}" > gcp-creds.json
+          
       - name: Terraform Init
         run: |
           set -x

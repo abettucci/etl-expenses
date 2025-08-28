@@ -50,6 +50,15 @@ resource "google_pubsub_topic_iam_member" "sa_publisher" {
 
 data "aws_caller_identity" "current" {}
 
+# Leer el secreto de AWS Secrets Manager
+data "aws_secretsmanager_secret_version" "gcp_ua_creds" {
+  secret_id = "gcp_api_credentials"
+}
+
+data "aws_secretsmanager_secret_version" "gcp_sa_creds" {
+  secret_id = "gcp_sa_api_credentials"
+}
+
 ########### 0. Definicion de Variables ###########
 
 # Definimos las variables que van a utilizar algunos recursos para referenciar a las ARN
