@@ -35,8 +35,8 @@ provider "google" {
 
 # Service Account
 resource "google_service_account" "pubsub_sa" {
-  account_id   = "pubsub-worker"
-  display_name = "PubSub Worker SA"
+  account_id   = "terraform-sa"
+  display_name = "terraform SA"
 }
 
 # Pub/Sub Topic

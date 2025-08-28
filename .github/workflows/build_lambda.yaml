@@ -230,7 +230,7 @@ jobs:
           fi
           
           # Importar Service Account existente
-          terraform import google_service_account.pubsub_sa projects/hazel-pillar-400222/serviceAccounts/pubsub-worker@hazel-pillar-400222.iam.gserviceaccount.com
+          terraform import google_service_account.pubsub_sa projects/hazel-pillar-400222/serviceAccounts/terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com
 
           # Importar Topic existente
           terraform import google_pubsub_topic.gmail_events projects/hazel-pillar-400222/topics/gmail-events
