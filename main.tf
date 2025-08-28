@@ -15,8 +15,21 @@ provider "aws" {
   region = "us-east-2"
 }
 
+
+data "aws_caller_identity" "current" {}
+
+# Leer el secreto de AWS Secrets Manager
+data "aws_secretsmanager_secret_version" "gcp_ua_creds" {
+  secret_id = "gcp_api_credentials"
+}
+
+data "aws_secretsmanager_secret_version" "gcp_sa_creds" {
+  secret_id = "gcp_sa_api_credentials"
+}
+
 provider "google" {
-  project = "tu-proyecto"
+  credentials = data.aws_secretsmanager_secret_version.gcp_sa_creds.secret_string
+  project = "hazel-pillar-400222"
   region  = "us-central1"
 }
 
@@ -46,17 +59,6 @@ resource "google_pubsub_topic_iam_member" "sa_publisher" {
   topic = google_pubsub_topic.gmail_events.name
   role  = "roles/pubsub.publisher"
   member = "serviceAccount:${google_service_account.pubsub_sa.email}"
-}
-
-data "aws_caller_identity" "current" {}
-
-# Leer el secreto de AWS Secrets Manager
-data "aws_secretsmanager_secret_version" "gcp_ua_creds" {
-  secret_id = "gcp_api_credentials"
-}
-
-data "aws_secretsmanager_secret_version" "gcp_sa_creds" {
-  secret_id = "gcp_sa_api_credentials"
 }
 
 ########### 0. Definicion de Variables ###########
