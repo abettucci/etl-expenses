@@ -33,34 +33,6 @@ provider "google" {
   region  = "us-central1"
 }
 
-# Service Account
-resource "google_service_account" "pubsub_sa" {
-  account_id   = "terraform-sa"
-  display_name = "terraform SA"
-}
-
-# Pub/Sub Topic
-resource "google_pubsub_topic" "gmail_events" {
-  name = "gmail-events"
-}
-
-# Pub/Sub Subscription
-resource "google_pubsub_subscription" "gmail_subscription" {
-  name  = "sub-to-api-gateway"
-  topic = google_pubsub_topic.gmail_events.id
-  
-  push_config {
-    push_endpoint = "${aws_api_gateway_rest_api.gmail_api.execution_arn}"
-  }
-}
-
-# IAM Binding en el tópico
-resource "google_pubsub_topic_iam_member" "sa_publisher" {
-  topic = google_pubsub_topic.gmail_events.name
-  role  = "roles/pubsub.publisher"
-  member = "serviceAccount:${google_service_account.pubsub_sa.email}"
-}
-
 ########### 0. Definicion de Variables ###########
 
 # Definimos las variables que van a utilizar algunos recursos para referenciar a las ARN
@@ -290,6 +262,34 @@ resource "aws_api_gateway_deployment" "gmail_api_deployment" {
 
 output "api_invoke_url" {
   value = "${aws_api_gateway_deployment.gmail_api_deployment.invoke_url}"
+}
+
+# Service Account
+resource "google_service_account" "pubsub_sa" {
+  account_id   = "terraform-sa"
+  display_name = "terraform SA"
+}
+
+# Pub/Sub Topic
+resource "google_pubsub_topic" "gmail_events" {
+  name = "gmail-events"
+}
+
+# Pub/Sub Subscription
+resource "google_pubsub_subscription" "gmail_subscription" {
+  name  = "sub-to-api-gateway"
+  topic = google_pubsub_topic.gmail_events.id
+  
+  push_config {
+    push_endpoint = "${aws_api_gateway_deployment.gmail_api_deployment.invoke_url}"
+  }
+}
+
+# IAM Binding en el tópico
+resource "google_pubsub_topic_iam_member" "sa_publisher" {
+  topic = google_pubsub_topic.gmail_events.name
+  role  = "roles/pubsub.publisher"
+  member = "serviceAccount:${google_service_account.pubsub_sa.email}"
 }
 
 ########### 4. Lambdas basadas en imágenes Docker ###########
