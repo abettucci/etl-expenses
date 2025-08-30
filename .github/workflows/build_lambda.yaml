@@ -170,13 +170,13 @@ jobs:
           terraform import aws_iam_policy.lambda_bedrock_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_bedrock_access || true
           terraform import aws_iam_policy.lambda_s3_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_s3_access || true
           
-          terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
-          terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
+          # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
+          # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
 
-          terraform import aws_iam_role_policy_attachment.lambda_s3 lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_s3_access || true
-          terraform import aws_iam_role_policy_attachment.lambda_redshift lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_redshift_access || true
-          terraform import aws_iam_role_policy_attachment.lambda_bedrock lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_bedrock_access || true
-          terraform import aws_iam_role_policy_attachment.lambda_basic lambda_exec/arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || true
+          # terraform import aws_iam_role_policy_attachment.lambda_s3 lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_s3_access || true
+          # terraform import aws_iam_role_policy_attachment.lambda_redshift lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_redshift_access || true
+          # terraform import aws_iam_role_policy_attachment.lambda_bedrock lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_bedrock_access || true
+          # terraform import aws_iam_role_policy_attachment.lambda_basic lambda_exec/arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || true
 
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace || true
           terraform import aws_lambda_permission.allow_api_gateway ai_agent/AllowAPIGatewayInvoke || true
@@ -211,10 +211,10 @@ jobs:
           terraform import aws_redshiftserverless_workgroup.etl_workgroup pdf-etl-workgroup || true
 
           terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs || true  
-          terraform import aws_cloudwatch_event_rule.weekly_monday_schedule weekly-monday-schedule || true
-          terraform import aws_cloudwatch_event_target.trigger_pdf_etl weekly-monday-schedule/arn:aws:states:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stateMachine:pdf-etl-flow || true
-          terraform import aws_cloudwatch_event_target.trigger_bank_payments_etl weekly-monday-schedule/arn:aws:states:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stateMachine:bank-payments-etl-flow || true
-          terraform import aws_cloudwatch_metric_alarm.etl_step_function_pdf_failure etl-step-function-pdf-failure || true
+          # terraform import aws_cloudwatch_event_rule.weekly_monday_schedule weekly-monday-schedule || true
+          # terraform import aws_cloudwatch_event_target.trigger_pdf_etl weekly-monday-schedule/arn:aws:states:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stateMachine:pdf-etl-flow || true
+          # terraform import aws_cloudwatch_event_target.trigger_bank_payments_etl weekly-monday-schedule/arn:aws:states:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stateMachine:bank-payments-etl-flow || true
+          # terraform import aws_cloudwatch_metric_alarm.etl_step_function_pdf_failure etl-step-function-pdf-failure || true
                     
           terraform import aws_sns_topic.stepfunction_alerts arn:aws:sns:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stepfunction-alerts || true
           SUB_ARN=$(aws sns list-subscriptions-by-topic \
@@ -239,7 +239,8 @@ jobs:
           # terraform import google_pubsub_subscription.gmail_subscription projects/hazel-pillar-400222/subscriptions/sub-to-api-gateway
 
           # Importar IAM Binding del topic
-          terraform import google_pubsub_topic_iam_member.sa_publisher projects/hazel-pillar-400222/topics/gmail-events roles/pubsub.publisher serviceAccount:pubsub-worker@hazel-pillar-400222.iam.gserviceaccount.com
+          terraform import google_pubsub_topic_iam_member.sa_publisher \
+          "projects/hazel-pillar-400222/topics/gmail-events roles/pubsub.publisher serviceAccount:pubsub-worker@hazel-pillar-400222.iam.gserviceaccount.com"
 
       - name: Terraform Apply
         run: |
