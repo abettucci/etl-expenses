@@ -138,130 +138,152 @@ resource "aws_ecr_repository" "lambda_images" {
 }
 
 ########### 4. API Gateway ###########
-# API Gateway para Telegram Webhook
-resource "aws_api_gateway_rest_api" "telegram_webhook" {
-  name = "telegram-redshift-bot"
-  
-  # Evitar destruir si ya existe
-  lifecycle {
-    prevent_destroy = true
-  }
+# API Gateway principal
+resource "aws_api_gateway_rest_api" "main_api" {
+  name        = "main-api"
+  description = "API Gateway único para Telegram Bot y mails de gastos del banco y de supermercado"
 }
 
-resource "aws_api_gateway_resource" "webhook" {
-  rest_api_id = aws_api_gateway_rest_api.telegram_webhook.id
-  path_part   = "webhook"
-  parent_id   = aws_api_gateway_rest_api.telegram_webhook.root_resource_id
-  
-  # Evitar destruir si ya existe
-  lifecycle {
-    prevent_destroy = true
-  }
+# Recurso /telegram_bot
+resource "aws_api_gateway_resource" "telegram_bot_resource" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  parent_id   = aws_api_gateway_rest_api.main_api.root_resource_id
+  path_part   = "telegram_bot"
 }
 
-resource "aws_api_gateway_method" "post" {
-  rest_api_id   = aws_api_gateway_rest_api.telegram_webhook.id
-  resource_id   = aws_api_gateway_resource.webhook.id
+# Método y Lambda para /telegram_bot
+resource "aws_api_gateway_method" "telegram_bot_method" {
+  rest_api_id   = aws_api_gateway_rest_api.main_api.id
+  resource_id   = aws_api_gateway_resource.telegram_bot_resource.id
   http_method   = "POST"
   authorization = "NONE"
-  
-  # Evitar destruir si ya existe
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
-resource "aws_api_gateway_integration" "lambda" {
-  rest_api_id = aws_api_gateway_rest_api.telegram_webhook.id
-  resource_id = aws_api_gateway_resource.webhook.id
-  http_method = aws_api_gateway_method.post.http_method
-
+resource "aws_api_gateway_integration" "telegram_bot_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.main_api.id
+  resource_id             = aws_api_gateway_resource.telegram_bot_resource.id
+  http_method             = aws_api_gateway_method.telegram_bot_method.http_method
   integration_http_method = "POST"
-  type                   = "AWS_PROXY"
-  uri                    = aws_lambda_function.ai_agent.invoke_arn
-  
-  # Evitar destruir si ya existe
-  lifecycle {
-    prevent_destroy = true
-  }
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.ai_agent.invoke_arn
 }
 
-resource "aws_lambda_permission" "allow_api_gateway" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.ai_agent.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.telegram_webhook.execution_arn}/*/*"
-  
-  depends_on = [
-    aws_api_gateway_rest_api.telegram_webhook,
-    aws_lambda_function.ai_agent
-  ]
-  
-  lifecycle {
-    create_before_destroy = true
-    # Prevenir cambios que requieran recreación
-    ignore_changes = [
-      source_arn
-    ]
-  }
+# Recurso /market_pdf
+resource "aws_api_gateway_resource" "market_pdf_resource" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  parent_id   = aws_api_gateway_rest_api.main_api.root_resource_id
+  path_part   = "market_pdf"
 }
 
-resource "aws_api_gateway_deployment" "webhook_deployment" {
-  depends_on = [aws_api_gateway_integration.lambda]
-  rest_api_id = aws_api_gateway_rest_api.telegram_webhook.id
-  stage_name  = "prod"
-}
-
-### REPETIMOS PARA LA API QUE RECIBE LOS WEBHOOKS DE GMAIL API ###
-resource "aws_api_gateway_rest_api" "gmail_api" {
-  name        = "gmail-webhook-api"
-  description = "API para recibir push de Gmail"
-}
-
-resource "aws_api_gateway_resource" "gmail_webhook" {
-  rest_api_id = aws_api_gateway_rest_api.gmail_api.id
-  parent_id   = aws_api_gateway_rest_api.gmail_api.root_resource_id
-  path_part   = "webhook"
-}
-
-# Método POST en /webhook
-resource "aws_api_gateway_method" "post_webhook" {
-  rest_api_id   = aws_api_gateway_rest_api.gmail_api.id
-  resource_id   = aws_api_gateway_resource.gmail_webhook.id
+# Método y Lambda para /market_pdf
+resource "aws_api_gateway_method" "market_pdf_method" {
+  rest_api_id   = aws_api_gateway_rest_api.main_api.id
+  resource_id   = aws_api_gateway_resource.market_pdf_resource.id
   http_method   = "POST"
   authorization = "NONE"
 }
 
-# Integración con Lambda
-resource "aws_api_gateway_integration" "lambda_integration" {
-  rest_api_id             = aws_api_gateway_rest_api.gmail_api.id
-  resource_id             = aws_api_gateway_resource.gmail_webhook.id
-  http_method             = aws_api_gateway_method.post_webhook.http_method
+resource "aws_api_gateway_integration" "market_pdf_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.main_api.id
+  resource_id             = aws_api_gateway_resource.market_pdf_resource.id
+  http_method             = aws_api_gateway_method.market_pdf_method.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.pdf_extractor.invoke_arn
+}
+
+# Recurso /pdf_extractor
+resource "aws_api_gateway_resource" "bank_pdf_extractor_resource" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  parent_id   = aws_api_gateway_rest_api.main_api.root_resource_id
+  path_part   = "bank_pdf"
+}
+
+# Método y Lambda para /pdf_extractor
+resource "aws_api_gateway_method" "bank_pdf_extractor_method" {
+  rest_api_id   = aws_api_gateway_rest_api.main_api.id
+  resource_id   = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "bank_pdf_extractor_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.main_api.id
+  resource_id             = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+  http_method             = aws_api_gateway_method.bank_pdf_extractor_method.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = aws_lambda_function.bank_payments_extractor.invoke_arn
 }
 
-# Permitir a API Gateway invocar la Lambda
-resource "aws_lambda_permission" "api_gateway_invoke" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"  
+# Deployment y stage
+resource "aws_api_gateway_deployment" "main_api_deployment" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  stage_name  = "prod"
+
+  depends_on = [
+    aws_api_gateway_integration.telegram_bot_integration,
+    aws_api_gateway_integration.market_pdf_integration,
+    aws_api_gateway_integration.bank_pdf_extractor_integration,
+  ]
+}
+
+resource "aws_lambda_permission" "allow_api_gateway_ai_agent" {
+  statement_id  = "AllowAPIGatewayInvokeAiAgent"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "apigateway.amazonaws.com"
+
+  # Usamos el ARN del api_gateway unificado
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
+
+  depends_on = [
+    aws_api_gateway_rest_api.main_api,
+    aws_lambda_function.ai_agent
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [source_arn]
+  }
+}
+
+resource "aws_lambda_permission" "allow_api_gateway_bank_pdf_extractor" {
+  statement_id  = "AllowAPIGatewayInvokeBankPdfExtractor"
+  action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.bank_payments_extractor.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.gmail_api.execution_arn}/*/*"
+
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
+
+  depends_on = [
+    aws_api_gateway_rest_api.main_api,
+    aws_lambda_function.bank_payments_extractor
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [source_arn]
+  }
 }
 
-# Deployment de la API
-resource "aws_api_gateway_deployment" "gmail_api_deployment" {
-  depends_on = [aws_api_gateway_integration.lambda_integration]
+resource "aws_lambda_permission" "allow_api_gateway_market_pdf_extractor" {
+  statement_id  = "AllowAPIGatewayInvokeMarketPdfExtractor"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.pdf_extractor.function_name
+  principal     = "apigateway.amazonaws.com"
 
-  rest_api_id = aws_api_gateway_rest_api.gmail_api.id
-  stage_name  = "prod"
-}
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
 
-output "api_invoke_url" {
-  value = "${aws_api_gateway_deployment.gmail_api_deployment.invoke_url}"
+  depends_on = [
+    aws_api_gateway_rest_api.main_api,
+    aws_lambda_function.pdf_extractor
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [source_arn]
+  }
 }
 
 # Service Account
@@ -958,29 +980,6 @@ resource "aws_iam_role_policy_attachment" "compensation_lambda_sns_publish" {
 }
 
 ########### 7. Triggers y Eventos ###########
-# 7.1 Cron schedule para ejecutar el ETL de los PDFs de Gmail
-resource "aws_cloudwatch_event_rule" "weekly_monday_schedule" {
-  name                = "etl_step_function_schedule"
-  description         = "Ejecuta la Step Function cada lunes a las 7:00 AM UTC"
-  schedule_expression = "cron(0 7 ? * MON *)"
-}
-
-# 7.2 Attachment de cron schedule de Cloudwatch a la Step Function de PDFs de Gmail
-resource "aws_cloudwatch_event_target" "trigger_pdf_etl" {
-  rule      = aws_cloudwatch_event_rule.weekly_monday_schedule.name
-  target_id = "TriggerPDFETL"
-  arn       = aws_sfn_state_machine.pdf_etl_flow.arn
-  role_arn  = aws_iam_role.step_function_role.arn
-}
-
-# 7.3 Attachment de cron schedule de Cloudwatch a la Step Function de Gastos del banco de Gmail
-resource "aws_cloudwatch_event_target" "trigger_bank_payments_etl" {
-  rule      = aws_cloudwatch_event_rule.weekly_monday_schedule.name
-  target_id = "TriggerBankPaymentsETL"
-  arn       = aws_sfn_state_machine.bank_payments_etl_flow.arn
-  role_arn  = aws_iam_role.step_function_role.arn
-}
-
 # 7.4 Creacion de grupo de logging de los ETLs
 resource "aws_cloudwatch_log_group" "etl_logs" {
   name              = "/aws/vendedlogs/states/etl-logs"
@@ -1403,8 +1402,20 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure"
   alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
 }
 
-# Output para obtener la URL del webhook
-output "webhook_url" {
-  value = "${aws_api_gateway_deployment.webhook_deployment.invoke_url}/webhook"
+# Output para obtener la URL del webhook de Telegram
+output "telegram_webhook_url" {
+  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/telegram_bot"
   description = "URL del webhook para configurar en Telegram"
+}
+
+# Output para obtener la URL del webhook de Gmail
+output "market_pdf_webhook_url" {
+  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
+  description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del supermercado"
+}
+
+# Output para obtener la URL del webhook de Gmail
+output "bank_pdf_webhook_url" {
+  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+  description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del banco"
 }

@@ -127,34 +127,6 @@ jobs:
           terraform import aws_ecr_repository.lambda_images etl-expenses || true
           terraform import aws_ecr_lifecycle_policy.delete_unwanted_images etl-expenses || true
 
-          terraform import aws_api_gateway_rest_api.telegram_webhook $(aws apigateway get-rest-apis --query "items[?name=='telegram-redshift-bot'].id" --output text) || true          
-          API_ID=$(aws apigateway get-rest-apis --query "items[?name=='telegram-redshift-bot'].id" --output text)
-          if [ ! -z "$API_ID" ]; then
-            ROOT_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/'].id" --output text)
-            WEBHOOK_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/webhook'].id" --output text)
-            
-            if [ ! -z "$WEBHOOK_ID" ]; then
-              echo "🔄 Importing existing API Gateway resources..."
-              terraform import aws_api_gateway_resource.webhook $API_ID/$WEBHOOK_ID || true
-              terraform import aws_api_gateway_method.post $API_ID/$WEBHOOK_ID/POST || true
-              terraform import aws_api_gateway_integration.lambda $API_ID/$WEBHOOK_ID/POST || true
-              
-              # Import Lambda permission with correct format
-              echo "🔐 Importing Lambda permission for API Gateway..."
-              terraform import aws_lambda_permission.allow_api_gateway "ai_agent/AllowAPIGatewayInvoke" || true
-              
-              # Verify the import
-              if [ $? -ne 0 ]; then
-                echo "⚠️ Failed to import Lambda permission, trying alternative format..."
-                terraform import aws_lambda_permission.allow_api_gateway "arn:aws:lambda:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:function:ai_agent/AllowAPIGatewayInvoke" || true
-              fi
-            else
-              echo "⚠️ Webhook resource not found in API Gateway"
-            fi
-          else
-            echo "⚠️ API Gateway 'telegram-redshift-bot' not found"
-          fi
-          
           terraform import aws_s3_bucket.market_tickets market-tickets || true
           terraform import aws_s3_bucket.mp_reports mercadopago-reports || true
           terraform import aws_s3_bucket.bank_payments bank-payments || true
@@ -211,9 +183,6 @@ jobs:
           terraform import aws_redshiftserverless_workgroup.etl_workgroup pdf-etl-workgroup || true
 
           terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs || true  
-          # terraform import aws_cloudwatch_event_rule.weekly_monday_schedule weekly-monday-schedule || true
-          # terraform import aws_cloudwatch_event_target.trigger_pdf_etl weekly-monday-schedule/arn:aws:states:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stateMachine:pdf-etl-flow || true
-          # terraform import aws_cloudwatch_event_target.trigger_bank_payments_etl weekly-monday-schedule/arn:aws:states:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stateMachine:bank-payments-etl-flow || true
           # terraform import aws_cloudwatch_metric_alarm.etl_step_function_pdf_failure etl-step-function-pdf-failure || true
                     
           terraform import aws_sns_topic.stepfunction_alerts arn:aws:sns:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stepfunction-alerts || true
