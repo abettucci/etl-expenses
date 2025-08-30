@@ -240,7 +240,7 @@ jobs:
 
           # Importar IAM Binding del topic
           terraform import google_pubsub_topic_iam_member.sa_publisher \
-          "projects/hazel-pillar-400222/topics/gmail-events roles/pubsub.publisher serviceAccount:pubsub-worker@hazel-pillar-400222.iam.gserviceaccount.com"
+          "projects/hazel-pillar-400222/topics/gmail-events roles/pubsub.publisher serviceAccount:terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com"
 
       - name: Terraform Apply
         run: |
