@@ -222,7 +222,7 @@ jobs:
         run: |
           set -x
           # Extraer SOLO la URL usando grep y sed
-          RAW_OUTPUT=$(terraform output v)
+          RAW_OUTPUT=$(terraform output telegram_webhook_url)
           WEBHOOK_URL=$(echo "$RAW_OUTPUT" | grep -o 'https://[^[:space:]]*' | head -n1 | sed 's/"//g')
           
           # Validar formato
