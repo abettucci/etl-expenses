@@ -156,7 +156,7 @@ jobs:
                 echo "  Found resource ID: $resource_id"
                 
                 # Importar recurso
-                terraform import aws_api_gateway_resource.$terraform_resource_name $API_ID/$resource_id || true
+                terraform import aws_api_gateway_resource.${terraform_resource_name}_resource $API_ID/$resource_id || true
                 
                 # Importar método POST
                 terraform import aws_api_gateway_method.${terraform_resource_name}_method $API_ID/$resource_id/POST || true
@@ -170,9 +170,9 @@ jobs:
             }
             
             # Importar todos los recursos
-            import_api_resource "telegram_bot" "telegram_bot_resource"
-            import_api_resource "market_pdf" "market_pdf_resource"
-            import_api_resource "bank_pdf" "bank_pdf_extractor_resource"
+            import_api_resource "telegram_bot" "telegram_bot"
+            import_api_resource "market_pdf" "market_pdf"
+            import_api_resource "bank_pdf" "bank_pdf_extractor"
             
           else
             echo "⚠️ API Gateway 'main-api' not found"
