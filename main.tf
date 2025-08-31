@@ -286,6 +286,24 @@ resource "aws_lambda_permission" "allow_api_gateway_market_pdf_extractor" {
   }
 }
 
+# Output para obtener la URL del webhook de Telegram
+output "telegram_webhook_url" {
+  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/telegram_bot"
+  description = "URL del webhook para configurar en Telegram"
+}
+
+# Output para obtener la URL del webhook de Gmail
+output "market_pdf_webhook_url" {
+  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
+  description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del supermercado"
+}
+
+# Output para obtener la URL del webhook de Gmail
+output "bank_pdf_webhook_url" {
+  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+  description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del banco"
+}
+
 # Service Account
 resource "google_service_account" "pubsub_sa" {
   account_id   = "terraform-sa"
@@ -298,12 +316,21 @@ resource "google_pubsub_topic" "gmail_events" {
 }
 
 # Pub/Sub Subscription
-resource "google_pubsub_subscription" "gmail_subscription" {
-  name  = "sub-to-api-gateway"
+resource "google_pubsub_subscription" "gmail_subscription_bank_payments" {
+  name  = "bank-payments-sub-to-api-gateway"
   topic = google_pubsub_topic.gmail_events.id
   
   push_config {
-    push_endpoint = "${aws_api_gateway_deployment.gmail_api_deployment.invoke_url}"
+    push_endpoint = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+  }
+}
+
+resource "google_pubsub_subscription" "gmail_subscription_market_tickets" {
+  name  = "market-tickets-sub-to-api-gateway"
+  topic = google_pubsub_topic.gmail_events.id
+  
+  push_config {
+    push_endpoint = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
   }
 }
 
@@ -1400,22 +1427,4 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure"
     StateMachineArn = aws_sfn_state_machine.bank_payments_etl_flow.arn
   }
   alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
-}
-
-# Output para obtener la URL del webhook de Telegram
-output "telegram_webhook_url" {
-  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/telegram_bot"
-  description = "URL del webhook para configurar en Telegram"
-}
-
-# Output para obtener la URL del webhook de Gmail
-output "market_pdf_webhook_url" {
-  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
-  description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del supermercado"
-}
-
-# Output para obtener la URL del webhook de Gmail
-output "bank_pdf_webhook_url" {
-  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
-  description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del banco"
 }
