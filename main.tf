@@ -216,6 +216,30 @@ resource "aws_api_gateway_integration" "bank_pdf_extractor_integration" {
   uri                     = aws_lambda_function.bank_payments_extractor.invoke_arn
 }
 
+# Recurso /mp_webhook
+resource "aws_api_gateway_resource" "mp_webhook_resource" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  parent_id   = aws_api_gateway_rest_api.main_api.root_resource_id
+  path_part   = "mp_webhook"
+}
+
+# Método y Lambda para /mp_webhook
+resource "aws_api_gateway_method" "mp_webhook_method" {
+  rest_api_id   = aws_api_gateway_rest_api.main_api.id
+  resource_id   = aws_api_gateway_resource.mp_webhook_resource.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "mp_webhook_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.main_api.id
+  resource_id             = aws_api_gateway_resource.mp_webhook_resource.id
+  http_method             = aws_api_gateway_method.mp_webhook_method.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.webhook_mp_report.invoke_arn
+}
+
 # Deployment y stage
 resource "aws_api_gateway_deployment" "main_api_deployment" {
   rest_api_id = aws_api_gateway_rest_api.main_api.id
@@ -225,6 +249,7 @@ resource "aws_api_gateway_deployment" "main_api_deployment" {
     aws_api_gateway_integration.telegram_bot_integration,
     aws_api_gateway_integration.market_pdf_integration,
     aws_api_gateway_integration.bank_pdf_extractor_integration,
+    aws_api_gateway_integration.mp_webhook_integration
   ]
 }
 
@@ -286,6 +311,25 @@ resource "aws_lambda_permission" "allow_api_gateway_market_pdf_extractor" {
   }
 }
 
+resource "aws_lambda_permission" "allow_api_gateway_mp_webhook" {
+  statement_id  = "AllowAPIGatewayInvokeMercadoPagoWebhook"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.webhook_mp_report.function_name
+  principal     = "apigateway.amazonaws.com"
+
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
+
+  depends_on = [
+    aws_api_gateway_rest_api.main_api,
+    aws_lambda_function.webhook_mp_report
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [source_arn]
+  }
+}
+
 # Output para obtener la URL del webhook de Telegram
 output "telegram_webhook_url" {
   value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/telegram_bot"
@@ -301,6 +345,12 @@ output "market_pdf_webhook_url" {
 # Output para obtener la URL del webhook de Gmail
 output "bank_pdf_webhook_url" {
   value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+  description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del banco"
+}
+
+# Output para obtener la URL del webhook de Gmail
+output "mp_webhook_url" {
+  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/mp_webhook"
   description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del banco"
 }
 

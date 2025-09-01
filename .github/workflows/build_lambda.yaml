@@ -173,6 +173,7 @@ jobs:
             import_api_resource "telegram_bot" "telegram_bot"
             import_api_resource "market_pdf" "market_pdf"
             import_api_resource "bank_pdf" "bank_pdf_extractor"
+            import_api_resource "mp_webhook" "mp_webhook"
             
           else
             echo "⚠️ API Gateway 'main-api' not found"
@@ -190,10 +191,6 @@ jobs:
               echo "⚠️ Lambda function $function_name not found"
             fi
           }
-
-          import_lambda_permission "ai_agent" "AllowAPIGatewayInvokeAiAgent" "allow_api_gateway_ai_agent"
-          import_lambda_permission "bank_payments_extractor" "AllowAPIGatewayInvokeBankPdfExtractor" "allow_api_gateway_bank_pdf_extractor"
-          import_lambda_permission "pdf_extractor" "AllowAPIGatewayInvokeMarketPdfExtractor" "allow_api_gateway_market_pdf_extractor"
           
           terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_lambda_policy || true
           terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_start_policy || true
@@ -203,13 +200,13 @@ jobs:
           terraform import aws_iam_policy.lambda_bedrock_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_bedrock_access || true
           terraform import aws_iam_policy.lambda_s3_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_s3_access || true
           
-          # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
-          # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
+          terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
+          terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
 
-          # terraform import aws_iam_role_policy_attachment.lambda_s3 lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_s3_access || true
-          # terraform import aws_iam_role_policy_attachment.lambda_redshift lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_redshift_access || true
-          # terraform import aws_iam_role_policy_attachment.lambda_bedrock lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_bedrock_access || true
-          # terraform import aws_iam_role_policy_attachment.lambda_basic lambda_exec/arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || true
+          terraform import aws_iam_role_policy_attachment.lambda_s3 lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_s3_access || true
+          terraform import aws_iam_role_policy_attachment.lambda_redshift lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_redshift_access || true
+          terraform import aws_iam_role_policy_attachment.lambda_bedrock lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_bedrock_access || true
+          terraform import aws_iam_role_policy_attachment.lambda_basic lambda_exec/arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || true
 
           terraform import aws_redshiftserverless_namespace.etl_namespace pdf-etl-namespace || true
 
