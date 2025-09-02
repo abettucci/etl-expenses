@@ -174,11 +174,14 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
     
     # Create the INSERT clause with CAST for TIMESTAMP columns
     insert_cols = ", ".join([pk] + update_columns + timestamp_cols)
-    insert_vals_parts = []
+
+    insert_vals_parts = [f"S.{pk}"]
     for col in update_columns:
         if col.upper() not in timestamp_cols:
             insert_vals_parts.append(f"S.{col.upper()}")
-    insert_vals = ", ".join("[S.{pk}]" + insert_vals_parts + ["INS_DTTM = CURRENT_TIMESTAMP()", "UPD_DTTM = CURRENT_TIMESTAMP()"])
+
+    insert_vals_parts.append(["INS_DTTM = CURRENT_TIMESTAMP()", "UPD_DTTM = CURRENT_TIMESTAMP()"])
+    insert_vals = ", ".join(insert_vals_parts)
 
     merge_sql = f"""
         MERGE INTO `{target_table}` T
