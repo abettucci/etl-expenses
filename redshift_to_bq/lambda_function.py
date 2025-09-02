@@ -180,7 +180,7 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
         if col.upper() not in timestamp_cols:
             insert_vals_parts.append(f"S.{col.upper()}")
 
-    insert_vals_parts.append(["INS_DTTM = CURRENT_TIMESTAMP()", "UPD_DTTM = CURRENT_TIMESTAMP()"])
+    insert_vals_parts.append("INS_DTTM = CURRENT_TIMESTAMP()", "UPD_DTTM = CURRENT_TIMESTAMP()")
     insert_vals = ", ".join(insert_vals_parts)
 
     merge_sql = f"""
