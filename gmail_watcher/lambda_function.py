@@ -33,15 +33,23 @@ def auth_google(SECRET_NAME):
     return creds
 
 def lambda_handler(event, context):
-    creds = auth_google('gcp_sa_api_credentials')
+    # creds = auth_google('gcp_sa_api_credentials')
+    creds = auth_google('gcp_api_credentials')
     gmail_service = build('gmail', 'v1', credentials=creds)
+    results = gmail_service.users().labels().list(userId="me").execute()
+    label_ids = []
 
-    body = {
-        "labelIds": ["INBOX"],
-        "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
-    }
+    for label in results['labels']:
+        if label['name'] in ['Avisos Gastos Santander', 'Avisos Compra Carrefour']:
+            label_ids.append(label['id'])
 
-    resp = gmail_service.users().watch(userId="me", body=body).execute()
-    print("Watcher renewed:", resp)
-
-    return {"status": "ok", "response": resp}
+    if label_ids:
+        body = {
+            "labelIds": label_ids,
+            "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
+        }
+        resp = gmail_service.users().watch(userId="me", body=body).execute()
+        print("Watcher renewed:", resp)
+        return {"status": "ok", "response": resp}
+    else:
+        print("❌ No encontré las etiquetas configuradas")
