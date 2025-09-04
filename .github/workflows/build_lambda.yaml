@@ -209,10 +209,13 @@ jobs:
           terraform import aws_lambda_function.redshift_to_bq redshift_to_bq || true
           terraform import aws_lambda_function.ai_agent ai_agent || true
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf || true
-          
+          terraform import aws_lambda_function.extract_data_gmail extract_data_gmail || true
+          terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
+
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
           terraform import aws_iam_role.glue_service_role glue_service_role || true
+          terraform import aws_iam_role.api_gateway_role  api_gateway_step_function_role  || true          
 
           terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
