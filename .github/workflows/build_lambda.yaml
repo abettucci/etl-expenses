@@ -227,6 +227,8 @@ jobs:
           terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler || true
 
           terraform import aws_glue_classifier.csv_classifier  mercadopago_csv_classifier
+          
+          terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge
 
           terraform import aws_redshiftserverless_workgroup.etl_workgroup pdf-etl-workgroup || true
 
