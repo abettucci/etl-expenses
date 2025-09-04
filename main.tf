@@ -221,7 +221,7 @@ resource "aws_api_gateway_method" "bank_pdf_extractor_method" {
 #   uri                     = aws_lambda_function.extract_data_gmail.invoke_arn
 # }
 
-resource "aws_api_gateway_integration" "market_pdf_extractor_integration" {
+resource "aws_api_gateway_integration" "market_pdf_integration" {
   rest_api_id             = aws_api_gateway_rest_api.main_api.id
   resource_id             = aws_api_gateway_resource.market_pdf_resource.id
   http_method             = aws_api_gateway_method.market_pdf_method.http_method

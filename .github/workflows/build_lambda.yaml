@@ -200,11 +200,11 @@ jobs:
 
           terraform import aws_lambda_function.webhook_mp_report webhook_mp_report || true
           terraform import aws_lambda_function.compensation_flow compensation_flow || true
-          terraform import aws_lambda_function.pdf_extractor pdf_extractor || true
+          # terraform import aws_lambda_function.pdf_extractor pdf_extractor || true
           terraform import aws_lambda_function.pdf_processor pdf_processor || true
           terraform import aws_lambda_function.mp_report_extractor mp_report_extractor || true
           terraform import aws_lambda_function.mp_report_processor mp_report_processor || true
-          terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor || true
+          # terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor || true
           terraform import aws_lambda_function.bank_payments_processor bank_payments_processor || true
           terraform import aws_lambda_function.redshift_to_bq redshift_to_bq || true
           terraform import aws_lambda_function.ai_agent ai_agent || true
