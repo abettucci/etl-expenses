@@ -5,14 +5,19 @@ import base64
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
 import pandas as pd
+import os
+from io import BytesIO
+import requests
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
-SENDER_EMAIL = "mensajesyavisos@mails.santander.com.ar"
-SUBJECT_CONTAINS = "Pagaste"
-# body_contains = "Te acercamos el detalle de tu consumo con la Tarjeta Santander"
+BANK_EMAIL_SENDER = "mensajesyavisos@mails.santander.com.ar"
+BANK_SUBJECTS = ["Pagaste","Aviso de débito automático"]
+MARKET_EMAIL_SENDERS = ["atencion_clientes@m.contactocarrefour.com.ar", "contacto@m.tarjetacarrefour.com.ar"]
+MARKET_SUBJECT = "Hola, te enviamos el ticket digital de tu compra."
+# bank_body_contains = ["Te acercamos el detalle de tu consumo con la Tarjeta Santander", "Te acercamos el detalle del débito con tu Tarjeta Santander"]
 
 # Funcion para obtener la API Key de Google Cloud y consumir la API de Gmail
 def get_secret(SECRET_NAME, REGION_NAME):
@@ -52,9 +57,18 @@ def find_html_part(payload):
                 return result
     return None
 
-def get_message_ids_loaded(redshift_data):
+def get_message_ids_loaded(redshift_data, sender, subject):
+    if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS):
+        table_name = 'bank_payments'
+        pk = 'id'
+    elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
+        table_name = 'carrefour_data'
+        pk = 'nro_ticket'
+    else:
+        return {'statusCode': 200, 'body': 'Email descartado por filtros'}
+
     # Obtenemos los ids existentes
-    id_existentes_query = "SELECT DISTINCT id FROM bank_payments;"
+    id_existentes_query = f"SELECT DISTINCT {pk} FROM {table_name};"
 
     # Ejecutar consulta
     response = redshift_data.execute_statement(
@@ -140,37 +154,38 @@ def get_last_message_loaded(redshift_data):
     return date_str
 
 def extract_by_date_payments_from_gmail(redshift_data, ids_existentes_en_redshift, gmail_service, s3_client, bucket_name, folder):
-    date_str = get_last_message_loaded(redshift_data)
-    query = f'from:{SENDER_EMAIL} subject:"{SUBJECT_CONTAINS}" after:{date_str}'
-    results = gmail_service.users().messages().list(userId='me', q=query).execute()
-    messages = results.get('messages', [])
-    print(f"Total de mails de Santander posterior a {date_str}: {len(messages)}")
+    for subject in SUBJECT_CONTAINS:
+        date_str = get_last_message_loaded(redshift_data)
+        query = f'from:{SENDER_EMAIL} subject:"{subject}" after:{date_str}'
+        results = gmail_service.users().messages().list(userId='me', q=query).execute()
+        messages = results.get('messages', [])
+        print(f"Total de mails de Santander posterior a {date_str}: {len(messages)}")
 
-    for msg in messages:
-        message = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
-        msg_id = msg['id']
+        for msg in messages:
+            message = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+            msg_id = msg['id']
 
-        if msg_id not in ids_existentes_en_redshift:
-            payload = message['payload']
-            parts = payload.get('parts', [])
-            html_encoded = find_html_part(payload)
-            html_data = base64.urlsafe_b64decode(html_encoded).decode('utf-8', errors='replace') if html_encoded else None
-            body_text = BeautifulSoup(html_data, 'html.parser').get_text() if html_data else ""
+            if msg_id not in ids_existentes_en_redshift:
+                payload = message['payload']
+                parts = payload.get('parts', [])
+                html_encoded = find_html_part(payload)
+                html_data = base64.urlsafe_b64decode(html_encoded).decode('utf-8', errors='replace') if html_encoded else None
+                body_text = BeautifulSoup(html_data, 'html.parser').get_text() if html_data else ""
 
-            mail_data = {
-                "message_id": msg_id,
-                "date": datetime.fromtimestamp(int(message['internalDate']) / 1000).isoformat(),
-                "sender": SENDER_EMAIL,
-                "subject": next(h['value'] for h in payload['headers'] if h['name'] == 'Subject'),
-                "html_body": html_data,
-                "raw_text": body_text,
-            }
+                mail_data = {
+                    "message_id": msg_id,
+                    "date": datetime.fromtimestamp(int(message['internalDate']) / 1000).isoformat(),
+                    "sender": SENDER_EMAIL,
+                    "subject": next(h['value'] for h in payload['headers'] if h['name'] == 'Subject'),
+                    "html_body": html_data,
+                    "raw_text": body_text,
+                }
 
-            s3_key = f"{folder}{mail_data['date'][:10]}-{msg_id}.json"
-            s3_client.put_object(Body=json.dumps(mail_data), Bucket=bucket_name, Key=s3_key)
-            print(f"✅ Archivo subido a S3: {s3_key}")
-        else:
-            print("⚠️ El archivo ya existe en S3, se omite la subida.")
+                s3_key = f"{folder}{mail_data['date'][:10]}-{msg_id}.json"
+                s3_client.put_object(Body=json.dumps(mail_data), Bucket=bucket_name, Key=s3_key)
+                print(f"✅ Archivo subido a S3: {s3_key}")
+            else:
+                print("⚠️ El archivo ya existe en S3, se omite la subida.")
 
 def process_email(message_id, gmail_service):
     """Procesar email completo desde Gmail API"""
@@ -209,15 +224,76 @@ def process_email(message_id, gmail_service):
         print(f"Error procesando mensaje {message_id}: {e}")
         return None    
 
+# Funcion para extraer los PDFs especificos de Gmail
+def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s3_client):
+    print('Analizando mail de fecha: ', date)
+    filename = f'Ticket_{date}.pdf'
+    s3_key = f'{folder}{filename}'
+    date = mail_data["date"]    
+    soup = mail_data["raw_text"]
+
+    if sender_email == "atencion_clientes@m.contactocarrefour.com.ar":
+        links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.contactocarrefour.com.ar/x/c/' in a['href']]
+    else:
+        links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.tarjetacarrefour.com.ar/x/c/' in a['href']]
+    
+    for url in links:
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers)
+            if response.content[:4] == b'%PDF' and len(response.content) > 1024 :
+                try:
+                    s3_client.head_object(Bucket=bucket_name, Key=s3_key)
+                    print("⚠️ El archivo ya existe en S3, se omite la subida.")
+                except s3_client.exceptions.ClientError as e:
+                    if e.response['Error']['Code'] == '404':
+                        # Subir archivo PDF a S3
+                        s3_client.upload_fileobj(BytesIO(response.content), bucket_name, s3_key)
+                        print(f"✅ Archivo subido a S3: {s3_key}")
+            else:
+                print(f"⚠️ Archivo inválido desde URL: {url}")
+        except Exception as e:
+            print(f"❌ Error al descargar desde URL {url}: {e}")
+
+def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject):
+    """Dispatch basado en subject y sender"""
+
+    if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS):
+        
+        # Guardar en S3
+        s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
+        s3_client.put_object(
+            Body=json.dumps(mail_data),
+            Bucket=bank_bucket,
+            Key=s3_key
+        )
+        
+        print(f"✅ Archivo subido a S3: {s3_key}")
+        return {'statusCode': 200, 'body': 'Email procesado exitosamente'}
+    
+    elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
+        download_pdf_from_email_urls(mail_data, sender, market_bucket, folder, s3_client)
+        return {'statusCode': 200, 'body': 'Email procesado exitosamente'}
+
+    else:
+        # Default o email no manejado
+        print(f"Email no manejado - Subject: {sender}, From: {subject}")
+        return {'statusCode': 200, 'body': 'Email descartado por filtros'}
+
 def lambda_handler(event, context):
     try:
         print(f"Mensaje Pub/Sub: {json.dumps(event)}")
 
         creds = auth_google('gcp_api_credentials')
+
         gmail_service = build('gmail', 'v1', credentials=creds)
         redshift_data = boto3.client('redshift-data')
         s3_client = boto3.client('s3')
-        bucket_name = 'bank-payments'
+
+        bank_bucket = os.environ['BANK_BUCKET_NAME']
+        market_bucket = os.environ['MARKET_BUCKET_NAME']
         folder = 'raw/'
         
         # El mensaje de Pub/Sub viene en el body del request de API Gateway
@@ -231,31 +307,16 @@ def lambda_handler(event, context):
                 message_data = json.loads(base64.b64decode(pubsub_message['message']['data']).decode('utf-8'))
                 message_id = message_data.get('messageId')  # Ajustar según la estructura real
 
-                ids_existentes_en_redshift = get_message_ids_loaded(redshift_data)
-                if message_id not in ids_existentes_en_redshift:
-                    # Procesar el email
-                    mail_data = process_email(message_id, gmail_service)
+                mail_data = process_email(message_id, gmail_service)
+                sender = mail_data['sender']
+                subject = mail_data['subject']
 
-                    if not mail_data:
-                        return {'statusCode': 500, 'body': 'Error procesando email'}
-                    
-                    # Aplicar filtros (igual que antes)
-                    if (SENDER_EMAIL in mail_data['sender'] and 
-                        SUBJECT_CONTAINS in mail_data['subject']):
-                        
-                        # Guardar en S3
-                        s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
-                        s3_client.put_object(
-                            Body=json.dumps(mail_data),
-                            Bucket=bucket_name,
-                            Key=s3_key
-                        )
-                        
-                        print(f"✅ Archivo subido a S3: {s3_key}")
-                        return {'statusCode': 200, 'body': 'Email procesado exitosamente'}
-                    else:
-                        print("⚠️ Email no cumple filtros, descartado")
-                        return {'statusCode': 200, 'body': 'Email descartado por filtros'}
+                if not mail_data:
+                    return {'statusCode': 500, 'body': 'Error procesando email'}
+
+                ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, sender, subject)
+                if message_id not in ids_existentes_en_redshift:
+                    dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
 
     except Exception as e:
         # Si falla la logica de filtrado por ids podria probar con traer los mails recibidos desde la ultima fecha de ingestion

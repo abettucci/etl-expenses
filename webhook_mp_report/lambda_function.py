@@ -4,7 +4,8 @@ import os
 import boto3
 
 def lambda_handler(event, context):
-    step_function_arn = os.environ['STEP_FUNCTION_ARN']
+    step_function_arn = os.environ['STEP_FUNCTION_ARN'] # se envia esta info a traves de terraform
+
     step_functions_client = boto3.client('stepfunctions')
     CIFRADO_SECRET = os.environ["CIFRADO_SECRET_MP"]
     

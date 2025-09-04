@@ -15,7 +15,6 @@ provider "aws" {
   region = "us-east-2"
 }
 
-
 data "aws_caller_identity" "current" {}
 
 # Leer el secreto de AWS Secrets Manager
@@ -27,9 +26,15 @@ data "aws_secretsmanager_secret_version" "gcp_sa_creds" {
   secret_id = "gcp_sa_api_credentials"
 }
 
+variable "GCP_PROJECT_ID" {
+  description = "GCP Project ID"
+  type        = string
+  sensitive   = true
+}
+
 provider "google" {
   credentials = data.aws_secretsmanager_secret_version.gcp_sa_creds.secret_string
-  project = "hazel-pillar-400222"
+  project = "${var.GCP_PROJECT_ID}"
   region  = "us-central1"
 }
 
@@ -183,14 +188,14 @@ resource "aws_api_gateway_method" "market_pdf_method" {
   authorization = "NONE"
 }
 
-resource "aws_api_gateway_integration" "market_pdf_integration" {
-  rest_api_id             = aws_api_gateway_rest_api.main_api.id
-  resource_id             = aws_api_gateway_resource.market_pdf_resource.id
-  http_method             = aws_api_gateway_method.market_pdf_method.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.pdf_extractor.invoke_arn
-}
+# resource "aws_api_gateway_integration" "market_pdf_integration" {
+#   rest_api_id             = aws_api_gateway_rest_api.main_api.id
+#   resource_id             = aws_api_gateway_resource.market_pdf_resource.id
+#   http_method             = aws_api_gateway_method.market_pdf_method.http_method
+#   integration_http_method = "POST"
+#   type                    = "AWS_PROXY"
+#   uri                     = aws_lambda_function.extract_data_gmail.invoke_arn
+# }
 
 # Recurso /pdf_extractor
 resource "aws_api_gateway_resource" "bank_pdf_extractor_resource" {
@@ -207,13 +212,61 @@ resource "aws_api_gateway_method" "bank_pdf_extractor_method" {
   authorization = "NONE"
 }
 
+# resource "aws_api_gateway_integration" "bank_pdf_extractor_integration" {
+#   rest_api_id             = aws_api_gateway_rest_api.main_api.id
+#   resource_id             = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+#   http_method             = aws_api_gateway_method.bank_pdf_extractor_method.http_method
+#   integration_http_method = "POST"
+#   type                    = "AWS_PROXY"
+#   uri                     = aws_lambda_function.extract_data_gmail.invoke_arn
+# }
+
+resource "aws_api_gateway_integration" "market_pdf_extractor_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.main_api.id
+  resource_id             = aws_api_gateway_resource.market_pdf_resource.id
+  http_method             = aws_api_gateway_method.market_pdf_method.http_method
+  type                    = "AWS"
+  integration_http_method = "POST"
+  
+  # URI para Step Functions - FORMATO ESPECIAL
+  uri = "arn:aws:apigateway:${var.AWS_REGION}:states:action/StartExecution"
+  
+  # Credenciales del rol de API Gateway
+  credentials = aws_iam_role.api_gateway_role.arn
+  
+  # Transformación del request
+  request_templates = {
+    "application/json" = <<EOF
+{
+  "input": "$util.escapeJavaScript($input.json('$'))",
+  "stateMachineArn": "${aws_sfn_state_machine.pdf_etl_flow.arn}"
+}
+EOF
+  }
+}
+
 resource "aws_api_gateway_integration" "bank_pdf_extractor_integration" {
   rest_api_id             = aws_api_gateway_rest_api.main_api.id
   resource_id             = aws_api_gateway_resource.bank_pdf_extractor_resource.id
   http_method             = aws_api_gateway_method.bank_pdf_extractor_method.http_method
+  type                    = "AWS"
   integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.bank_payments_extractor.invoke_arn
+  
+  # URI para Step Functions - FORMATO ESPECIAL
+  uri = "arn:aws:apigateway:${var.AWS_REGION}:states:action/StartExecution"
+  
+  # Credenciales del rol de API Gateway
+  credentials = aws_iam_role.api_gateway_role.arn
+  
+  # Transformación del request
+  request_templates = {
+    "application/json" = <<EOF
+{
+  "input": "$util.escapeJavaScript($input.json('$'))",
+  "stateMachineArn": "${aws_sfn_state_machine.bank_payments_etl_flow.arn}"
+}
+EOF
+  }
 }
 
 # Recurso /mp_webhook
@@ -273,36 +326,17 @@ resource "aws_lambda_permission" "allow_api_gateway_ai_agent" {
   }
 }
 
-resource "aws_lambda_permission" "allow_api_gateway_bank_pdf_extractor" {
-  statement_id  = "AllowAPIGatewayInvokeBankPdfExtractor"
+resource "aws_lambda_permission" "allow_api_gateway_gmail_data_extractor" {
+  statement_id  = "AllowAPIGatewayInvokeGmailDataExtractor"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.bank_payments_extractor.function_name
+  function_name = aws_lambda_function.extract_data_gmail.function_name
   principal     = "apigateway.amazonaws.com"
 
   source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
 
   depends_on = [
     aws_api_gateway_rest_api.main_api,
-    aws_lambda_function.bank_payments_extractor
-  ]
-
-  lifecycle {
-    create_before_destroy = true
-    ignore_changes = [source_arn]
-  }
-}
-
-resource "aws_lambda_permission" "allow_api_gateway_market_pdf_extractor" {
-  statement_id  = "AllowAPIGatewayInvokeMarketPdfExtractor"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.pdf_extractor.function_name
-  principal     = "apigateway.amazonaws.com"
-
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
-
-  depends_on = [
-    aws_api_gateway_rest_api.main_api,
-    aws_lambda_function.pdf_extractor
+    aws_lambda_function.extract_data_gmail
   ]
 
   lifecycle {
@@ -391,25 +425,47 @@ resource "google_pubsub_topic_iam_member" "sa_publisher" {
   member = "serviceAccount:${google_service_account.pubsub_sa.email}"
 }
 
-########### 4. Lambdas basadas en imágenes Docker ###########
-# 4.1 Lambda para extraer PDFs de Gmail
-resource "aws_lambda_function" "pdf_extractor" {
-  function_name = "pdf_extractor"
+# Lambda Function
+resource "aws_lambda_function" "gmail_watcher" {
+  function_name = "gmail-watcher-renewer"
   role          = aws_iam_role.lambda_exec.arn
-  package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:pdf_extractor-latest"
-  
-  memory_size = 1024  # Ajustar según necesidades
-  timeout     = 900   # Máximo 15 minutos
+  handler       = "renew_watcher.lambda_handler"
+  runtime       = "python3.9"
+  timeout       = 30
+
+  filename         = "${path.module}/lambda/renew_watcher.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda/renew_watcher.zip")
 
   environment {
     variables = {
-      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      BUCKET_NAME    = aws_s3_bucket.market_tickets.bucket
-    } 
+      GCP_PROJECT_ID  = var.GCP_PROJECT_ID
+      PUBSUB_TOPIC    = google_pubsub_topic.gmail_events.name
+      GCP_SECRET_NAME = data.aws_secretsmanager_secret_version.gcp_sa_creds.secret_id
+    }
   }
 }
 
+# 4. EventBridge rule (cada domingo 00:00 UTC)
+resource "aws_cloudwatch_event_rule" "weekly" {
+  name                = "gmail-watcher-renew-weekly"
+  schedule_expression = "cron(0 0 ? * SUN *)"
+}
+
+resource "aws_cloudwatch_event_target" "lambda_target" {
+  rule      = aws_cloudwatch_event_rule.weekly.name
+  target_id = "gmailWatcherLambda"
+  arn       = aws_lambda_function.gmail_watcher.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.gmail_watcher.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.weekly.arn
+}
+
+########### 4. Lambdas basadas en imágenes Docker ###########
 # 4.2 Lambda para transformar PDFs de Gmail
 resource "aws_lambda_function" "pdf_processor" {
   function_name = "pdf_processor"
@@ -464,11 +520,11 @@ resource "aws_lambda_function" "mp_report_processor" {
 }
 
 # 4.5 Lambda para extraer los gastos del banco a traves de avisos en Gmail
-resource "aws_lambda_function" "bank_payments_extractor" {
-  function_name = "bank_payments_extractor"
+resource "aws_lambda_function" "extract_data_gmail" {
+  function_name = "extract_data_gmail"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:bank_payments_extractor-latest"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:extract_data_gmail-latest"
 
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
@@ -476,7 +532,8 @@ resource "aws_lambda_function" "bank_payments_extractor" {
   environment {
     variables = {
       WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
+      MARKET_BUCKET_NAME    = aws_s3_bucket.market_tickets.bucket
+      BANK_BUCKET_NAME      = aws_s3_bucket.bank_payments.bucket 
     }
   }
 }
@@ -636,6 +693,22 @@ resource "aws_iam_role" "glue_service_role" {
   })
 }
 
+resource "aws_iam_role" "api_gateway_role" {
+  name = "api_gateway_step_function_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = {
+          Service = "apigateway.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
 ###########  6. Permisos IAM Policies ###########
 
 # Policy para acceder a los secrets de Secret Manager con Lambda
@@ -653,7 +726,8 @@ resource "aws_iam_role_policy" "secrets_token_access" {
           "secretsmanager:UpdateSecret"
         ]
         Resource = [
-          "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:gcp_api_credentials-*"
+          "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:gcp_api_credentials-*",
+          "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:gcp_sa_api_credentials-*"
         ]
       }
     ]
@@ -745,6 +819,35 @@ resource "aws_iam_policy" "lambda_s3_access" {
   })
 }
 
+# Policy para permitir ejecutar Step Functions
+resource "aws_iam_role_policy" "api_gateway_step_function_policy" {
+  name = "api_gateway_step_function_policy"
+  role = aws_iam_role.api_gateway_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = "states:StartExecution",
+        Resource = [
+          aws_sfn_state_machine.bank_payments_etl_flow.arn,
+          aws_sfn_state_machine.pdf_etl_flow.arn
+        ]
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
 # Attachments de las políticas al rol
 resource "aws_iam_role_policy_attachment" "lambda_redshift" {
   role       = aws_iam_role.lambda_exec.name
@@ -779,11 +882,10 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
         selection = {
           tagStatus = "tagged"
           tagPrefixList = [
-            "pdf_extractor-latest",
+            "extract_data_gmail-latest",
             "pdf_processor-latest",
             "mp_report_extractor-latest",
             "mp_report_processor-latest",
-            "bank_payments_extractor-latest",
             "bank_payments_processor-latest",
             "load_report_and_pdf-latest",
             "webhook_mp_report-latest",
@@ -935,13 +1037,13 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
         Effect = "Allow",
         Action = ["lambda:InvokeFunction"],
         Resource = [
-          aws_lambda_function.pdf_extractor.arn,
+          aws_lambda_function.extract_data_gmail.arn,
+
           aws_lambda_function.pdf_processor.arn,
 
           aws_lambda_function.mp_report_extractor.arn,
           aws_lambda_function.mp_report_processor.arn,
 
-          aws_lambda_function.bank_payments_extractor.arn,
           aws_lambda_function.bank_payments_processor.arn,
 
           aws_lambda_function.load_report_and_pdf.arn,
@@ -1083,7 +1185,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
     States = {
       "Extract Gmail PDFs" = {
         Type     = "Task",
-        Resource = aws_lambda_function.pdf_extractor.arn,
+        Resource = aws_lambda_function.extract_data_gmail.arn,
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
@@ -1271,7 +1373,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
     States = {
       "Extract Bank Payments Gmail" = {
         Type     = "Task",
-        Resource = aws_lambda_function.bank_payments_extractor.arn,
+        Resource = aws_lambda_function.extract_data_gmail.arn,
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],

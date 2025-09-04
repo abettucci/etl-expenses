@@ -163,8 +163,6 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
     timestamp_cols = [field.name for field in target_table_ref.schema 
                      if field.field_type == 'TIMESTAMP']
 
-    print(timestamp_cols)
-
     # Create the SET clause with CAST for TIMESTAMP columns
     set_clause_parts = []
     for col in update_columns:
@@ -180,8 +178,8 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
         if col.upper() not in timestamp_cols:
             insert_vals_parts.append(f"S.{col.upper()}")
 
-    insert_vals_parts.append("INS_DTTM = CURRENT_TIMESTAMP()")
-    insert_vals_parts.append("UPD_DTTM = CURRENT_TIMESTAMP()")
+    insert_vals_parts.append("CURRENT_TIMESTAMP()")
+    insert_vals_parts.append("CURRENT_TIMESTAMP()")
     insert_vals = ", ".join(insert_vals_parts)
 
     merge_sql = f"""
