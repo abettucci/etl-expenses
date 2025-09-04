@@ -429,12 +429,11 @@ resource "google_pubsub_topic_iam_member" "sa_publisher" {
 resource "aws_lambda_function" "gmail_watcher" {
   function_name = "gmail-watcher-renewer"
   role          = aws_iam_role.lambda_exec.arn
-  handler       = "renew_watcher.lambda_handler"
-  runtime       = "python3.9"
-  timeout       = 30
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:gmail_watcher-latest"
 
-  filename         = "${path.module}/lambda/renew_watcher.zip"
-  source_code_hash = filebase64sha256("${path.module}/lambda/renew_watcher.zip")
+  memory_size = 512
+  timeout     = 900
 
   environment {
     variables = {
@@ -473,7 +472,7 @@ resource "aws_lambda_function" "pdf_processor" {
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:pdf_processor-latest"
 
-  memory_size = 2048  # Más memoria para procesar PDFs
+  memory_size = 1024  # Más memoria para procesar PDFs
   timeout     = 900
 
   environment {
