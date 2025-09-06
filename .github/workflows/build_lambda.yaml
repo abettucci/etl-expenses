@@ -210,7 +210,7 @@ jobs:
           terraform import aws_lambda_function.ai_agent ai_agent || true
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf || true
           terraform import aws_lambda_function.extract_data_gmail extract_data_gmail || true
-          terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
+          # terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
 
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
