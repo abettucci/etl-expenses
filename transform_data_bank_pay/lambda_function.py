@@ -68,44 +68,43 @@ def parse_mail(json_obj):
         "extraido_en": datetime.now().isoformat()
     }
 
-def transform_bank_payments_data():
+def transform_bank_payments_data(s3_key):
     bucket_name = 'bank-payments'
     prefix = 'raw/'
     destination_folder = 'processed/'
     s3_client = boto3.client('s3')
-    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-    raw_json = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
 
-    for key in raw_json:
-        obj = s3_client.get_object(Bucket=bucket_name, Key=key)
-        content = json.loads(obj['Body'].read().decode('utf-8'))
-        records = parse_mail(content)
-        df = pd.DataFrame([records])
+    obj = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+    content = json.loads(obj['Body'].read().decode('utf-8'))
+    records = parse_mail(content)
+    df = pd.DataFrame([records])
 
-        print(f"📄 Procesando: {key}")
-        try:
-            # Convertir el DataFrame a CSV en memoria (no guardar en disco)
-            csv_buffer = io.StringIO()
-            df.to_csv(csv_buffer, index=False)
-            new_key = f"{destination_folder}{records["date"]}-{records["message_id"]}.csv"
+    print(f"📄 Procesando: {s3_key}")
+    try:
+        # Convertir el DataFrame a CSV en memoria (no guardar en disco)
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        new_key = f"{destination_folder}{records['date']}-{records['message_id']}.csv"
+        s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=bucket_name, Key=new_key)
+        print(f"✅ Archivo subido como csv a S3/{new_key}")
 
-            # Subir el CSV a S3
-            s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=bucket_name, Key=new_key)
-            print(f"✅ Archivo subido como csv a S3/{new_key}")
-        except Exception as e:
-                print(f"Error al procesar {key}: {str(e)}")
-    
+    except Exception as e:
+        print(f"Error al procesar {s3_key}: {str(e)}")
+
     return new_key
 
 def lambda_handler(event,context):
     try:
-        key = transform_bank_payments_data()
+        s3_file_to_transform = event['key']
+        key = transform_bank_payments_data(s3_file_to_transform)
         return {
             "statusCode": 200,
             "body": {
                 "etl_flow": 'BANK',
                 "bucket": 'bank-payments',
-                "key": key
+                "key": key,
+                "report_id" : "",
+                "report_date" : ""
             }
         }
     except Exception as e:

@@ -665,6 +665,8 @@ def lambda_handler(event,context):
     try:
         redshift_data = boto3.client('redshift-data')
 
+        print(event)
+        
         etl_flow = event['etl_flow']
         bucket = event['bucket']
         key_wo_folder = event['key']

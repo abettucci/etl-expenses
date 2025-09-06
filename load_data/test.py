@@ -74,34 +74,34 @@ redshift_data = boto3.client('redshift-data')
 #     Sql="TRUNCATE TABLE carrefour_data"
 # )     
 
-# query = """
-# SELECT column_name, data_type
-# FROM information_schema.columns
-# WHERE table_name = 'mp_data';
-# """     
+query = """
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'bank_payments';
+"""     
 
 # query = """
 # SELECT *
 # FROM archivos_ingestados
 # """
 
-# # Ejecutar consulta
-# response = redshift_data.execute_statement(
-#     Database='dev',
-#     WorkgroupName='pdf-etl-workgroup',
-#     Sql=query
-# )
+# Ejecutar consulta
+response = redshift_data.execute_statement(
+    Database='dev',
+    WorkgroupName='pdf-etl-workgroup',
+    Sql=query
+)
 
-# while True:
-#     desc = redshift_data.describe_statement(Id=response['Id'])
-#     if desc['Status'] == 'FINISHED':
-#         if desc['HasResultSet']:
-#             result = redshift_data.get_statement_result(Id=response['Id'])     
-#             print(result['Records'])
-#         break
-#     elif desc['Status'] == 'FAILED':
-#         print("Error al consultar Redshift:", desc['Error'])
-#         break
+while True:
+    desc = redshift_data.describe_statement(Id=response['Id'])
+    if desc['Status'] == 'FINISHED':
+        if desc['HasResultSet']:
+            result = redshift_data.get_statement_result(Id=response['Id'])     
+            print(result['Records'])
+        break
+    elif desc['Status'] == 'FAILED':
+        print("Error al consultar Redshift:", desc['Error'])
+        break
 
 # df.to_csv('/tmp/data.csv', index=False)
 # s3.upload_file('/tmp/data.csv', 'my-bucket', 'temp/data.csv')

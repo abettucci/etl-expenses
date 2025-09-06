@@ -257,6 +257,8 @@ def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s
         except Exception as e:
             print(f"❌ Error al descargar desde URL {url}: {e}")
 
+    return s3_key
+
 def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject):
     """Dispatch basado en subject y sender"""
 
@@ -268,30 +270,43 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
             Body=json.dumps(mail_data),
             Bucket=bank_bucket,
             Key=s3_key
-        )
-        
+        )        
         print(f"✅ Archivo subido a S3: {s3_key}")
-        return {'statusCode': 200, 'body': 'Email procesado exitosamente'}
+
     
     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
-        download_pdf_from_email_urls(mail_data, sender, market_bucket, folder, s3_client)
-        return {'statusCode': 200, 'body': 'Email procesado exitosamente'}
+        s3_key = download_pdf_from_email_urls(mail_data, sender, market_bucket, folder, s3_client)
+        print(f"✅ Archivo subido a S3: {s3_key}")
 
     else:
         # Default o email no manejado
         print(f"Email no manejado - Subject: {sender}, From: {subject}")
         return {'statusCode': 200, 'body': 'Email descartado por filtros'}
 
+    return s3_key
+
+def load_last_history_id(table):
+    resp = table.get_item(Key={"PK": "gmail_last_history_id"})
+    if "Item" in resp:
+        return resp["Item"]["historyId"]
+    return None  # primera vez que corre
+
+def save_last_history_id(table, history_id):
+    table.put_item(Item={
+        "PK": "gmail_last_history_id",
+        "historyId": str(history_id)
+    })
+
 def lambda_handler(event, context):
     try:
         print(f"Mensaje Pub/Sub: {json.dumps(event)}")
 
         creds = auth_google('gcp_api_credentials')
-
+        dynamodb = boto3.resource('dynamodb')
+        table = dynamodb.Table("gmail-history-tracker")
         gmail_service = build('gmail', 'v1', credentials=creds)
         redshift_data = boto3.client('redshift-data')
         s3_client = boto3.client('s3')
-
         bank_bucket = os.environ['BANK_BUCKET_NAME']
         market_bucket = os.environ['MARKET_BUCKET_NAME']
         folder = 'raw/'
@@ -299,24 +314,50 @@ def lambda_handler(event, context):
         # El mensaje de Pub/Sub viene en el body del request de API Gateway
         if 'body' in event:
             pubsub_message = json.loads(event['body'])
+            message = pubsub_message['message']              
+            message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
+            history_id = message_data.get('historyId')
 
-            # Los datos del email están en message.data (base64)
-            if 'message' in pubsub_message and 'data' in pubsub_message['message']:
+            if not history_id:
+                print("⚠️ No se encontró historyId en el evento")
+                return
 
-                # Extraer message_id del evento de Pub/Sub
-                message_data = json.loads(base64.b64decode(pubsub_message['message']['data']).decode('utf-8'))
-                message_id = message_data.get('messageId')  # Ajustar según la estructura real
+            last_history_id = load_last_history_id(table) or history_id
+            print(f"📩 Procesando desde historyId={last_history_id} hasta {history_id}")
+    
+            history = gmail_service.users().history().list(
+                userId='me',
+                startHistoryId=last_history_id
+            ).execute()
 
-                mail_data = process_email(message_id, gmail_service)
-                sender = mail_data['sender']
-                subject = mail_data['subject']
+            for record in history.get('history', []):
+                if 'messagesAdded' in record:
+                    for m in record['messagesAdded']:
+                        mail_msg_id = m['message']['id']
+                        mail_data = process_email(mail_msg_id, gmail_service)
+                        sender = mail_data['sender']
+                        subject = mail_data['subject']
 
-                if not mail_data:
-                    return {'statusCode': 500, 'body': 'Error procesando email'}
+                        if not mail_data:
+                            return {'statusCode': 500, 'body': 'Error procesando email'}
 
-                ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, sender, subject)
-                if message_id not in ids_existentes_en_redshift:
-                    dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
+                        ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, sender, subject)
+
+                        print('mail_msg_id: ', mail_msg_id)
+                        print('ids_existentes_en_redshift: ', ids_existentes_en_redshift)
+                        
+                        if mail_msg_id not in ids_existentes_en_redshift:
+                            print('Intentamos extraer los datos del mail y cargarlos a S3')
+                            key = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
+
+            save_last_history_id(table, history_id)
+
+            return  {
+                "statusCode": 200,
+                "body": {
+                    "key": key
+                }
+            }
 
     except Exception as e:
         # Si falla la logica de filtrado por ids podria probar con traer los mails recibidos desde la ultima fecha de ingestion

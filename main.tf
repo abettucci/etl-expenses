@@ -444,6 +444,17 @@ resource "aws_lambda_function" "gmail_watcher" {
   }
 }
 
+resource "aws_dynamodb_table" "gmail_history" {
+  name           = "gmail-history-tracker"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "PK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+}
+
 # 4. EventBridge rule (cada domingo 00:00 UTC)
 resource "aws_cloudwatch_event_rule" "weekly" {
   name                = "gmail-watcher-renew-weekly"
@@ -816,6 +827,30 @@ resource "aws_iam_policy" "lambda_s3_access" {
       }
     ]
   })
+}
+
+resource "aws_iam_policy" "lambda_dynamo_policy" {
+  name        = "lambda-dynamo-gmail"
+  description = "Permite a la lambda leer/escribir historyId en DynamoDB"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_dynamo_attach" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.lambda_dynamo_policy.arn
 }
 
 # Policy para permitir ejecutar Step Functions
@@ -1198,27 +1233,37 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
       "Transform Gmail PDFs" = {
         Type     = "Task",
         Resource = aws_lambda_function.pdf_processor.arn,
+        Parameters = {
+          "key.$": "$.key"
+        },
+        Next     = "Load Gmail PDFs",
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
             "ResultPath": "$.error-info",
             "Next": "CompensationFlow"
           }
-        ],
-        Next     = "Load Gmail PDFs"
+        ]
       },
       # Tercer step ejecuta Load data
       "Load Gmail PDFs" = {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Parameters = {
+          "etl_flow.$"    = "$.etl_flow"
+          "bucket.$"      = "$.bucket"
+          "key.$"         = "$.key"
+          "report_id.$"   = "$.report_id"
+          "report_date.$" = "$.report_date"
+        },
+        Next     = "Export Redshift data to BigQuery",
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
             "ResultPath": "$.error-info",
             "Next": "CompensationFlow"
           }
-        ],
-        Next     = "Export Redshift data to BigQuery"
+        ]
       },
       "Export Redshift data to BigQuery" = {
         Type     = "Task",
@@ -1386,27 +1431,37 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
       "Transform Gmail Bank Payments" = {
         Type     = "Task",
         Resource = aws_lambda_function.bank_payments_processor.arn,
+        Parameters = {
+          "key.$": "$.key"
+        },
+        Next     = "Load Gmail Bank Payments",
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
             "ResultPath": "$.error-info",
             "Next": "CompensationFlow"
           }
-        ],
-        Next     = "Load Gmail Bank Payments"
+        ]
       },
       # Tercer step ejecuta Load data
       "Load Gmail Bank Payments" = {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Parameters = {
+          "etl_flow.$"    = "$.etl_flow"
+          "bucket.$"      = "$.bucket"
+          "key.$"         = "$.key"
+          "report_id.$"   = "$.report_id"
+          "report_date.$" = "$.report_date"
+        },
+        Next     = "Export Redshift data to BigQuery",
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
             "ResultPath": "$.error-info",
             "Next": "CompensationFlow"
           }
-        ],
-        Next     = "Export Redshift data to BigQuery"
+        ]
       },
       "Export Redshift data to BigQuery" = {
         Type     = "Task",

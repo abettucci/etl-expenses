@@ -213,13 +213,18 @@ def transform_pdf_data():
 
 def lambda_handler(event, context):
     try:
-        transform_pdf_data()
+        s3_file_to_transform = event['key']
+        key = transform_pdf_data(s3_file_to_transform)
+
         return {
             "statusCode": 200,
-            "body": json.dumps({
-                "message": "Proceso completado",
-                "success": True
-            })
+            "body": {
+                "etl_flow": 'TICKET',
+                "bucket": 'carrefour_data',
+                "key": key,
+                "report_id" : "",
+                "report_date" : ""
+            }
         }
     except Exception as e:
         print("⚠️ Error:", str(e))
