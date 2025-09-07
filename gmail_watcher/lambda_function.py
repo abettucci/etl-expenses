@@ -49,6 +49,7 @@ def lambda_handler(event, context):
             "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
         }
         resp = gmail_service.users().watch(userId="me", body=body).execute()
+
         print("Watcher renewed:", resp)
         return {"status": "ok", "response": resp}
     else:
