@@ -190,7 +190,7 @@ jobs:
           terraform import aws_iam_policy.lambda_dynamo_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda-dynamo-gmail || true
           
           terraform import aws_dynamodb_table.gmail_history gmail-history-tracker || true
-          
+
           # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
           # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
 
@@ -203,26 +203,24 @@ jobs:
 
           terraform import aws_lambda_function.webhook_mp_report webhook_mp_report || true
           terraform import aws_lambda_function.compensation_flow compensation_flow || true
-          # terraform import aws_lambda_function.pdf_extractor pdf_extractor || true
           terraform import aws_lambda_function.pdf_processor pdf_processor || true
           terraform import aws_lambda_function.mp_report_extractor mp_report_extractor || true
           terraform import aws_lambda_function.mp_report_processor mp_report_processor || true
-          # terraform import aws_lambda_function.bank_payments_extractor bank_payments_extractor || true
           terraform import aws_lambda_function.bank_payments_processor bank_payments_processor || true
           terraform import aws_lambda_function.redshift_to_bq redshift_to_bq || true
           terraform import aws_lambda_function.ai_agent ai_agent || true
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf || true
-          # terraform import aws_lambda_function.extract_data_gmail extract_data_gmail || true
-          # terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
+          terraform import aws_lambda_function.extract_data_gmail extract_data_gmail || true
+          terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
 
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
           terraform import aws_iam_role.glue_service_role glue_service_role || true
           terraform import aws_iam_role.api_gateway_role  api_gateway_step_function_role  || true          
 
-          # terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
+          terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
-          # terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
+          terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
 
           terraform import aws_glue_catalog_database.etl_database "$TF_VAR_AWS_ACCOUNT_ID:etl_database" || true
           terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler || true
