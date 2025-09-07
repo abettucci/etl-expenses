@@ -849,7 +849,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_dynamo_attach" {
-  role       = aws_iam_role.lambda_role.name
+  role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_dynamo_policy.arn
 }
 
