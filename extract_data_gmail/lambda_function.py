@@ -1,7 +1,9 @@
 import json
 import boto3
+from botocore.exceptions import ClientError
 from datetime import datetime, timedelta
 import base64
+import re
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
 import pandas as pd
@@ -286,10 +288,30 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
     return s3_key
 
 def load_last_history_id(table):
-    resp = table.get_item(Key={"PK": "gmail_last_history_id"})
-    if "Item" in resp:
-        return resp["Item"]["historyId"]
-    return None  # primera vez que corre
+    try:
+        dynamodb = boto3.resource('dynamodb')
+        table = dynamodb.Table(table)
+        
+        # Verificar si la tabla existe
+        table.load()  # Esto lanzará excepción si la tabla no existe
+        
+        resp = table.get_item(Key={"PK": "gmail_last_history_id"})
+        
+        if "Item" in resp:
+            return resp["Item"]["historyId"]
+        return None  # primera vez que corre
+        
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'ResourceNotFoundException':
+            print(f"⚠️  Tabla '{table}' no existe. Primera ejecución.")
+            return None
+        else:
+            print(f"❌ Error de DynamoDB: {e}")
+            return None
+    except Exception as e:
+        print(f"❌ Error inesperado: {e}")
+        return None
 
 def save_last_history_id(table, history_id):
     table.put_item(Item={
@@ -310,17 +332,17 @@ def lambda_handler(event, context):
         bank_bucket = os.environ['BANK_BUCKET_NAME']
         market_bucket = os.environ['MARKET_BUCKET_NAME']
         folder = 'raw/'
-        
-        # El mensaje de Pub/Sub viene en el body del request de API Gateway
-        # if 'body' in event:
-            # pubsub_message = json.loads(event['body'])
-            # message = pubsub_message['message']
-          
-        if 'message' in event:
-            message = event['message']            
-            message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
-            history_id = message_data.get('historyId')
 
+        print("\n Event: ", event)
+        if 'message' in event:
+            message = event['message']       
+
+            print("\n Message: ", message)     
+            message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
+
+            print("\n Data decodificada: ", message_data)
+
+            history_id = message_data.get('historyId')
             if not history_id:
                 print("⚠️ No se encontró historyId en el evento")
                 return
@@ -338,8 +360,15 @@ def lambda_handler(event, context):
                     for m in record['messagesAdded']:
                         mail_msg_id = m['message']['id']
                         mail_data = process_email(mail_msg_id, gmail_service)
-                        sender = mail_data['sender']
+                        match = re.search(r"<([^>]+)>", mail_data['sender'])
+                        if match:
+                            sender = match.group(1)
                         subject = mail_data['subject']
+                        date = mail_data['date']
+
+                        print('sender: ', sender)
+                        print('subject: ', subject)
+                        print('date: ', date)
 
                         if not mail_data:
                             return {'statusCode': 500, 'body': 'Error procesando email'}
@@ -362,6 +391,9 @@ def lambda_handler(event, context):
                 }
             }
 
+        else:
+            print('Error al extraer los datos')
+            
     except Exception as e:
         # Si falla la logica de filtrado por ids podria probar con traer los mails recibidos desde la ultima fecha de ingestion
         # extract_by_date_payments_from_gmail(redshift_data, ids_existentes_en_redshift, gmail_service, s3_client, bucket_name, folder)
