@@ -187,6 +187,9 @@ jobs:
           terraform import aws_iam_policy.lambda_redshift_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_redshift_access || true
           terraform import aws_iam_policy.lambda_bedrock_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_bedrock_access || true
           terraform import aws_iam_policy.lambda_s3_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_s3_access || true
+          terraform import aws_iam_policy.lambda_dynamo_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda-dynamo-gmail || true
+          
+          terraform import aws_dynamodb_table.gmail_history gmail-history-tracker || true
           
           # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
           # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
