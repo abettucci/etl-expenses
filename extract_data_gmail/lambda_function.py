@@ -312,9 +312,12 @@ def lambda_handler(event, context):
         folder = 'raw/'
         
         # El mensaje de Pub/Sub viene en el body del request de API Gateway
-        if 'body' in event:
-            pubsub_message = json.loads(event['body'])
-            message = pubsub_message['message']              
+        # if 'body' in event:
+            # pubsub_message = json.loads(event['body'])
+            # message = pubsub_message['message']
+          
+        if 'message' in event:
+            message = event['message']            
             message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
             history_id = message_data.get('historyId')
 
