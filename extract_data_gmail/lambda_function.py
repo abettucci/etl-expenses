@@ -59,16 +59,7 @@ def find_html_part(payload):
                 return result
     return None
 
-def get_message_ids_loaded(redshift_data, sender, subject):
-    if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS):
-        table_name = 'bank_payments'
-        pk = 'id'
-    elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
-        table_name = 'carrefour_data'
-        pk = 'nro_ticket'
-    else:
-        return {'statusCode': 200, 'body': 'Email descartado por filtros'}
-
+def get_message_ids_loaded(redshift_data, table_name, pk):
     # Obtenemos los ids existentes
     id_existentes_query = f"SELECT DISTINCT {pk} FROM {table_name};"
 
@@ -275,36 +266,49 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
         )        
         print(f"✅ Archivo subido a S3: {s3_key}")
 
+        return  {
+            "statusCode": 200,
+            "body": {
+                "key": s3_key,
+                "process": True
+            }
+        }
     
     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
         s3_key = download_pdf_from_email_urls(mail_data, sender, market_bucket, folder, s3_client)
         print(f"✅ Archivo subido a S3: {s3_key}")
 
+        return  {
+            "statusCode": 200,
+            "body": {
+                "key": s3_key,
+                "process": True
+            }
+        }
+
     else:
         # Default o email no manejado
         print(f"Email no manejado - Subject: {sender}, From: {subject}")
-        return {'statusCode': 200, 'body': 'Email descartado por filtros'}
+        return {
+            "process": False,
+            "reason": "Evento descartado por filtros"
+        }
 
-    return s3_key
-
-def load_last_history_id(table):
+def load_last_history_id(table_name):
     try:
         dynamodb = boto3.resource('dynamodb')
-        table = dynamodb.Table(table)
-        
-        # Verificar si la tabla existe
-        table.load()  # Esto lanzará excepción si la tabla no existe
-        
-        resp = table.get_item(Key={"PK": "gmail_last_history_id"})
+        table_obj = dynamodb.Table(table_name)
+        table_obj.load()
+        resp = table_obj.get_item(Key={"PK": "gmail_last_history_id"})
         
         if "Item" in resp:
             return resp["Item"]["historyId"]
-        return None  # primera vez que corre
+        return None
         
     except ClientError as e:
         error_code = e.response['Error']['Code']
         if error_code == 'ResourceNotFoundException':
-            print(f"⚠️  Tabla '{table}' no existe. Primera ejecución.")
+            print(f"⚠️  Tabla '{table_name}' no existe. Primera ejecución.")
             return None
         else:
             print(f"❌ Error de DynamoDB: {e}")
@@ -325,7 +329,7 @@ def lambda_handler(event, context):
 
         creds = auth_google('gcp_api_credentials')
         dynamodb = boto3.resource('dynamodb')
-        table = dynamodb.Table("gmail-history-tracker")
+        dynamo_table_name = dynamodb.Table("gmail-history-tracker")
         gmail_service = build('gmail', 'v1', credentials=creds)
         redshift_data = boto3.client('redshift-data')
         s3_client = boto3.client('s3')
@@ -333,66 +337,99 @@ def lambda_handler(event, context):
         market_bucket = os.environ['MARKET_BUCKET_NAME']
         folder = 'raw/'
 
-        print("\n Event: ", event)
-        if 'message' in event:
-            message = event['message']       
+        results = gmail_service.users().labels().list(userId="me").execute()
+        label_ids = []
+        for label in results['labels']:
+            if label['name'] in ['Avisos Gastos Santander', 'Avisos Compra Carrefour']:
+                label_ids.append(label['id'])
 
-            print("\n Message: ", message)     
-            message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
+        print('label_ids: ', label_ids)
 
-            print("\n Data decodificada: ", message_data)
+        if label_ids:
+            for label_id in label_ids:
+                if 'message' in event:
+                    message = event['message']       
 
-            history_id = message_data.get('historyId')
-            if not history_id:
-                print("⚠️ No se encontró historyId en el evento")
-                return
+                    print("\n Message: ", message)     
+                    message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
 
-            last_history_id = load_last_history_id(table) or history_id
-            print(f"📩 Procesando desde historyId={last_history_id} hasta {history_id}")
-    
-            history = gmail_service.users().history().list(
-                userId='me',
-                startHistoryId=last_history_id
-            ).execute()
+                    print("\n Data decodificada: ", message_data)
 
-            for record in history.get('history', []):
-                if 'messagesAdded' in record:
-                    for m in record['messagesAdded']:
-                        mail_msg_id = m['message']['id']
-                        mail_data = process_email(mail_msg_id, gmail_service)
-                        match = re.search(r"<([^>]+)>", mail_data['sender'])
-                        if match:
-                            sender = match.group(1)
-                        subject = mail_data['subject']
-                        date = mail_data['date']
+                    history_id = message_data.get('historyId')
+                    if not history_id:
+                        print("⚠️ No se encontró historyId en el evento")
+                        return
 
-                        print('sender: ', sender)
-                        print('subject: ', subject)
-                        print('date: ', date)
+                    last_history_id = load_last_history_id(dynamo_table_name) or history_id
+                    print(f"📩 Procesando desde historyId={last_history_id} hasta {history_id}")
+            
+                    history = gmail_service.users().history().list(
+                        userId='me',
+                        startHistoryId=last_history_id,
+                        labelId = label_id
+                    ).execute()
 
-                        if not mail_data:
-                            return {'statusCode': 500, 'body': 'Error procesando email'}
+                    for record in history.get('history', []):
+                        if 'messagesAdded' in record:
+                            for m in record['messagesAdded']:
+                                mail_msg_id = m['message']['id']
+                                
+                                msg = gmail_service.users().messages().get(
+                                    userId="me", id=mail_msg_id, format="metadata"
+                                ).execute()
 
-                        ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, sender, subject)
+                                labels = msg.get("labelIds", [])
+                                if label_id not in labels:
+                                    print(f"⚠️ Mensaje {mail_msg_id} ignorado porque no tiene el label {label_id}")
+                                    continue
 
-                        print('mail_msg_id: ', mail_msg_id)
-                        print('ids_existentes_en_redshift: ', ids_existentes_en_redshift)
-                        
-                        if mail_msg_id not in ids_existentes_en_redshift:
-                            print('Intentamos extraer los datos del mail y cargarlos a S3')
-                            key = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
+                                print(f" Procesando mensaje {mail_msg_id} porque tiene el label {label_id}")
+                                
+                                mail_data = process_email(mail_msg_id, gmail_service)
+                                match = re.search(r"<([^>]+)>", mail_data['sender'])
+                                if match:
+                                    sender = match.group(1)
+                                subject = mail_data['subject']
+                                date = mail_data['date']
 
-            save_last_history_id(table, history_id)
+                                print('sender: ', sender)
+                                print('subject: ', subject)
+                                print('date: ', date)
 
-            return  {
-                "statusCode": 200,
-                "body": {
-                    "key": key
-                }
-            }
+                                if not mail_data:
+                                    return {'statusCode': 500, 'body': 'Error procesando email'}
+
+                                if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS):
+                                    table_name = 'bank_payments'
+                                    pk = 'id'
+                                elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
+                                    table_name = 'carrefour_data'
+                                    pk = 'nro_ticket'
+                                else:
+                                    # no cumple criterios de sender ni subject => evitar que continue el step function despues de esto
+                                    return {"process": False, "reason": "Evento descartado por filtros"}
+
+                                ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, table_name, pk)
+
+                                print('mail_msg_id: ', mail_msg_id)
+                                print('ids_existentes_en_redshift: ', ids_existentes_en_redshift)
+                                
+                                if mail_msg_id not in ids_existentes_en_redshift:
+                                    print('Intentamos extraer los datos del mail y cargarlos a S3')
+                                    response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
+
+                    save_last_history_id(dynamo_table_name, history_id)
+
+                    return response
+
+                else:
+                    print('Error al extraer los datos')
 
         else:
-            print('Error al extraer los datos')
+            print("❌ No hay etiquetas configuradas")
+
+        print("\n Event: ", event)
+        
             
     except Exception as e:
         # Si falla la logica de filtrado por ids podria probar con traer los mails recibidos desde la ultima fecha de ingestion

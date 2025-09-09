@@ -1227,7 +1227,21 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
             "Next": "CompensationFlow"
           }
         ],
-        Next     = "Transform Gmail PDFs"
+        Next     = "Check If Should Process"
+      },
+      "Check If Should Process" = {
+        Type = "Choice",
+        Choices = [
+          {
+            "Variable": "$.process",
+            "BooleanEquals": true,
+            "Next": "Transform Gmail PDFs"
+          }
+        ],
+        Default = "SkipProcessing"
+      },
+      "SkipProcessing" = {
+        Type = "Succeed"
       },
       # Segundo step ejecuta Transform data
       "Transform Gmail PDFs" = {
@@ -1425,7 +1439,21 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
             "Next": "CompensationFlow"
           }
         ],
-        Next     = "Transform Gmail Bank Payments"
+        Next     = "Check If Should Process"
+      },
+      "Check If Should Process" = {
+        Type = "Choice",
+        Choices = [
+          {
+            "Variable": "$.process",
+            "BooleanEquals": true,
+            "Next": "Transform Gmail Bank Payments"
+          }
+        ],
+        Default = "SkipProcessing"
+      },
+      "SkipProcessing" = {
+        Type = "Succeed"
       },
       # Segundo step ejecuta Transform data
       "Transform Gmail Bank Payments" = {
