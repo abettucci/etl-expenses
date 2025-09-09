@@ -73,7 +73,7 @@ def get_message_ids_loaded(redshift_data, table_name, pk):
     )
 
     print(response)
-    
+
     ids_existentes_en_redshift = set()
     while True:
         print("Esperando resultado de Redshift...")
@@ -401,16 +401,17 @@ def lambda_handler(event, context):
                                     return {'statusCode': 500, 'body': 'Error procesando email'}
 
                                 table_name, pk = None, None
-                                if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS):
+                                if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
                                     table_name = 'bank_payments'
                                     pk = 'id'
+
                                 elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                     table_name = 'carrefour_data'
                                     pk = 'nro_ticket'
+
                                 else:
-                                    # no cumple criterios de sender ni subject => evitar que continue el step function despues de esto
                                     return {"process": False, "reason": "Evento descartado por filtros"}
-                                
+                                                                
                                 print('table_name: ', table_name)
                                 print('pk : ', pk)
 
