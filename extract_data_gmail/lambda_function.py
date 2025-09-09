@@ -63,6 +63,8 @@ def get_message_ids_loaded(redshift_data, table_name, pk):
     # Obtenemos los ids existentes
     id_existentes_query = f"SELECT DISTINCT {pk} FROM {table_name};"
 
+    print('id_existentes_query: ', id_existentes_query)
+
     # Ejecutar consulta
     response = redshift_data.execute_statement(
         Database='dev',
@@ -70,13 +72,17 @@ def get_message_ids_loaded(redshift_data, table_name, pk):
         Sql=id_existentes_query
     )
 
+    print(response)
+    
     ids_existentes_en_redshift = set()
     while True:
+        print("Esperando resultado de Redshift...")
         desc = redshift_data.describe_statement(Id=response['Id'])
         if desc['Status'] == 'FINISHED':
             if desc['HasResultSet']:
                 try:
                     result = redshift_data.get_statement_result(Id=response['Id'])
+                    print('result: ', result)
                     ids_existentes_en_redshift = {
                         row[0]['stringValue'] for row in result['Records'] if 'stringValue' in row[0]
                     }
@@ -255,9 +261,8 @@ def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s
 def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject):
     """Dispatch basado en subject y sender"""
 
-    if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS):
-        
-        # Guardar en S3
+    if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS): 
+        print('Descargando la info del mail del gasto de santander')
         s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
         s3_client.put_object(
             Body=json.dumps(mail_data),
@@ -275,6 +280,7 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
         }
     
     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
+        print('Descargando el pdf del mail de carrefour...')
         s3_key = download_pdf_from_email_urls(mail_data, sender, market_bucket, folder, s3_client)
         print(f"✅ Archivo subido a S3: {s3_key}")
 
@@ -294,25 +300,20 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
             "reason": "Evento descartado por filtros"
         }
 
-def load_last_history_id(table_name):
+def load_last_history_id(dynamo_table_name):
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table(dynamo_table_name)
+
     try:
-        dynamodb = boto3.resource('dynamodb')
-        table_obj = dynamodb.Table(table_name)
-        table_obj.load()
-        resp = table_obj.get_item(Key={"PK": "gmail_last_history_id"})
-        
-        if "Item" in resp:
-            return resp["Item"]["historyId"]
-        return None
-        
+        resp = table.get_item(Key={"PK": "gmail_last_history_id"})
+        return resp.get("Item", {}).get("historyId")
     except ClientError as e:
         error_code = e.response['Error']['Code']
         if error_code == 'ResourceNotFoundException':
-            print(f"⚠️  Tabla '{table_name}' no existe. Primera ejecución.")
-            return None
+            print(f"⚠️ Tabla '{dynamo_table_name}' no existe. Primera ejecución.")
         else:
             print(f"❌ Error de DynamoDB: {e}")
-            return None
+        return None
     except Exception as e:
         print(f"❌ Error inesperado: {e}")
         return None
@@ -399,6 +400,7 @@ def lambda_handler(event, context):
                                 if not mail_data:
                                     return {'statusCode': 500, 'body': 'Error procesando email'}
 
+                                table_name, pk = None, None
                                 if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS):
                                     table_name = 'bank_payments'
                                     pk = 'id'
@@ -408,6 +410,9 @@ def lambda_handler(event, context):
                                 else:
                                     # no cumple criterios de sender ni subject => evitar que continue el step function despues de esto
                                     return {"process": False, "reason": "Evento descartado por filtros"}
+                                
+                                print('table_name: ', table_name)
+                                print('pk : ', pk)
 
                                 ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, table_name, pk)
 

@@ -77,7 +77,7 @@ redshift_data = boto3.client('redshift-data')
 query = """
 SELECT column_name, data_type
 FROM information_schema.columns
-WHERE table_name = 'bank_payments';
+WHERE table_name = 'carrefour_data';
 """     
 
 # query = """
