@@ -339,7 +339,7 @@ resource "aws_lambda_permission" "allow_api_gateway_ai_agent" {
 }
 
 resource "aws_lambda_permission" "allow_api_gateway_market_mail_data_extractor" {
-  statement_id  = "AllowAPIGatewayInvokeGmailDataExtractor"
+  statement_id  = "AllowAPIGatewayInvokeMarketMailDataExtractor"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.extract_data_gmail.function_name
   principal     = "apigateway.amazonaws.com"
@@ -358,7 +358,7 @@ resource "aws_lambda_permission" "allow_api_gateway_market_mail_data_extractor" 
 }
 
 resource "aws_lambda_permission" "allow_api_gateway_bank_mail_data_extractor" {
-  statement_id  = "AllowAPIGatewayInvokeGmailDataExtractor"
+  statement_id  = "AllowAPIGatewayInvokeBankMailDataExtractor"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.extract_data_gmail.function_name
   principal     = "apigateway.amazonaws.com"
