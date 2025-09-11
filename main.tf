@@ -325,7 +325,7 @@ resource "aws_lambda_permission" "allow_api_gateway_ai_agent" {
   principal     = "apigateway.amazonaws.com"
 
   # Usamos el ARN del api_gateway unificado
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/telegram_bot"
 
   depends_on = [
     aws_api_gateway_rest_api.main_api,
@@ -344,7 +344,26 @@ resource "aws_lambda_permission" "allow_api_gateway_gmail_data_extractor" {
   function_name = aws_lambda_function.extract_data_gmail.function_name
   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/bank_pdf"
+
+  depends_on = [
+    aws_api_gateway_rest_api.main_api,
+    aws_lambda_function.extract_data_gmail
+  ]
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes = [source_arn]
+  }
+}
+
+resource "aws_lambda_permission" "allow_api_gateway_gmail_data_extractor" {
+  statement_id  = "AllowAPIGatewayInvokeGmailDataExtractor"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.extract_data_gmail.function_name
+  principal     = "apigateway.amazonaws.com"
+
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/market_pdf"
 
   depends_on = [
     aws_api_gateway_rest_api.main_api,
@@ -363,7 +382,7 @@ resource "aws_lambda_permission" "allow_api_gateway_mp_webhook" {
   function_name = aws_lambda_function.webhook_mp_report.function_name
   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/*"
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/mp_webhook"
 
   depends_on = [
     aws_api_gateway_rest_api.main_api,
