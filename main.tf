@@ -237,11 +237,17 @@ resource "aws_api_gateway_integration" "market_pdf_integration" {
   # Transformación del request
   request_templates = {
     "application/json" = <<EOF
-{
-  "input": "$util.escapeJavaScript($input.json('$'))",
-  "stateMachineArn": "${aws_sfn_state_machine.pdf_etl_flow.arn}"
-}
-EOF
+    {
+      "input": "$util.escapeJavaScript($input.body)",
+      "stateMachineArn": "${aws_sfn_state_machine.pdf_etl_flow.arn}"
+    }
+    EOF
+      "application/octet-stream" = <<EOF
+    {
+      "input": "$util.escapeJavaScript($input.body)",
+      "stateMachineArn": "${aws_sfn_state_machine.pdf_etl_flow.arn}"
+    }
+    EOF
   }
 }
 
@@ -260,12 +266,18 @@ resource "aws_api_gateway_integration" "bank_pdf_extractor_integration" {
   
   # Transformación del request
   request_templates = {
-    "application/json" = <<EOF
-{
-  "input": "$util.escapeJavaScript($input.json('$'))",
-  "stateMachineArn": "${aws_sfn_state_machine.bank_payments_etl_flow.arn}"
-}
-EOF
+      "application/json" = <<EOF
+    {
+      "input": "$util.escapeJavaScript($input.body)",
+      "stateMachineArn": "${aws_sfn_state_machine.bank_payments_etl_flow.arn}"
+    }
+    EOF
+      "application/octet-stream" = <<EOF
+    {
+      "input": "$util.escapeJavaScript($input.body)",
+      "stateMachineArn": "${aws_sfn_state_machine.bank_payments_etl_flow.arn}"
+    }
+    EOF
   }
 }
 
