@@ -305,6 +305,83 @@ resource "aws_api_gateway_integration" "mp_webhook_integration" {
   uri                     = aws_lambda_function.webhook_mp_report.invoke_arn
 }
 
+resource "aws_api_gateway_method_response" "market_pdf_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.market_pdf_resource.id
+  http_method = aws_api_gateway_method.market_pdf_method.http_method
+  status_code = "200"
+  
+  response_models = {
+    "application/json" = "Empty"
+  }
+}
+
+resource "aws_api_gateway_method_response" "bank_pdf_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
+  status_code = "200"
+  
+  response_models = {
+    "application/json" = "Empty"
+  }
+}
+
+resource "aws_api_gateway_integration_response" "market_pdf_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.market_pdf_resource.id
+  http_method = aws_api_gateway_method.market_pdf_method.http_method
+  status_code = aws_api_gateway_method_response.market_pdf_response.status_code
+  
+  response_templates = {
+    "application/json" = jsonencode({
+      status = "Step Function execution started"
+      executionArn = "$input.path('$.executionArn')"
+    })
+  }
+}
+
+resource "aws_api_gateway_integration_response" "bank_pdf_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
+  status_code = aws_api_gateway_method_response.bank_pdf_response.status_code
+  
+  response_templates = {
+    "application/json" = jsonencode({
+      status = "Step Function execution started"
+      executionArn = "$input.path('$.executionArn')"
+    })
+  }
+}
+resource "aws_api_gateway_integration_response" "market_pdf_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.market_pdf_resource.id
+  http_method = aws_api_gateway_method.market_pdf_method.http_method
+  status_code = aws_api_gateway_method_response.market_pdf_response.status_code
+  
+  response_templates = {
+    "application/json" = jsonencode({
+      status = "Step Function execution started"
+      executionArn = "$input.path('$.executionArn')"
+    })
+  }
+}
+
+resource "aws_api_gateway_integration_response" "bank_pdf_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
+  status_code = aws_api_gateway_method_response.bank_pdf_response.status_code
+  
+  response_templates = {
+    "application/json" = jsonencode({
+      status = "Step Function execution started"
+      executionArn = "$input.path('$.executionArn')"
+    })
+  }
+}
+
 # Deployment y stage
 resource "aws_api_gateway_deployment" "main_api_deployment" {
   rest_api_id = aws_api_gateway_rest_api.main_api.id
@@ -314,6 +391,8 @@ resource "aws_api_gateway_deployment" "main_api_deployment" {
     aws_api_gateway_integration.telegram_bot_integration,
     aws_api_gateway_integration.market_pdf_integration,
     aws_api_gateway_integration.bank_pdf_extractor_integration,
+    aws_api_gateway_integration_response.market_pdf_integration_response,
+    aws_api_gateway_integration_response.bank_pdf_integration_response,
     aws_api_gateway_integration.mp_webhook_integration
   ]
 }
@@ -338,43 +417,43 @@ resource "aws_lambda_permission" "allow_api_gateway_ai_agent" {
   }
 }
 
-resource "aws_lambda_permission" "allow_api_gateway_market_mail_data_extractor" {
-  statement_id  = "AllowAPIGatewayInvokeMarketMailDataExtractor"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.extract_data_gmail.function_name
-  principal     = "apigateway.amazonaws.com"
+# resource "aws_lambda_permission" "allow_api_gateway_market_mail_data_extractor" {
+#   statement_id  = "AllowAPIGatewayInvokeMarketMailDataExtractor"
+#   action        = "lambda:InvokeFunction"
+#   function_name = aws_lambda_function.extract_data_gmail.function_name
+#   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/bank_pdf"
+#   source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/bank_pdf"
 
-  depends_on = [
-    aws_api_gateway_rest_api.main_api,
-    aws_lambda_function.extract_data_gmail
-  ]
+#   depends_on = [
+#     aws_api_gateway_rest_api.main_api,
+#     aws_lambda_function.extract_data_gmail
+#   ]
 
-  lifecycle {
-    create_before_destroy = true
-    ignore_changes = [source_arn]
-  }
-}
+#   lifecycle {
+#     create_before_destroy = true
+#     ignore_changes = [source_arn]
+#   }
+# }
 
-resource "aws_lambda_permission" "allow_api_gateway_bank_mail_data_extractor" {
-  statement_id  = "AllowAPIGatewayInvokeBankMailDataExtractor"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.extract_data_gmail.function_name
-  principal     = "apigateway.amazonaws.com"
+# resource "aws_lambda_permission" "allow_api_gateway_bank_mail_data_extractor" {
+#   statement_id  = "AllowAPIGatewayInvokeBankMailDataExtractor"
+#   action        = "lambda:InvokeFunction"
+#   function_name = aws_lambda_function.extract_data_gmail.function_name
+#   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/market_pdf"
+#   source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/market_pdf"
 
-  depends_on = [
-    aws_api_gateway_rest_api.main_api,
-    aws_lambda_function.extract_data_gmail
-  ]
+#   depends_on = [
+#     aws_api_gateway_rest_api.main_api,
+#     aws_lambda_function.extract_data_gmail
+#   ]
 
-  lifecycle {
-    create_before_destroy = true
-    ignore_changes = [source_arn]
-  }
-}
+#   lifecycle {
+#     create_before_destroy = true
+#     ignore_changes = [source_arn]
+#   }
+# }
 
 resource "aws_lambda_permission" "allow_api_gateway_mp_webhook" {
   statement_id  = "AllowAPIGatewayInvokeMercadoPagoWebhook"
