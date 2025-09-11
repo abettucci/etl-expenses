@@ -60,41 +60,45 @@ def find_html_part(payload):
     return None
 
 def get_message_ids_loaded(redshift_data, table_name, pk):
-    # Obtenemos los ids existentes
     id_existentes_query = f"SELECT DISTINCT {pk} FROM {table_name};"
 
-    print('id_existentes_query: ', id_existentes_query)
+    try:
+        # Ejecutar consulta
+        response = redshift_data.execute_statement(
+            Database='dev',
+            WorkgroupName='pdf-etl-workgroup',
+            Sql=id_existentes_query
+        )
 
-    # Ejecutar consulta
-    response = redshift_data.execute_statement(
-        Database='dev',
-        WorkgroupName='pdf-etl-workgroup',
-        Sql=id_existentes_query
-    )
+        ids_existentes_en_redshift = set()
+        while True:
+            desc = redshift_data.describe_statement(Id=response['Id'])
+            if desc['Status'] == 'FINISHED':
+                if desc['HasResultSet']:
+                    try:
+                        result = redshift_data.get_statement_result(Id=response['Id'])
+                        ids_existentes_en_redshift = {
+                            row[0]['stringValue'] for row in result['Records'] if 'stringValue' in row[0]
+                        }
+                    except Exception as e:
+                        print(f"⚠️ Error al obtener resultados de Redshift: {e}")
+                        ids_existentes_en_redshift = set()
+                break
+            elif desc['Status'] == 'FAILED':
+                # ⚠️ Error de consulta → revisar mensaje
+                error_msg = desc.get("Error", "")
+                if "relation" in error_msg and "does not exist" in error_msg:
+                    print(f"⚠️ Tabla {table_name} no existe en Redshift, devolvemos conjunto vacío.")
+                    return set()
+                else:
+                    print("❌ Error al consultar Redshift:", error_msg)
+                break
 
-    print(response)
+        return ids_existentes_en_redshift
 
-    ids_existentes_en_redshift = set()
-    while True:
-        print("Esperando resultado de Redshift...")
-        desc = redshift_data.describe_statement(Id=response['Id'])
-        if desc['Status'] == 'FINISHED':
-            if desc['HasResultSet']:
-                try:
-                    result = redshift_data.get_statement_result(Id=response['Id'])
-                    print('result: ', result)
-                    ids_existentes_en_redshift = {
-                        row[0]['stringValue'] for row in result['Records'] if 'stringValue' in row[0]
-                    }
-                except Exception as e:
-                    ids_existentes_en_redshift = set()
-                    print(f"❌ Error al obtener resultados de Redshift: {e}")
-            break
-        elif desc['Status'] == 'FAILED':
-            print("❌ Error al consultar Redshift:", desc['Error'])
-            break
-
-    return ids_existentes_en_redshift
+    except Exception as e:
+        print(f"❌ Error inesperado consultando Redshift: {e}")
+        return set()
 
 def get_last_message_loaded(redshift_data):
     # Obtenemos la ultima fecha de la tabla de tickets ya ingestados de Redshift        
@@ -261,7 +265,7 @@ def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s
 def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject):
     """Dispatch basado en subject y sender"""
 
-    if (BANK_EMAIL_SENDER in sender and subject in BANK_SUBJECTS): 
+    if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
         print('Descargando la info del mail del gasto de santander')
         s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
         s3_client.put_object(
@@ -278,7 +282,7 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
                 "process": True
             }
         }
-    
+
     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
         print('Descargando el pdf del mail de carrefour...')
         s3_key = download_pdf_from_email_urls(mail_data, sender, market_bucket, folder, s3_client)
@@ -293,12 +297,8 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
         }
 
     else:
-        # Default o email no manejado
-        print(f"Email no manejado - Subject: {sender}, From: {subject}")
-        return {
-            "process": False,
-            "reason": "Evento descartado por filtros"
-        }
+        print(f"Email no manejado - Subject: {subject}, From: {sender}")
+        return {"process": False, "reason": "Evento descartado por filtros"}
 
 def load_last_history_id(dynamo_table_name):
     dynamodb = boto3.resource('dynamodb')
