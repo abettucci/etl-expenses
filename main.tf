@@ -327,20 +327,6 @@ resource "aws_api_gateway_method_response" "bank_pdf_response" {
   }
 }
 
-resource "aws_api_gateway_integration_response" "market_pdf_integration_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.market_pdf_resource.id
-  http_method = aws_api_gateway_method.market_pdf_method.http_method
-  status_code = aws_api_gateway_method_response.market_pdf_response.status_code
-  
-  response_templates = {
-    "application/json" = jsonencode({
-      status = "Step Function execution started"
-      executionArn = "$input.path('$.executionArn')"
-    })
-  }
-}
-
 resource "aws_api_gateway_integration_response" "bank_pdf_integration_response" {
   rest_api_id = aws_api_gateway_rest_api.main_api.id
   resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
@@ -354,25 +340,12 @@ resource "aws_api_gateway_integration_response" "bank_pdf_integration_response" 
     })
   }
 }
+
 resource "aws_api_gateway_integration_response" "market_pdf_integration_response" {
   rest_api_id = aws_api_gateway_rest_api.main_api.id
   resource_id = aws_api_gateway_resource.market_pdf_resource.id
   http_method = aws_api_gateway_method.market_pdf_method.http_method
   status_code = aws_api_gateway_method_response.market_pdf_response.status_code
-  
-  response_templates = {
-    "application/json" = jsonencode({
-      status = "Step Function execution started"
-      executionArn = "$input.path('$.executionArn')"
-    })
-  }
-}
-
-resource "aws_api_gateway_integration_response" "bank_pdf_integration_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
-  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-  status_code = aws_api_gateway_method_response.bank_pdf_response.status_code
   
   response_templates = {
     "application/json" = jsonencode({
