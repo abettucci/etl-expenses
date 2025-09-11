@@ -338,7 +338,7 @@ resource "aws_lambda_permission" "allow_api_gateway_ai_agent" {
   }
 }
 
-resource "aws_lambda_permission" "allow_api_gateway_gmail_data_extractor" {
+resource "aws_lambda_permission" "allow_api_gateway_market_mail_data_extractor" {
   statement_id  = "AllowAPIGatewayInvokeGmailDataExtractor"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.extract_data_gmail.function_name
@@ -357,7 +357,7 @@ resource "aws_lambda_permission" "allow_api_gateway_gmail_data_extractor" {
   }
 }
 
-resource "aws_lambda_permission" "allow_api_gateway_gmail_data_extractor" {
+resource "aws_lambda_permission" "allow_api_gateway_bank_mail_data_extractor" {
   statement_id  = "AllowAPIGatewayInvokeGmailDataExtractor"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.extract_data_gmail.function_name
