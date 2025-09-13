@@ -49,12 +49,17 @@ def auth_google(SECRET_NAME):
 
     return creds
 
-def find_html_part(payload):
+def find_html_part(payload, depth=0, max_depth=10):
+    # Prevenir recursión infinita
+    if depth > max_depth:
+        print(f"⚠️ Máxima profundidad de recursión alcanzada ({max_depth})")
+        return None
+        
     if payload.get("mimeType") == "text/html":
         return payload["body"].get("data", None)
     elif "parts" in payload:
         for part in payload["parts"]:
-            result = find_html_part(part)
+            result = find_html_part(part, depth + 1, max_depth)
             if result:
                 return result
     return None
@@ -229,10 +234,10 @@ def process_email(message_id, gmail_service):
 
 # Funcion para extraer los PDFs especificos de Gmail
 def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s3_client):
+    date = mail_data["date"]
     print('Analizando mail de fecha: ', date)
     filename = f'Ticket_{date}.pdf'
     s3_key = f'{folder}{filename}'
-    date = mail_data["date"]    
     soup = mail_data["raw_text"]
 
     if sender_email == "atencion_clientes@m.contactocarrefour.com.ar":
@@ -424,7 +429,7 @@ def lambda_handler(event, context):
                                     print('Intentamos extraer los datos del mail y cargarlos a S3')
                                     response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
 
-                    save_last_history_id(dynamo_table_name, history_id)
+                    save_last_history_id(dynamodb.Table("gmail-history-tracker"), history_id)
 
                     return response
 
