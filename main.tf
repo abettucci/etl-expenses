@@ -1335,11 +1335,11 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
         Parameters = {
-          "etl_flow.$"    = "$.etl_flow"
-          "bucket.$"      = "$.bucket"
-          "key.$"         = "$.key"
-          "report_id.$"   = "$.report_id"
-          "report_date.$" = "$.report_date"
+          "etl_flow.$"    = "$.body.etl_flow"
+          "bucket.$"      = "$.body.bucket"
+          "key.$"         = "$.body.key"
+          "report_id.$"   = "$.body.report_id"
+          "report_date.$" = "$.body.report_date"
         },
         Next     = "Export Redshift data to BigQuery",
         Catch: [
@@ -1547,11 +1547,11 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
         Parameters = {
-          "etl_flow.$"    = "$.etl_flow"
-          "bucket.$"      = "$.bucket"
-          "key.$"         = "$.key"
-          "report_id.$"   = "$.report_id"
-          "report_date.$" = "$.report_date"
+          "etl_flow.$"    = "$.body.etl_flow"
+          "bucket.$"      = "$.body.bucket"
+          "key.$"         = "$.body.key"
+          "report_id.$"   = "$.body.report_id"
+          "report_date.$" = "$.body.report_date"
         },
         Next     = "Export Redshift data to BigQuery",
         Catch: [
