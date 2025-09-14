@@ -669,9 +669,8 @@ def lambda_handler(event,context):
         
         etl_flow = event['etl_flow']
         bucket = event['bucket']
-        key_wo_folder = event['key']
+        key = event['key'] # ya tiene la carpeta en el path
         folder = 'processed/'
-        key = f"{folder}{key_wo_folder}"
 
         print('etl_flow: ', etl_flow)
         print('bucket: ', bucket)
