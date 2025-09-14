@@ -136,7 +136,12 @@ jobs:
           terraform import aws_s3_bucket_policy.market_tickets_policy market-tickets || true
 
           API_ID=$(aws apigateway get-rest-apis --query "items[?name=='main-api'].id" --output text)
+
+          
           if [ ! -z "$API_ID" ]; then
+
+            terraform import aws_api_gateway_stage.main_api_stage $API_ID/prod
+
             terraform import aws_api_gateway_rest_api.main_api $API_ID || true
             import_api_resource() {
               local path_part="$1"
