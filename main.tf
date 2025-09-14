@@ -1304,7 +1304,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
         Type = "Choice",
         Choices = [
           {
-            "Variable": "$.process",
+            "Variable": "$.body.process",
             "BooleanEquals": true,
             "Next": "Transform Gmail PDFs"
           }
@@ -1319,7 +1319,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
         Type     = "Task",
         Resource = aws_lambda_function.pdf_processor.arn,
         Parameters = {
-          "key.$": "$.key"
+          "key.$": "$.body.key"
         },
         Next     = "Load Gmail PDFs",
         Catch: [
@@ -1516,7 +1516,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
         Type = "Choice",
         Choices = [
           {
-            "Variable": "$.process",
+            "Variable": "$.body.process",
             "BooleanEquals": true,
             "Next": "Transform Gmail Bank Payments"
           }
@@ -1531,7 +1531,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
         Type     = "Task",
         Resource = aws_lambda_function.bank_payments_processor.arn,
         Parameters = {
-          "key.$": "$.key"
+          "key.$": "$.body.key"
         },
         Next     = "Load Gmail Bank Payments",
         Catch: [

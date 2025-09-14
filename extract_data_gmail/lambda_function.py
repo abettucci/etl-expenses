@@ -335,7 +335,7 @@ def lambda_handler(event, context):
 
         creds = auth_google('gcp_api_credentials')
         dynamodb = boto3.resource('dynamodb')
-        dynamo_table_name = dynamodb.Table("gmail-history-tracker")
+        dynamo_table_name = "gmail-history-tracker"
         gmail_service = build('gmail', 'v1', credentials=creds)
         redshift_data = boto3.client('redshift-data')
         s3_client = boto3.client('s3')
