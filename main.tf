@@ -307,7 +307,7 @@ resource "aws_api_gateway_integration_response" "bank_pdf_extractor_integration_
   rest_api_id = aws_api_gateway_rest_api.main_api.id
   resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
   http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-  status_code = aws_api_gateway_method_response.bank_pdf_response.status_code
+  status_code = aws_api_gateway_method_response.bank_pdf_extractor_response.status_code
   
   response_templates = {
     "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
@@ -347,7 +347,7 @@ resource "aws_api_gateway_deployment" "main_api_deployment" {
     aws_api_gateway_integration.market_pdf_integration,
     aws_api_gateway_integration.bank_pdf_extractor_integration,
     aws_api_gateway_integration_response.market_pdf_integration_response,
-    aws_api_gateway_integration_response.bank_pdf_integration_response,
+    aws_api_gateway_integration_response.bank_pdf_extractor_integration_response,
     aws_api_gateway_integration.mp_webhook_integration
   ]
 }
