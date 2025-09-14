@@ -750,8 +750,7 @@ def lambda_handler(event,context):
             # para evitar insertar registros repetidos de cada archivo => deberiamos hacer un check de esta
             # columna dentro del insert_df_into_redshift que se hace en carrefour_data
             aggregate_table_in_redshift(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
-            add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
-              
+            add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')           
         else: # es un gasto del banco
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
             columnas_sql = ",\n  ".join(column_defs)

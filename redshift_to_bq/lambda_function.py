@@ -44,7 +44,6 @@ def convert_column_types(df, table_name):
     Intenta convertir las columnas del dataframe a los tipos de datos apropiados
     basado en el nombre de la tabla y los nombres de las columnas.
     """
-    print(df.dtypes)
 
     if table_name == 'mp_data':
         type_mapping = {
@@ -97,7 +96,6 @@ def convert_column_types(df, table_name):
             'PRODUCT_SKU': 'float64',
             'SALE_DETAIL': 'float64'
         }
-
     elif table_name == 'bank_payments':
         type_mapping = {
             'comercio' : 'string',
@@ -161,7 +159,7 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
     # Get the target table schema to identify TIMESTAMP columns
     target_table_ref = bq_client.get_table(target_table)
     timestamp_cols = [field.name for field in target_table_ref.schema 
-                     if field.field_type == 'TIMESTAMP']
+                     if field.field_type == 'TIMESTAMP' and field.name not in update_columns]
 
     # Create the SET clause with CAST for TIMESTAMP columns
     set_clause_parts = []
@@ -192,9 +190,6 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
             INSERT ({insert_cols})
             VALUES ({insert_vals})
             """ 
-    
-    print('\n')
-    print(merge_sql)
 
     try:
         job = bq_client.query(merge_sql)
@@ -233,11 +228,8 @@ def check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id):
                 # existe pero en miinuscula
                 df[col] = df[col].upper()
 
-    print(df.dtypes)
-
     # Si no se provee schema, inferirlo del DataFrame
     schema = build_bq_schema_from_df(df)
-    print('schema: ', schema)
     
     return df, schema, table_exists, table_has_data
 
@@ -325,7 +317,6 @@ def upload_dataframe_to_bigquery(client, df, table_id, schema=None):
 def lambda_handler(event, context):
     try:
         tabla = event["table_name"]
-
         creds = auth_google('gcp_api_credentials')
         project_id = 'hazel-pillar-400222'
         
