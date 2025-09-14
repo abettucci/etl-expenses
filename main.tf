@@ -212,6 +212,28 @@ EOF
   }
 }
 
+resource "aws_api_gateway_method_response" "market_pdf_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.market_pdf_resource.id
+  http_method = aws_api_gateway_method.market_pdf_method.http_method
+  status_code = "200"
+  
+  response_models = {
+    "application/json" = "Empty"
+  }
+}
+
+resource "aws_api_gateway_integration_response" "market_pdf_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.market_pdf_resource.id
+  http_method = aws_api_gateway_method.market_pdf_method.http_method
+  status_code = aws_api_gateway_method_response.market_pdf_response.status_code
+  
+  response_templates = {
+    "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
+  }
+}
+
 # resource "aws_api_gateway_integration" "market_pdf_integration" {
 #   rest_api_id             = aws_api_gateway_rest_api.main_api.id
 #   resource_id             = aws_api_gateway_resource.market_pdf_resource.id
@@ -270,6 +292,28 @@ EOF
   }
 }
 
+resource "aws_api_gateway_method_response" "bank_pdf_extractor_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
+  status_code = "200"
+  
+  response_models = {
+    "application/json" = "Empty"
+  }
+}
+
+resource "aws_api_gateway_integration_response" "bank_pdf_extractor_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.main_api.id
+  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
+  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
+  status_code = aws_api_gateway_method_response.bank_pdf_response.status_code
+  
+  response_templates = {
+    "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
+  }
+}
+
 # Recurso /mp_webhook
 resource "aws_api_gateway_resource" "mp_webhook_resource" {
   rest_api_id = aws_api_gateway_rest_api.main_api.id
@@ -292,50 +336,6 @@ resource "aws_api_gateway_integration" "mp_webhook_integration" {
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = aws_lambda_function.webhook_mp_report.invoke_arn
-}
-
-resource "aws_api_gateway_method_response" "market_pdf_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.market_pdf_resource.id
-  http_method = aws_api_gateway_method.market_pdf_method.http_method
-  status_code = "200"
-  
-  response_models = {
-    "application/json" = "Empty"
-  }
-}
-
-resource "aws_api_gateway_method_response" "bank_pdf_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
-  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-  status_code = "200"
-  
-  response_models = {
-    "application/json" = "Empty"
-  }
-}
-
-resource "aws_api_gateway_integration_response" "bank_pdf_integration_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
-  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-  status_code = aws_api_gateway_method_response.bank_pdf_response.status_code
-  
-  response_templates = {
-    "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
-  }
-}
-
-resource "aws_api_gateway_integration_response" "market_pdf_integration_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.market_pdf_resource.id
-  http_method = aws_api_gateway_method.market_pdf_method.http_method
-  status_code = aws_api_gateway_method_response.market_pdf_response.status_code
-  
-  response_templates = {
-    "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
-  }
 }
 
 # Deployment y stage
