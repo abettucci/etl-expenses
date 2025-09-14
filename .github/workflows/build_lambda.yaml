@@ -137,6 +137,7 @@ jobs:
 
           API_ID=$(aws apigateway get-rest-apis --query "items[?name=='main-api'].id" --output text)
 
+          
           if [ ! -z "$API_ID" ]; then
             echo "📦 Found API: main-api ($API_ID)"
             
@@ -164,7 +165,13 @@ jobs:
                 
                 # Importar integración
                 terraform import aws_api_gateway_integration.${terraform_resource_name}_integration $API_ID/$resource_id/POST || true
-                
+
+                terraform import aws_api_gateway_method_response.${terraform_resource_name}_response $API_ID/$resource_id/POST/200
+                terraform import aws_api_gateway_method_response.${terraform_resource_name}_response $API_ID/$resource_id/POST/200
+                terraform import aws_api_gateway_integration_response.${terraform_resource_name}_integration_response $API_ID/$resource_id/POST/200
+                terraform import aws_api_gateway_integration_response.${terraform_resource_name}_integration_response $API_ID/$resource_id/POST/200
+
+
               else
                 echo "  ⚠️ Resource /$path_part not found"
               fi
@@ -188,7 +195,7 @@ jobs:
           terraform import aws_iam_policy.lambda_bedrock_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_bedrock_access || true
           terraform import aws_iam_policy.lambda_s3_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_s3_access || true
           terraform import aws_iam_policy.lambda_dynamo_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda-dynamo-gmail || true
-          
+
           terraform import aws_dynamodb_table.gmail_history gmail-history-tracker || true
 
           # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
