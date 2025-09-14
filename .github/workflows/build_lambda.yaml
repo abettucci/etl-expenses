@@ -166,7 +166,7 @@ jobs:
                 terraform import aws_api_gateway_method.${terraform_resource_name}_method $API_ID/$resource_id/POST || true
                 terraform import aws_api_gateway_integration.${terraform_resource_name}_integration $API_ID/$resource_id/POST || true
                 terraform import aws_api_gateway_method_response.${terraform_resource_name}_response $API_ID/$resource_id/POST/200
-                terraform import aws_api_gateway_integration_response.${terraform_resource_name}_integration_response $API_ID/$resource_id/POST/200
+                # terraform import aws_api_gateway_integration_response.${terraform_resource_name}_integration_response $API_ID/$resource_id/POST/200
               else
                 echo "  ⚠️ Resource /$path_part not found"
               fi
