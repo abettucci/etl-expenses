@@ -1272,6 +1272,22 @@ resource "aws_cloudwatch_log_group" "etl_logs" {
 
 ########### 8. Step Function para orquestar Lambdas ###########
 
+# StartAt = "Extract Gmail PDFs",
+#     # Primer step ejecuta Extract data
+#     States = {
+#       "Extract Gmail PDFs" = {
+#         Type     = "Task",
+#         Resource = aws_lambda_function.extract_data_gmail.arn,
+#         Catch: [
+#           {
+#             "ErrorEquals": ["States.ALL"],
+#             "ResultPath": "$.error-info",
+#             "Next": "CompensationFlow"
+#           }
+#         ],
+#         Next     = "Check If Should Process"
+#       },
+
 # 8.1 Creacion del job de PDFs en Step Function
 resource "aws_sfn_state_machine" "pdf_etl_flow" {
   name     = "pdf-etl-flow"
@@ -1285,21 +1301,8 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
 
   # Steps secuenciales
   definition = jsonencode({
-    StartAt = "Extract Gmail PDFs",
-    # Primer step ejecuta Extract data
-    States = {
-      "Extract Gmail PDFs" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.extract_data_gmail.arn,
-        Catch: [
-          {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
-          }
-        ],
-        Next     = "Check If Should Process"
-      },
+      StartAt = "Check If Should Process",
+      States = {
       "Check If Should Process" = {
         Type = "Choice",
         Choices = [
@@ -1484,6 +1487,23 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
   })
 }
 
+
+# StartAt = "Extract Bank Payments Gmail",
+#     # Primer step ejecuta Extract data
+#     States = {
+#       "Extract Bank Payments Gmail" = {
+#         Type     = "Task",
+#         Resource = aws_lambda_function.extract_data_gmail.arn,
+#         Catch: [
+#           {
+#             "ErrorEquals": ["States.ALL"],
+#             "ResultPath": "$.error-info",
+#             "Next": "CompensationFlow"
+#           }
+#         ],
+#         Next     = "Check If Should Process"
+#       },
+
 # 8.1 Creacion del job de PDFs en Step Function
 resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
   name     = "bank-payments-etl-flow"
@@ -1497,21 +1517,8 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
 
   # Steps secuenciales
   definition = jsonencode({
-    StartAt = "Extract Bank Payments Gmail",
-    # Primer step ejecuta Extract data
-    States = {
-      "Extract Bank Payments Gmail" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.extract_data_gmail.arn,
-        Catch: [
-          {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
-          }
-        ],
-        Next     = "Check If Should Process"
-      },
+      StartAt = "Check If Should Process",
+      States = {
       "Check If Should Process" = {
         Type = "Choice",
         Choices = [
