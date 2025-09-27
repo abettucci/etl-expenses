@@ -666,10 +666,15 @@ def lambda_handler(event,context):
         redshift_data = boto3.client('redshift-data')
 
         print(event)
+
+        body = json.loads(event['body'])
+        etl_flow = body['etl_flow']
+        bucket = body['bucket']
+        key = body['key']
         
-        etl_flow = event['etl_flow']
-        bucket = event['bucket']
-        key = event['key'] # ya tiene la carpeta en el path
+        # etl_flow = event['etl_flow']
+        # bucket = event['bucket']
+        # key = event['key'] # ya tiene la carpeta en el path
         folder = 'processed/'
 
         print('etl_flow: ', etl_flow)
@@ -768,3 +773,26 @@ def lambda_handler(event,context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
+
+# s3_client = boto3.client('s3')
+# bucket_name = 'market-tickets'
+# folder = 'processed/'
+# response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+# csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
+
+# dtype = {}
+# for csv_key in csvs:
+#     response = s3_client.get_object(Bucket=bucket_name, Key=csv_key)
+#     if csv_key.endswith(".csv"):
+#         df = pd.read_csv(io.BytesIO(response['Body'].read()),dtype=dtype)
+
+#     event = {
+#         "body": json.dumps({
+#             "etl_flow": 'TICKET',
+#             "bucket": 'market-tickets',
+#             "key": csv_key
+#         })
+#     }
+
+#     lambda_handler(event,'')
+#     exit()

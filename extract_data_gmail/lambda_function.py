@@ -4,6 +4,7 @@ from botocore.exceptions import ClientError
 from datetime import datetime, timedelta
 import base64
 import re
+import time
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
 import pandas as pd
@@ -238,7 +239,11 @@ def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s
     print('Analizando mail de fecha: ', date)
     filename = f'Ticket_{date}.pdf'
     s3_key = f'{folder}{filename}'
-    soup = mail_data["raw_text"]
+    soup = BeautifulSoup(mail_data["html_body"], 'html.parser')
+
+    if soup == "":
+        print(f"⚠️ No HTML content found in email for date {date}, skipping link extraction.")
+        return s3_key
 
     if sender_email == "atencion_clientes@m.contactocarrefour.com.ar":
         links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.contactocarrefour.com.ar/x/c/' in a['href']]
@@ -328,6 +333,129 @@ def save_last_history_id(table, history_id):
         "PK": "gmail_last_history_id",
         "historyId": str(history_id)
     })
+
+def run_step_function_sync(sfn_client, step_function_arn, payload, poll_interval=5):
+    response = sfn_client.start_execution(
+        stateMachineArn=step_function_arn,
+        input=json.dumps(payload)
+    )
+    execution_arn = response['executionArn']
+    print(f"▶️ Step Function iniciada: {execution_arn}")
+
+    # Esperar hasta que termine
+    while True:
+        desc = sfn_client.describe_execution(executionArn=execution_arn)
+        status = desc['status']
+        
+        if status in ['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'ABORTED']:
+            print(f"✅ Step Function finalizó con estado: {status}")
+            return status, desc
+        else:
+            print(f"⏳ Step Function sigue en {status}... esperando {poll_interval}s")
+            time.sleep(poll_interval)
+
+def reproceso_historico():
+    try:
+        creds = auth_google('gcp_api_credentials')
+        gmail_service = build('gmail', 'v1', credentials=creds)
+        sfn_client = boto3.client("stepfunctions")
+        dynamodb = boto3.resource('dynamodb')
+        dynamo_table_name = "gmail-history-tracker"
+        redshift_data = boto3.client('redshift-data')
+        s3_client = boto3.client('s3')
+        bank_bucket = 'bank-payments'
+        market_bucket = 'market-tickets'
+        # bank_bucket = os.environ['BANK_BUCKET_NAME']
+        # market_bucket = os.environ['MARKET_BUCKET_NAME']
+        folder = 'raw/'
+
+        results = gmail_service.users().labels().list(userId="me").execute()
+        for label in results['labels']:
+            if label['name'] in ['Avisos Compra Carrefour']: #'Avisos Gastos Santander'
+      
+                results = gmail_service.users().messages().list(
+                    userId="me",
+                    labelIds=[label['id']]
+                ).execute()
+
+                messages = results.get("messages", [])
+                print(f"🔎 Encontrados {len(messages)} mails históricos con etiqueta {label}")
+
+                for m in messages:
+                    msg_id = m["id"]
+                    mail_data = process_email(msg_id, gmail_service)
+                    if not mail_data:
+                        continue
+                    
+                    match = re.search(r"<([^>]+)>", mail_data['sender'])
+                    if match:
+                        sender = match.group(1)
+                    subject = mail_data['subject']
+                    date = mail_data['date']
+
+                    print('sender: ', sender)
+                    print('subject: ', subject)
+                    print('date: ', date)
+
+                    if not mail_data:
+                        return {'statusCode': 500, 'body': 'Error procesando email'}
+
+                    table_name, pk = None, None
+                    if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
+                        table_name = 'bank_payments'
+                        pk = 'id'
+
+                    elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
+                        table_name = 'carrefour_data'
+                        pk = 'nro_ticket'
+
+                    else:
+                        return {"process": False, "reason": "Evento descartado por filtros"}
+                                                    
+                    print('table_name: ', table_name)
+                    print('pk : ', pk)
+
+                    ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, table_name, pk)
+
+                    print('mail_msg_id: ', msg_id)
+                    print('ids_existentes_en_redshift: ', ids_existentes_en_redshift)
+                    
+                    if msg_id not in ids_existentes_en_redshift:
+                        print('Intentamos extraer los datos del mail y cargarlos a S3')
+                        response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
+
+                    save_last_history_id(dynamodb.Table("gmail-history-tracker"), '') #el history_id lo dejamos vacio porque no tenemos ese dato
+
+                    # Parámetros para la Step Function: el bloque de Transform espera un "key" y "process=true"
+                    payload = {
+                        "body": {
+                            "key": f"raw/{mail_data['date'][:10]}-{mail_data['message_id']}.json",
+                            "process": True
+                        }
+                    }
+
+                    print(payload)
+
+                    if label['name'] == 'Avisos Gastos Santander':
+                        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
+                    elif label['name'] == 'Avisos Compra Carrefour':
+                        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                    else:
+                        break
+                    
+                    status, desc = run_step_function_sync(
+                        sfn_client,
+                        step_function_arn,
+                        payload,
+                        poll_interval=10  # cada 10 segundos chequea
+                    )
+
+                    if status != "SUCCEEDED":
+                        print(f"⚠️ Ejecución fallida para mail {msg_id}: {status}")
+                                  
+    except Exception as e:
+        print("⚠️ Error:", str(e))
+        raise Exception(str(e))
 
 def lambda_handler(event, context):
     try:
@@ -448,3 +576,5 @@ def lambda_handler(event, context):
 
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
+
+# reproceso_historico()

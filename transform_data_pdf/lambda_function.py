@@ -193,28 +193,13 @@ def process_pdf_file(s3, bucket, pdf_key):
     except Exception as e:
         print(f"❌ Error procesando {pdf_key}: {str(e)}")
 
-def transform_pdf_data():    
-    s3 = boto3.client('s3')
-    bucket = 'market-tickets'
-    
-    # Listar solo archivos PDF (excluyendo directorios)
-    response = s3.list_objects_v2(
-        Bucket=bucket,
-        Prefix='raw/',
-        Delimiter='/'
-    )
-    
-    pdfs = [obj['Key'] for obj in response.get('Contents', []) 
-            if obj['Key'].lower().endswith('.pdf') and obj['Size'] > 0]
-    
-    # Guardamos cada archivo individual en la carpeta 'processed'
-    for pdf_key in pdfs:
-        process_pdf_file(s3, bucket, pdf_key)
-
 def lambda_handler(event, context):
     try:
         s3_file_to_transform = event['key']
-        key = transform_pdf_data(s3_file_to_transform)
+        s3 = boto3.client('s3')
+        bucket = 'market-tickets'
+
+        key = process_pdf_file(s3, bucket, s3_file_to_transform)
 
         return {
             "statusCode": 200,
