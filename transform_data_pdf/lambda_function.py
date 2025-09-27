@@ -205,7 +205,7 @@ def lambda_handler(event, context):
             "statusCode": 200,
             "body": {
                 "etl_flow": 'TICKET',
-                "bucket": 'carrefour_data',
+                "bucket": bucket,
                 "key": key,
                 "report_id" : "",
                 "report_date" : ""

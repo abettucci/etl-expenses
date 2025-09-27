@@ -236,11 +236,15 @@ def process_email(message_id, gmail_service):
 # Funcion para extraer los PDFs especificos de Gmail
 def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s3_client):
     raw_date = mail_data["date"]
-    if "T" in raw_date:
-        date = raw_date.split("T")[0]
-    else:
-        date = raw_date
+    try:
+        # Ejemplo: 2025-09-18T10:45:10  o  2025-09-18
+        parsed_date = datetime.fromisoformat(raw_date.replace("Z", ""))
+    except ValueError:
+        # fallback si no viene en formato ISO estándar
+        parsed_date = datetime.strptime(raw_date[:10], "%Y-%m-%d")
+    date = parsed_date.strftime("%d-%m-%y")
     print('Analizando mail de fecha: ', date)
+
     filename = f'Ticket_{date}.pdf'
     s3_key = f'{folder}{filename}'
     soup = BeautifulSoup(mail_data["html_body"], 'html.parser')
