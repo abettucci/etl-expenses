@@ -188,7 +188,7 @@ def process_pdf_file(s3, bucket, pdf_key):
         )
         
         print(f"✅ CSV generado: {csv_key}")
-        return True
+        return csv_key
 
     except Exception as e:
         print(f"❌ Error procesando {pdf_key}: {str(e)}")

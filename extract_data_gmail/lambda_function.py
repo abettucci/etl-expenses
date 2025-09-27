@@ -235,7 +235,11 @@ def process_email(message_id, gmail_service):
 
 # Funcion para extraer los PDFs especificos de Gmail
 def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s3_client):
-    date = mail_data["date"]
+    raw_date = mail_data["date"]
+    if "T" in raw_date:
+        date = raw_date.split("T")[0]
+    else:
+        date = raw_date
     print('Analizando mail de fecha: ', date)
     filename = f'Ticket_{date}.pdf'
     s3_key = f'{folder}{filename}'
@@ -427,13 +431,7 @@ def reproceso_historico():
                     save_last_history_id(dynamodb.Table("gmail-history-tracker"), '') #el history_id lo dejamos vacio porque no tenemos ese dato
 
                     # Parámetros para la Step Function: el bloque de Transform espera un "key" y "process=true"
-                    payload = {
-                        "body": {
-                            "key": f"raw/{mail_data['date'][:10]}-{mail_data['message_id']}.json",
-                            "process": True
-                        }
-                    }
-
+                    payload = response
                     print(payload)
 
                     if label['name'] == 'Avisos Gastos Santander':
