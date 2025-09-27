@@ -664,17 +664,11 @@ def column_name_mapping(df):
 def lambda_handler(event,context):
     try:
         redshift_data = boto3.client('redshift-data')
-
         print(event)
 
-        body = json.loads(event['body'])
-        etl_flow = body['etl_flow']
-        bucket = body['bucket']
-        key = body['key']
-        
-        # etl_flow = event['etl_flow']
-        # bucket = event['bucket']
-        # key = event['key'] # ya tiene la carpeta en el path
+        etl_flow = event['etl_flow']
+        bucket = event['bucket']
+        key = event['key'] # ya tiene la carpeta en el path
         folder = 'processed/'
 
         print('etl_flow: ', etl_flow)
