@@ -109,7 +109,7 @@ def convert_column_types(df, table_name):
             'nro_tarjeta' : 'string',
             'tarjeta' : 'string',
         }
-    else: # carrefour_data
+    elif table_name == 'carrefour_data':
         type_mapping = {
             'nro_ticket': 'int64',
             'fecha': 'date',                # solo fecha
@@ -190,6 +190,8 @@ def table_merge_staging_to_production_bq(bq_client, update_columns, target_table
             INSERT ({insert_cols})
             VALUES ({insert_vals})
             """ 
+
+    print(merge_sql)
 
     try:
         job = bq_client.query(merge_sql)
@@ -332,6 +334,8 @@ def lambda_handler(event, context):
         redshift_data = boto3.client('redshift-data')
         
         df = get_df_from_redshift_table(redshift_data, tabla)
+
+        print(df)
         
         ################# TABLA  STAGING ######################
         df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id)        

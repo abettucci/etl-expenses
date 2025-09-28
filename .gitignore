@@ -6,6 +6,7 @@
 /transform_data_bank_pay/test.py
 /extract_data_bank_pay/setup_gmail_watch.py
 /redshift_to_bq/test.py
+/redshift_to_bq/test2.py
 /pdfs_carrefour/
 /extract_data_gmail/evento.json
 /extract_data_gmail/test_pubsub.py
