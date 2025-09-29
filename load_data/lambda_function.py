@@ -596,12 +596,23 @@ def insert_df_into_redshift(df, columnas_sql, table_name, redshift_data, databas
         """ 
 
         try:
-            redshift_data.execute_statement(
+            resp = redshift_data.execute_statement(
                 Database=database,
                 WorkgroupName=workgroup,
                 Sql=insert_stmt
             )
-            print(f"📥 Insertadas {df.shape[0]} filas en {table_name}")
+
+            while True:
+                desc = redshift_data.describe_statement(Id=resp['Id'])
+                if desc['Status'] == 'FAILED':
+                    print(f"❌ Error insertando en {table_name}: {desc['Error']}")
+                    break
+                elif desc['Status'] == 'FINISHED':
+                    print(f"✅ Insert completado en {table_name}")
+                    break
+                else:
+                    time.sleep(1)
+            
         except Exception as e:
             print(f"❌ Error insertando fila en tabla: {str(e)}")
 

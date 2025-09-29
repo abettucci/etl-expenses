@@ -320,6 +320,8 @@ def lambda_handler(event, context):
     try:
         tabla = event["table_name"]
         creds = auth_google('gcp_api_credentials')
+        print(f"🔍 Scopes activos de creds {creds}:", creds.scopes)
+
         project_id = 'hazel-pillar-400222'
         
         stg_dataset_id = 'STG'
