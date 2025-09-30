@@ -1,6 +1,7 @@
 import pandas as pd
 import boto3
 import io
+import os
 import json
 import re
 import unicodedata
@@ -9,6 +10,8 @@ from rapidfuzz import fuzz
 from datetime import datetime
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
+
+iam_role = os.environ["IAM_ROLE_REDSHIFT"]
 
 def format_value(val):
     if val is None or pd.isna(val):
@@ -202,7 +205,7 @@ def create_and_fill_product_dim_table_in_redshift(df, table_name, redshift_data,
         df_dim_producto["product_id"] = pd.factorize(df_dim_producto["nombre_producto"].astype(str) + "_" + df_dim_producto["ean"].astype(str))[0] + 1
         df_dim_producto = df_dim_producto.drop_duplicates(subset=['nombre_producto','ean'])
 
-        insert_df_into_redshift(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
+        insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
         print(f"✅ Cargamos los primeros datos en la tabla {table_name}")
 
         return df_dim_producto
@@ -270,7 +273,7 @@ def create_and_fill_product_dim_table_in_redshift(df, table_name, redshift_data,
             normalizacion_productos.update(generar_diccionario_normalizacion(nombres_unicos))
             df_dim_producto['grupo_producto'] = df_dim_producto['nombre_producto'].map(normalizacion_productos)
 
-            insert_df_into_redshift(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
+            insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
             print(f"✅ Cargamos un nuevo registro de producto {df_dim_producto[['nombre_producto','product_id','ean']]} en la tabla {table_name}")
             
             return df_dim_producto
@@ -383,238 +386,283 @@ def column_exists(table_name, column_name, redshift_data, database, workgroup):
             return False
         time.sleep(1)
 
-def insert_df_into_redshift(df, columnas_sql, table_name, redshift_data, database, workgroup, report_id=None, report_date=None):
-    if isinstance(columnas_sql, list):
-        columnas_sql = ", ".join(columnas_sql)
+# def insert_df_into_redshift(df, columnas_sql, table_name, redshift_data, database, workgroup, report_id=None, report_date=None):
+#     if isinstance(columnas_sql, list):
+#         columnas_sql = ", ".join(columnas_sql)
 
-    if table_name == 'mp_data':
-        id_col = 'report_id'
-        df[id_col] = df[id_col].iloc[0] if 'report_id' in df.columns else report_id
-        df['report_date'] = report_date
+#     if table_name == 'mp_data':
+#         id_col = 'report_id'
+#         df[id_col] = df[id_col].iloc[0] if 'report_id' in df.columns else report_id
+#         df['report_date'] = report_date
 
-        if column_exists(table_name, id_col, redshift_data, database, workgroup) is True and\
-            column_has_data(id_col, table_name, redshift_data, database, workgroup) is True:
+#         if column_exists(table_name, id_col, redshift_data, database, workgroup) is True and\
+#             column_has_data(id_col, table_name, redshift_data, database, workgroup) is True:
             
-            # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
-            query_distinct_col_ids = f"""
-                SELECT DISTINCT {id_col}
-                FROM {table_name}
-            """
+#             # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
+#             query_distinct_col_ids = f"""
+#                 SELECT DISTINCT {id_col}
+#                 FROM {table_name}
+#             """
 
-            response = redshift_data.execute_statement(
-                Database=database,
-                WorkgroupName=workgroup,
-                Sql=query_distinct_col_ids
-            )
+#             response = redshift_data.execute_statement(
+#                 Database=database,
+#                 WorkgroupName=workgroup,
+#                 Sql=query_distinct_col_ids
+#             )
 
-            set_operaciones_cargadas = set()
-            while True:
-                desc = redshift_data.describe_statement(Id=response['Id'])
-                if desc['Status'] == 'FINISHED':
-                    if desc.get('HasResultSet', False):
-                        result = redshift_data.get_statement_result(Id=response['Id'])     
-                        if result['Records'] == []:
-                            print('Tabla vacía, se carga la fila')
-                        else:                    
-                            set_ids_cargados = {
-                                list(row[0].values())[0] for row in result['Records']
-                            }
+#             set_operaciones_cargadas = set()
+#             while True:
+#                 desc = redshift_data.describe_statement(Id=response['Id'])
+#                 if desc['Status'] == 'FINISHED':
+#                     if desc.get('HasResultSet', False):
+#                         result = redshift_data.get_statement_result(Id=response['Id'])     
+#                         if result['Records'] == []:
+#                             print('Tabla vacía, se carga la fila')
+#                         else:                    
+#                             set_ids_cargados = {
+#                                 list(row[0].values())[0] for row in result['Records']
+#                             }
 
-                            # Filtramos los id que ya fueron cargados en la tabla
-                            df = df[~df[id_col].isin(set_ids_cargados)]
-                    else:
-                        # No hay resultados, la tabla está vacía
-                        set_ids_cargados = set()
-                        print('Tabla vacía, se carga la fila')
-                    break
-                elif desc['Status'] == 'FAILED':
-                    print("Error al consultar Redshift:", desc['Error'])
-                    break
-    elif table_name == 'carrefour_data':
-        df['operation_id'] = None
-        id_col = 'operation_id'
-        if column_exists(table_name, id_col, redshift_data, database, workgroup) is True and\
-            column_has_data(id_col, table_name, redshift_data, database, workgroup) is True:
+#                             # Filtramos los id que ya fueron cargados en la tabla
+#                             df = df[~df[id_col].isin(set_ids_cargados)]
+#                     else:
+#                         # No hay resultados, la tabla está vacía
+#                         set_ids_cargados = set()
+#                         print('Tabla vacía, se carga la fila')
+#                     break
+#                 elif desc['Status'] == 'FAILED':
+#                     print("Error al consultar Redshift:", desc['Error'])
+#                     break
+#     elif table_name == 'carrefour_data':
+#         df['operation_id'] = None
+#         id_col = 'operation_id'
+#         if column_exists(table_name, id_col, redshift_data, database, workgroup) is True and\
+#             column_has_data(id_col, table_name, redshift_data, database, workgroup) is True:
             
-            # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
-            query_distinct_operation_ids = """
-                SELECT DISTINCT operation_id
-                FROM carrefour_data
-            """
+#             # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
+#             query_distinct_operation_ids = """
+#                 SELECT DISTINCT operation_id
+#                 FROM carrefour_data
+#             """
 
-            response = redshift_data.execute_statement(
-                Database=database,
-                WorkgroupName=workgroup,
-                Sql=query_distinct_operation_ids
-            )
+#             response = redshift_data.execute_statement(
+#                 Database=database,
+#                 WorkgroupName=workgroup,
+#                 Sql=query_distinct_operation_ids
+#             )
 
-            set_operaciones_cargadas = set()
-            while True:
-                desc = redshift_data.describe_statement(Id=response['Id'])
-                if desc['Status'] == 'FINISHED':
-                    if desc.get('HasResultSet', False):
-                        result = redshift_data.get_statement_result(Id=response['Id'])     
-                        if result['Records'] == []:
-                            print('Tabla vacía, se carga la fila')
-                        else:                    
-                            set_operaciones_cargadas = {
-                                list(row[0].values())[0] for row in result['Records']
-                            }
+#             set_operaciones_cargadas = set()
+#             while True:
+#                 desc = redshift_data.describe_statement(Id=response['Id'])
+#                 if desc['Status'] == 'FINISHED':
+#                     if desc.get('HasResultSet', False):
+#                         result = redshift_data.get_statement_result(Id=response['Id'])     
+#                         if result['Records'] == []:
+#                             print('Tabla vacía, se carga la fila')
+#                         else:                    
+#                             set_operaciones_cargadas = {
+#                                 list(row[0].values())[0] for row in result['Records']
+#                             }
 
-                            print('\n')
-                            print(set_operaciones_cargadas)
+#                             print('\n')
+#                             print(set_operaciones_cargadas)
 
-                            # Completamos el valor de operation_id e Insertamos las filas del df que solo sean operaciones nuevas
-                            # Para obtener el product_id en el dataframe de input, lo buscamos en el df de df_dim_producto que viene en el return
-                            # al crear la tabla y rellenarla en Redshift
-                            df_dim_producto = create_and_fill_product_dim_table_in_redshift(df, 'dim_producto', redshift_data, database, workgroup, 'product_id', True)
+#                             # Completamos el valor de operation_id e Insertamos las filas del df que solo sean operaciones nuevas
+#                             # Para obtener el product_id en el dataframe de input, lo buscamos en el df de df_dim_producto que viene en el return
+#                             # al crear la tabla y rellenarla en Redshift
+#                             df_dim_producto = create_and_fill_product_dim_table_in_redshift(df, 'dim_producto', redshift_data, database, workgroup, 'product_id', True)
 
-                            df = df.merge(
-                                df_dim_producto[['nombre_producto', 'product_id']],
-                                left_on='producto',
-                                right_on='nombre_producto',
-                                how='left'
-                            )
+#                             df = df.merge(
+#                                 df_dim_producto[['nombre_producto', 'product_id']],
+#                                 left_on='producto',
+#                                 right_on='nombre_producto',
+#                                 how='left'
+#                             )
 
-                            df.drop('product_id_x', axis=1, inplace=True)   
-                            df.rename(columns={'product_id_y': 'product_id'}, inplace=True)
+#                             df.drop('product_id_x', axis=1, inplace=True)   
+#                             df.rename(columns={'product_id_y': 'product_id'}, inplace=True)
 
-                            df['operation_id'] = df['nro_ticket'].astype(str) + '_' + df['product_id'].astype(str) + '_' \
-                                + df['monto_total'].astype(str) + '_' + df['fecha'].astype(str)
+#                             df['operation_id'] = df['nro_ticket'].astype(str) + '_' + df['product_id'].astype(str) + '_' \
+#                                 + df['monto_total'].astype(str) + '_' + df['fecha'].astype(str)
 
-                            # Filtramos los operation_id que ya fueron cargados en la tabla
-                            df = df[~df['operation_id'].isin(set_operaciones_cargadas)]
-                    else:
-                        # No hay resultados, la tabla está vacía
-                        set_operaciones_cargadas = set()
-                        print('Tabla vacía, se carga la fila')
-                    break
-                elif desc['Status'] == 'FAILED':
-                    print("Error al consultar Redshift:", desc['Error'])
-                    break
-    elif table_name == 'archivos_ingestados':
-        id_col = 'id'        
-        if column_exists(table_name, 'id', redshift_data, database, workgroup) is True and\
-            column_has_data('id', table_name, redshift_data, database, workgroup) is True:
+#                             # Filtramos los operation_id que ya fueron cargados en la tabla
+#                             df = df[~df['operation_id'].isin(set_operaciones_cargadas)]
+#                     else:
+#                         # No hay resultados, la tabla está vacía
+#                         set_operaciones_cargadas = set()
+#                         print('Tabla vacía, se carga la fila')
+#                     break
+#                 elif desc['Status'] == 'FAILED':
+#                     print("Error al consultar Redshift:", desc['Error'])
+#                     break
+#     elif table_name == 'archivos_ingestados':
+#         id_col = 'id'        
+#         if column_exists(table_name, 'id', redshift_data, database, workgroup) is True and\
+#             column_has_data('id', table_name, redshift_data, database, workgroup) is True:
 
-            # Aca hacemos el check de si ya fue ingestado el archivo, en caso de que no, hacemos pass, en caso de que si hacemos return
-            # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
-            query_distinct_nro_ticket = """
-                SELECT DISTINCT id
-                FROM archivos_ingestados
-            """
+#             # Aca hacemos el check de si ya fue ingestado el archivo, en caso de que no, hacemos pass, en caso de que si hacemos return
+#             # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
+#             query_distinct_nro_ticket = """
+#                 SELECT DISTINCT id
+#                 FROM archivos_ingestados
+#             """
 
-            response = redshift_data.execute_statement(
-                Database=database,
-                WorkgroupName=workgroup,
-                Sql=query_distinct_nro_ticket
-            )
+#             response = redshift_data.execute_statement(
+#                 Database=database,
+#                 WorkgroupName=workgroup,
+#                 Sql=query_distinct_nro_ticket
+#             )
 
-            set_tickets_cargados = set()
-            while True:
-                desc = redshift_data.describe_statement(Id=response['Id'])
-                if desc['Status'] == 'FINISHED':
-                    if desc['HasResultSet']:
-                        result = redshift_data.get_statement_result(Id=response['Id'])     
-                        if result['Records'] == []:
-                            pass
-                            print('Tabla vacia, se carga la fila')
-                        else:                    
-                            set_tickets_cargados = {list(row[0].values())[0] for row in result['Records']}
+#             set_tickets_cargados = set()
+#             while True:
+#                 desc = redshift_data.describe_statement(Id=response['Id'])
+#                 if desc['Status'] == 'FINISHED':
+#                     if desc['HasResultSet']:
+#                         result = redshift_data.get_statement_result(Id=response['Id'])     
+#                         if result['Records'] == []:
+#                             pass
+#                             print('Tabla vacia, se carga la fila')
+#                         else:                    
+#                             set_tickets_cargados = {list(row[0].values())[0] for row in result['Records']}
 
-                            # Insertamos las filas del df que solo sean nro_ticket nuevos
-                            df = df[~df['id'].isin(set_tickets_cargados)]
-                    break
-                elif desc['Status'] == 'FAILED':
-                    print("Error al consultar Redshift:", desc['Error'])
-                    break
+#                             # Insertamos las filas del df que solo sean nro_ticket nuevos
+#                             df = df[~df['id'].isin(set_tickets_cargados)]
+#                     break
+#                 elif desc['Status'] == 'FAILED':
+#                     print("Error al consultar Redshift:", desc['Error'])
+#                     break
 
-    elif table_name == 'bank_payments':
-        id_col = 'id'
-        if column_exists(table_name, id_col, redshift_data, database, workgroup) is True and\
-            column_has_data(id_col, table_name, redshift_data, database, workgroup) is True:
+#     elif table_name == 'bank_payments':
+#         id_col = 'id'
+#         if column_exists(table_name, id_col, redshift_data, database, workgroup) is True and\
+#             column_has_data(id_col, table_name, redshift_data, database, workgroup) is True:
             
-            # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
-            query_distinct_col_ids = f"""
-                SELECT DISTINCT {id_col}
-                FROM {table_name}
-            """
+#             # Check de columna operation_id aca, si no existe hacemos un pass, si existe hacemos return 
+#             query_distinct_col_ids = f"""
+#                 SELECT DISTINCT {id_col}
+#                 FROM {table_name}
+#             """
 
-            response = redshift_data.execute_statement(
-                Database=database,
-                WorkgroupName=workgroup,
-                Sql=query_distinct_col_ids
-            )
+#             response = redshift_data.execute_statement(
+#                 Database=database,
+#                 WorkgroupName=workgroup,
+#                 Sql=query_distinct_col_ids
+#             )
 
-            set_operaciones_cargadas = set()
-            while True:
-                desc = redshift_data.describe_statement(Id=response['Id'])
-                if desc['Status'] == 'FINISHED':
-                    if desc.get('HasResultSet', False):
-                        result = redshift_data.get_statement_result(Id=response['Id'])     
-                        if result['Records'] == []:
-                            print('Tabla vacía, se carga la fila')
-                        else:                    
-                            set_ids_cargados = {
-                                list(row[0].values())[0] for row in result['Records']
-                            }
+#             set_operaciones_cargadas = set()
+#             while True:
+#                 desc = redshift_data.describe_statement(Id=response['Id'])
+#                 if desc['Status'] == 'FINISHED':
+#                     if desc.get('HasResultSet', False):
+#                         result = redshift_data.get_statement_result(Id=response['Id'])     
+#                         if result['Records'] == []:
+#                             print('Tabla vacía, se carga la fila')
+#                         else:                    
+#                             set_ids_cargados = {
+#                                 list(row[0].values())[0] for row in result['Records']
+#                             }
 
-                            # Filtramos los id que ya fueron cargados en la tabla
-                            df = df[~df[id_col].isin(set_ids_cargados)]
-                    else:
-                        # No hay resultados, la tabla está vacía
-                        set_ids_cargados = set()
-                        print('Tabla vacía, se carga la fila')
-                    break
-                elif desc['Status'] == 'FAILED':
-                    print("Error al consultar Redshift:", desc['Error'])
-                    break
-    else: # dim_producto
-        pass  
+#                             # Filtramos los id que ya fueron cargados en la tabla
+#                             df = df[~df[id_col].isin(set_ids_cargados)]
+#                     else:
+#                         # No hay resultados, la tabla está vacía
+#                         set_ids_cargados = set()
+#                         print('Tabla vacía, se carga la fila')
+#                     break
+#                 elif desc['Status'] == 'FAILED':
+#                     print("Error al consultar Redshift:", desc['Error'])
+#                     break
+#     else: # dim_producto
+#         pass  
     
-    print('df_empty? ', df.empty)
+#     print('df_empty? ', df.empty)
 
-    print(df)
+#     print(df)
 
-    if df.empty == True:
-        print(f"⚠️ No se insertaron filas en {table_name}, todos los registros ya existen")
-        return None
-    else:
-        # Nombre de columnas (incluso si hay extra como report_id, report_date)
-        df_columns = df.columns.tolist()
-        columns_formatted = ", ".join(df_columns)
+#     if df.empty == True:
+#         print(f"⚠️ No se insertaron filas en {table_name}, todos los registros ya existen")
+#         return None
+#     else:
+#         # Nombre de columnas (incluso si hay extra como report_id, report_date)
+#         df_columns = df.columns.tolist()
+#         columns_formatted = ", ".join(df_columns)
 
-        # Generar VALUES en batch
-        values_sql = ",\n".join([
-            f"({', '.join(format_value(v) for v in row)})"
-            for row in df.itertuples(index=False, name=None)
-        ])
+#         # Generar VALUES en batch
+#         values_sql = ",\n".join([
+#             f"({', '.join(format_value(v) for v in row)})"
+#             for row in df.itertuples(index=False, name=None)
+#         ])
 
-        insert_stmt = f"""
-            INSERT INTO {table_name} ({columns_formatted})
-            VALUES {values_sql};
-        """ 
+#         insert_stmt = f"""
+#             INSERT INTO {table_name} ({columns_formatted})
+#             VALUES {values_sql};
+#         """ 
 
-        try:
-            resp = redshift_data.execute_statement(
-                Database=database,
-                WorkgroupName=workgroup,
-                Sql=insert_stmt
-            )
+#         try:
+#             resp = redshift_data.execute_statement(
+#                 Database=database,
+#                 WorkgroupName=workgroup,
+#                 Sql=insert_stmt
+#             )
 
-            while True:
-                desc = redshift_data.describe_statement(Id=resp['Id'])
-                if desc['Status'] == 'FAILED':
-                    print(f"❌ Error insertando en {table_name}: {desc['Error']}")
-                    break
-                elif desc['Status'] == 'FINISHED':
-                    print(f"✅ Insert completado en {table_name}")
-                    break
-                else:
-                    time.sleep(1)
+#             while True:
+#                 desc = redshift_data.describe_statement(Id=resp['Id'])
+#                 if desc['Status'] == 'FAILED':
+#                     print(f"❌ Error insertando en {table_name}: {desc['Error']}")
+#                     break
+#                 elif desc['Status'] == 'FINISHED':
+#                     print(f"✅ Insert completado en {table_name}")
+#                     break
+#                 else:
+#                     time.sleep(1)
             
-        except Exception as e:
-            print(f"❌ Error insertando fila en tabla: {str(e)}")
+#         except Exception as e:
+#             print(f"❌ Error insertando fila en tabla: {str(e)}")
+
+def insert_df_into_redshift_copy(redshift_data, s3_client, df, table_name, bucket_name, s3_prefix, database, workgroup, iam_role):
+    # 1. Exportar el DataFrame a CSV en memoria
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+
+    # 2. Subir a S3
+    s3_key = f"{s3_prefix}/{table_name}_{int(time.time())}.csv"
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=s3_key,
+        Body=csv_buffer.getvalue()
+    )
+    s3_path = f"s3://{bucket_name}/tmp/{s3_key}"
+    print(f"📤 CSV subido a {s3_path}")
+
+    # 3. Ejecutar COPY en Redshift
+    copy_sql = f"""
+        COPY {table_name}
+        FROM '{s3_path}'
+        IAM_ROLE '{iam_role}'
+        CSV
+        IGNOREHEADER 1
+        TIMEFORMAT 'auto';
+    """
+
+    resp = redshift_data.execute_statement(
+        Database=database,
+        WorkgroupName=workgroup,
+        Sql=copy_sql
+    )
+
+    # 4. Polling hasta que termine
+    while True:
+        desc = redshift_data.describe_statement(Id=resp['Id'])
+        status = desc["Status"]
+
+        if status == "FAILED":
+            print(f"❌ Error en COPY: {desc['Error']}")
+            break
+        elif status == "FINISHED":
+            print(f"✅ COPY completado en {table_name} desde {s3_path}")
+            break
+        else:
+            time.sleep(2)
 
 def column_name_mapping(df):
     column_mapping = {
@@ -726,7 +774,7 @@ def lambda_handler(event,context):
             column_names_insert = [clean_column_name(col) for col in df.columns]
             column_names_insert += ["REPORT_ID", "REPORT_DATE"]
             columnas_sql_insert = ", ".join(column_names_insert)
-            insert_df_into_redshift(df, columnas_sql_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', report_id, report_date)
+            insert_df_into_redshift_copy(df, columnas_sql_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', report_id, report_date)
         elif etl_flow == 'TICKET':
             report_id, report_date = '', ''
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
@@ -737,7 +785,9 @@ def lambda_handler(event,context):
             flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
 
             # column_names_insert = [clean_column_name(col) for col in df.columns]
-            insert_df_into_redshift(df, '', table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
+            # insert_df_into_redshift(df, '', table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
+
+            insert_df_into_redshift_copy(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
 
             # Cargamos el valor de nro_ticket a la tabla de archivos ingestados para no duplicar datos en una proxima carga
             # estandarizar nombre columna "id", "fecha_insert", "fecha_update" donde id para carrefour va a ser nro_ticket, para mp va a ser report_id
@@ -749,7 +799,7 @@ def lambda_handler(event,context):
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df_uploaded_files.columns, df_uploaded_files.dtypes)]
             column_uploaded_files = ",\n  ".join(column_defs)
             flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
-            insert_df_into_redshift(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', '', '') 
+            insert_df_into_redshift_copy(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', '', '') 
 
             # Crear tabla de dimensiones de producto o utilizarla si ya existe
             df_dim_producto = create_and_fill_product_dim_table_in_redshift(df, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup','product_id', False)
@@ -769,7 +819,7 @@ def lambda_handler(event,context):
             create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
 
             column_names_insert = [clean_column_name(col) for col in df.columns]
-            insert_df_into_redshift(df, column_names_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
+            insert_df_into_redshift_copy(df, column_names_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
 
         return {
             'table_name': table_name

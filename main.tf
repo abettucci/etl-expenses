@@ -651,6 +651,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
     variables = {
       WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
       BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
+      IAM_ROLE_REDSHIFT = aws_iam_role.redshift_copy_role.arn
     }
   }
 }
@@ -1739,4 +1740,53 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure"
     StateMachineArn = aws_sfn_state_machine.bank_payments_etl_flow.arn
   }
   alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
+}
+
+# Rol para COPY desde S3
+resource "aws_iam_role" "redshift_copy_role" {
+  name = "RedshiftCopyRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "redshift.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+# Permisos para leer del bucket de staging
+resource "aws_iam_role_policy" "redshift_copy_policy" {
+  name = "RedshiftCopyPolicy"
+  role = aws_iam_role.redshift_copy_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "${aws_s3_bucket.market_tickets.arn}/*",
+          aws_s3_bucket.market_tickets.arn,
+          aws_s3_bucket.mp_reports.arn,
+          "${aws_s3_bucket.mp_reports.arn}/*",
+          "${aws_s3_bucket.bank_payments.arn}/*",
+          aws_s3_bucket.bank_payments.arn
+        ]
+      }
+    ]
+  })
+}
+
+output "redshift_copy_role_arn" {
+  value = aws_iam_role.redshift_copy_role.arn
 }
