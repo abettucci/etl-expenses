@@ -722,6 +722,51 @@ def column_name_mapping(df):
 
     return df
 
+def fix_dataframe_dtypes_detailed(df):
+    """Corrección más robusta de tipos de datos"""
+    df_fixed = df.copy()
+    
+    type_corrections = {
+        'ean': 'string',
+        'grupo_producto': 'string', 
+        'product_id': 'Int64',
+        'fecha': 'datetime'
+    }
+    
+    for col, target_type in type_corrections.items():
+        if col not in df_fixed.columns:
+            continue
+            
+        current_dtype = df_fixed[col].dtype
+        print(f"🔧 Procesando {col}: {current_dtype} -> {target_type}")
+        
+        try:
+            if target_type == 'string':
+                # Convertir a string, manejando floats y NaN
+                df_fixed[col] = df_fixed[col].apply(
+                    lambda x: str(int(x)) if isinstance(x, float) and not pd.isna(x) and x.is_integer() 
+                    else str(x) if not pd.isna(x) else None
+                )
+                # Limpiar strings
+                df_fixed[col] = df_fixed[col].replace(['nan', 'NaN', 'None', '<NA>'], None)
+                
+            elif target_type == 'Int64':
+                # Para enteros que permiten NaN
+                df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce').astype('Int64')
+                
+            elif target_type == 'datetime':
+                df_fixed[col] = pd.to_datetime(df_fixed[col], errors='coerce')
+                
+            print(f"  ✅ {col} convertido a {df_fixed[col].dtype}")
+            
+        except Exception as e:
+            print(f"  ❌ Error convirtiendo {col}: {e}")
+            # Mostrar valores problemáticos
+            problematic = df_fixed[col].head(3)
+            print(f"  Valores de ejemplo: {problematic.tolist()}")
+    
+    return df_fixed
+
 def lambda_handler(event,context):
     try:
         redshift_data = boto3.client('redshift-data')
@@ -745,10 +790,14 @@ def lambda_handler(event,context):
             dtype = {}
         elif etl_flow == 'TICKET':
             dtype = {
-                     'ean': str,
-                     'grupo_producto': str,
-                     'product_id': 'Int64'
-                 }
+                'ean': str,  # Leer como string desde el principio
+                'grupo_producto': str,
+                'product_id': 'Int64',  # Usar Int64 para enteros con NaN
+                'nro_ticket': 'Int64',
+                'categoria': str,
+                'producto': str,
+                'fecha': str  # Leer como string y luego convertir a datetime
+            }
             table_name = 'carrefour_data'
         else:
             dtype = {}
@@ -790,6 +839,11 @@ def lambda_handler(event,context):
             # column_names_insert = [clean_column_name(col) for col in df.columns]
             # insert_df_into_redshift(df, '', table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
 
+            # Fixeamos los data types del df de la carpeta "tmp" para que puedan pushearse ala tabla de redshift con el esquema identico
+            df = fix_dataframe_dtypes_detailed(df)
+            for col, dtype in df.dtypes.items():
+                print(f"  {col}: {dtype}")
+        
             insert_df_into_redshift_copy(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
 
             # Cargamos el valor de nro_ticket a la tabla de archivos ingestados para no duplicar datos en una proxima carga
