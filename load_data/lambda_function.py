@@ -633,7 +633,7 @@ def insert_df_into_redshift_copy(redshift_data, s3_client, df, table_name, bucke
         Key=s3_key,
         Body=csv_buffer.getvalue()
     )
-    s3_path = f"s3://{bucket_name}/{s3_prefix}{s3_key}"
+    s3_path = f"s3://{bucket_name}/{s3_key}"
     print(f"📤 CSV subido a {s3_path}")
 
     # 3. Ejecutar COPY en Redshift
