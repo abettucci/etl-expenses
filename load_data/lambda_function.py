@@ -207,7 +207,7 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
         df_dim_producto = df_dim_producto.drop_duplicates(subset=['nombre_producto','ean'])
 
         # insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
-        insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
+        insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
         print(f"✅ Cargamos los primeros datos en la tabla {table_name}")
 
         return df_dim_producto
@@ -276,7 +276,7 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
             df_dim_producto['grupo_producto'] = df_dim_producto['nombre_producto'].map(normalizacion_productos)
 
             # insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
+            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
             print(f"✅ Cargamos un nuevo registro de producto {df_dim_producto[['nombre_producto','product_id','ean']]} en la tabla {table_name}")
             
             return df_dim_producto
@@ -933,7 +933,7 @@ def lambda_handler(event,context):
             column_names_insert += ["REPORT_ID", "REPORT_DATE"]
             columnas_sql_insert = ", ".join(column_names_insert)
             # insert_df_into_redshift_copy(df, columnas_sql_insert, table_name, 'dev', 'pdf-etl-workgroup', report_id, report_date)
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
+            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
         elif etl_flow == 'TICKET':
             report_id, report_date = '', ''
@@ -967,7 +967,7 @@ def lambda_handler(event,context):
             flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
             
             # insert_df_into_redshift_copy(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', '', '') 
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
+            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
             # Crear tabla de dimensiones de producto o utilizarla si ya existe
             df_dim_producto = create_and_fill_product_dim_table_in_redshift(s3, bucket, 'dim_producto/', df, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup','product_id', False)
@@ -988,7 +988,7 @@ def lambda_handler(event,context):
 
             column_names_insert = [clean_column_name(col) for col in df.columns]
             # insert_df_into_redshift_copy(df, column_names_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
+            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
         return {
             'table_name': table_name
