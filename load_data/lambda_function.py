@@ -3,6 +3,7 @@ import boto3
 import io
 import os
 import json
+import csv
 import re
 import unicodedata
 import time
@@ -621,50 +622,113 @@ def column_exists(table_name, column_name, redshift_data, database, workgroup):
 #         except Exception as e:
 #             print(f"❌ Error insertando fila en tabla: {str(e)}")
 
-def insert_df_into_redshift_copy(redshift_data, s3_client, df, table_name, bucket_name, s3_prefix, database, workgroup, iam_role):
-    # 1. Exportar el DataFrame a CSV en memoria
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
+def insert_df_into_redshift_copy_improved(redshift_data, s3_client, df, table_name, bucket_name, s3_prefix, database, workgroup, iam_role):
+    try:
+        # 1. Limpiar y preparar el DataFrame
+        df_clean = df.copy()
+        
+        # Asegurar que todas las columnas object sean strings limpias
+        for col in df_clean.columns:
+            if df_clean[col].dtype == 'object':
+                df_clean[col] = df_clean[col].astype(str)
+                df_clean[col] = df_clean[col].replace(['nan', 'NaN', 'None', '<NA>', 'NULL', 'null'], '')
+                df_clean[col] = df_clean[col].str.strip()
+        
+        # 2. Exportar a CSV con configuración robusta
+        csv_buffer = io.StringIO()
+        df_clean.to_csv(csv_buffer, 
+                       index=False,
+                       sep=',',
+                       quoting=csv.QUOTE_MINIMAL,
+                       escapechar='\\',
+                       na_rep='')
+        
+        # 3. Subir a S3
+        s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+            Body=csv_buffer.getvalue().encode('utf-8')
+        )
+        s3_path = f"s3://{bucket_name}/{s3_key}"
+        print(f"📤 CSV subido a {s3_path}")
+        
+        # 4. Ejecutar COPY con opciones mejoradas
+        copy_sql = f"""
+            COPY {table_name}
+            FROM '{s3_path}'
+            IAM_ROLE '{iam_role}'
+            CSV
+            IGNOREHEADER 1
+            DELIMITER ','
+            EMPTYASNULL
+            BLANKSASNULL
+            TRUNCATECOLUMNS
+            MAXERROR 100
+            COMPUPDATE OFF
+            STATUPDATE OFF;
+        """
+        
+        print(f"🔧 Ejecutando COPY con SQL: {copy_sql}")
+        
+        resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=copy_sql
+        )
 
-    # 2. Subir a S3
-    s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=s3_key,
-        Body=csv_buffer.getvalue()
-    )
-    s3_path = f"s3://{bucket_name}/{s3_key}"
-    print(f"📤 CSV subido a {s3_path}")
-
-    # 3. Ejecutar COPY en Redshift
-    copy_sql = f"""
-        COPY {table_name}
-        FROM '{s3_path}'
-        IAM_ROLE '{iam_role}'
-        CSV
-        IGNOREHEADER 1
-        TIMEFORMAT 'auto';
-    """
-
-    resp = redshift_data.execute_statement(
-        Database=database,
-        WorkgroupName=workgroup,
-        Sql=copy_sql
-    )
-
-    # 4. Polling hasta que termine
-    while True:
-        desc = redshift_data.describe_statement(Id=resp['Id'])
-        status = desc["Status"]
-
-        if status == "FAILED":
-            print(f"❌ Error en COPY: {desc['Error']}")
-            break
-        elif status == "FINISHED":
-            print(f"✅ COPY completado en {table_name} desde {s3_path}")
-            break
-        else:
-            time.sleep(2)
+        # 5. Polling con mejor logging
+        start_time = time.time()
+        while True:
+            desc = redshift_data.describe_statement(Id=resp['Id'])
+            status = desc["Status"]
+            
+            if status == "FAILED":
+                error_msg = desc.get('Error', 'Error desconocido')
+                print(f"❌ Error en COPY: {error_msg}")
+                
+                # Consultar detalles del error
+                try:
+                    error_query = """
+                    SELECT * FROM sys_load_error_detail 
+                    WHERE starttime >= DATEADD(hour, -1, GETDATE())
+                    ORDER BY starttime DESC 
+                    LIMIT 1;
+                    """
+                    error_resp = redshift_data.execute_statement(
+                        Database=database,
+                        WorkgroupName=workgroup,
+                        Sql=error_query
+                    )
+                    
+                    # Esperar resultado del error
+                    while True:
+                        error_desc = redshift_data.describe_statement(Id=error_resp['Id'])
+                        if error_desc['Status'] == 'FINISHED':
+                            if error_desc.get('HasResultSet'):
+                                error_result = redshift_data.get_statement_result(Id=error_resp['Id'])
+                                if error_result['Records']:
+                                    print("🔍 DETALLES DEL ERROR:")
+                                    for record in error_result['Records']:
+                                        print(f"  - {record}")
+                            break
+                        time.sleep(1)
+                except Exception as e:
+                    print(f"⚠️ No se pudieron obtener detalles del error: {e}")
+                
+                raise Exception(f"COPY failed: {error_msg}")
+                
+            elif status == "FINISHED":
+                duration = time.time() - start_time
+                print(f"✅ COPY completado en {table_name} en {duration:.2f}s")
+                break
+            else:
+                print(f"⏳ Estado actual: {status}...")
+                time.sleep(2)
+                
+    except Exception as e:
+        print(f"❌ Error general en insert_df_into_redshift_copy: {str(e)}")
+        raise
 
 def column_name_mapping(df):
     column_mapping = {
@@ -723,47 +787,42 @@ def column_name_mapping(df):
     return df
 
 def fix_dataframe_dtypes_detailed(df):
-    """Corrección más robusta de tipos de datos"""
+    """Corrección robusta de tipos de datos para Redshift"""
     df_fixed = df.copy()
     
-    type_corrections = {
-        'ean': 'string',
-        'grupo_producto': 'string', 
-        'product_id': 'Int64',
-        'fecha': 'datetime'
-    }
+    print("🔍 ESQUEMA ANTES DE CORRECCIÓN:")
+    for col, dtype in df_fixed.dtypes.items():
+        print(f"  {col}: {dtype}")
     
-    for col, target_type in type_corrections.items():
-        if col not in df_fixed.columns:
-            continue
-            
+    # Correcciones específicas basadas en el esquema de Redshift
+    for col in df_fixed.columns:
         current_dtype = df_fixed[col].dtype
-        print(f"🔧 Procesando {col}: {current_dtype} -> {target_type}")
         
-        try:
-            if target_type == 'string':
-                # Convertir a string, manejando floats y NaN
-                df_fixed[col] = df_fixed[col].apply(
-                    lambda x: str(int(x)) if isinstance(x, float) and not pd.isna(x) and x.is_integer() 
-                    else str(x) if not pd.isna(x) else None
-                )
-                # Limpiar strings
-                df_fixed[col] = df_fixed[col].replace(['nan', 'NaN', 'None', '<NA>'], None)
-                
-            elif target_type == 'Int64':
-                # Para enteros que permiten NaN
-                df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce').astype('Int64')
-                
-            elif target_type == 'datetime':
-                df_fixed[col] = pd.to_datetime(df_fixed[col], errors='coerce')
-                
-            print(f"  ✅ {col} convertido a {df_fixed[col].dtype}")
-            
-        except Exception as e:
-            print(f"  ❌ Error convirtiendo {col}: {e}")
-            # Mostrar valores problemáticos
-            problematic = df_fixed[col].head(3)
-            print(f"  Valores de ejemplo: {problematic.tolist()}")
+        # Si la columna es object pero debería ser string limpia
+        if current_dtype == 'object':
+            df_fixed[col] = df_fixed[col].astype(str)
+            # Limpiar strings problemáticos
+            df_fixed[col] = df_fixed[col].replace(['nan', 'NaN', 'None', '<NA>', 'NULL', 'null'], '')
+            # Trim whitespace
+            df_fixed[col] = df_fixed[col].str.strip()
+            print(f"✅ {col} limpiado como string")
+        
+        # Manejar Int64 (enteros con NaN)
+        elif str(current_dtype) == 'Int64':
+            # Convertir a string temporalmente para limpiar, luego a float (Redshift maneja mejor floats)
+            df_fixed[col] = df_fixed[col].astype(str)
+            df_fixed[col] = df_fixed[col].replace('<NA>', '')
+            df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce')
+            print(f"✅ {col} convertido a float para Redshift")
+        
+        # Mantener fechas como strings en formato estándar
+        elif 'datetime' in str(current_dtype):
+            df_fixed[col] = df_fixed[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+            print(f"✅ {col} convertido a string con formato fecha")
+    
+    print("\n🔍 ESQUEMA DESPUÉS DE CORRECCIÓN:")
+    for col, dtype in df_fixed.dtypes.items():
+        print(f"  {col}: {dtype}")
     
     return df_fixed
 
@@ -839,12 +898,20 @@ def lambda_handler(event,context):
             # column_names_insert = [clean_column_name(col) for col in df.columns]
             # insert_df_into_redshift(df, '', table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
 
-            # Fixeamos los data types del df de la carpeta "tmp" para que puedan pushearse ala tabla de redshift con el esquema identico
+            print("🔧 Aplicando corrección de tipos de datos...")
             df = fix_dataframe_dtypes_detailed(df)
+            
+            # Mostrar esquema final
+            print("\n📊 ESQUEMA FINAL PARA REDSHIFT:")
             for col, dtype in df.dtypes.items():
                 print(f"  {col}: {dtype}")
-        
-            insert_df_into_redshift_copy(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
+            
+            # Mostrar primeras filas para debug
+            print("\n🔍 PRIMERAS FILAS DEL DATAFRAME:")
+            print(df.head(3).to_string())
+            
+            # 🔥 USAR FUNCIÓN MEJORADA DE COPY
+            insert_df_into_redshift_copy_improved(redshift_data, s3, df, table_name, bucket, folder, 'dev', 'pdf-etl-workgroup', iam_role)
 
             # Cargamos el valor de nro_ticket a la tabla de archivos ingestados para no duplicar datos en una proxima carga
             # estandarizar nombre columna "id", "fecha_insert", "fecha_update" donde id para carrefour va a ser nro_ticket, para mp va a ser report_id
