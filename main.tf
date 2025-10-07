@@ -651,7 +651,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
     variables = {
       WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
       BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
-      IAM_ROLE_REDSHIFT = aws_iam_role.redshift_copy_role.arn
+      IAM_ROLE_REDSHIFT = aws_iam_role.lambda_exec.arn
     }
   }
 }
@@ -727,18 +727,23 @@ resource "aws_lambda_function" "ai_agent" {
 
 ###########  5. Permisos IAM Roles ###########
 # IAM role para Lambda execution
-resource "aws_iam_role" "lambda_exec" {
+resource "aws_iam_role" "lambda_exec" {  # Asumiendo que ya existe; modifícalo
   name = "lambda_exec_role"
-
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action = "sts:AssumeRole",
-      Effect = "Allow",
-      Principal = {
-        Service = "lambda.amazonaws.com"
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = {
+          Service = [
+            "lambda.amazonaws.com",              # Para Lambda
+            "redshift.amazonaws.com",            # Para Redshift general
+            "redshift-serverless.amazonaws.com"  # Para Serverless
+          ]
+        }
+        Action = "sts:AssumeRole"
       }
-    }]
+    ]
   })
 }
 
@@ -1002,6 +1007,32 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
           countNumber = 1
         }
         action = { type = "expire" }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "lambda_exec_copy_policy" {
+  name = "LambdaExecCopyPolicy"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "${aws_s3_bucket.market_tickets.arn}/*",
+          aws_s3_bucket.market_tickets.arn,
+          "${aws_s3_bucket.mp_reports.arn}/*",
+          aws_s3_bucket.mp_reports.arn,
+          "${aws_s3_bucket.bank_payments.arn}/*",
+          aws_s3_bucket.bank_payments.arn
+        ]
       }
     ]
   })
@@ -1742,51 +1773,6 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure"
   alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
 }
 
-# Rol para COPY desde S3
-resource "aws_iam_role" "redshift_copy_role" {
-  name = "RedshiftCopyRole"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "redshift.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
-}
-
-# Permisos para leer del bucket de staging
-resource "aws_iam_role_policy" "redshift_copy_policy" {
-  name = "RedshiftCopyPolicy"
-  role = aws_iam_role.redshift_copy_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = [
-          "s3:GetObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          "${aws_s3_bucket.market_tickets.arn}/*",
-          aws_s3_bucket.market_tickets.arn,
-          aws_s3_bucket.mp_reports.arn,
-          "${aws_s3_bucket.mp_reports.arn}/*",
-          "${aws_s3_bucket.bank_payments.arn}/*",
-          aws_s3_bucket.bank_payments.arn
-        ]
-      }
-    ]
-  })
-}
-
-output "redshift_copy_role_arn" {
-  value = aws_iam_role.redshift_copy_role.arn
+output "redshift_iam_role_arn" {
+  value = aws_iam_role.lambda_exec.arn
 }
