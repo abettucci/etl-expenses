@@ -319,7 +319,7 @@ def upload_dataframe_to_bigquery(client, df, table_id, schema=None):
 def lambda_handler(event, context):
     try:
         tabla = event["table_name"]
-        creds = auth_google('gcp_api_credentials')
+        creds = auth_google('gcp_sa_api_credentials')
         print(f"🔍 Scopes activos de creds {creds}:", creds.scopes)
 
         project_id = 'hazel-pillar-400222'
@@ -410,3 +410,5 @@ def lambda_handler(event, context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
+
+# lambda_handler({"table_name":"carrefour_data"},"")

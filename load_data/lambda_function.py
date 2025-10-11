@@ -207,7 +207,7 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
         df_dim_producto = df_dim_producto.drop_duplicates(subset=['nombre_producto','ean'])
 
         # insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
-        insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+        insert_df_into_redshift_copy_fixed(redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
         print(f"✅ Cargamos los primeros datos en la tabla {table_name}")
 
         return df_dim_producto
@@ -276,7 +276,7 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
             df_dim_producto['grupo_producto'] = df_dim_producto['nombre_producto'].map(normalizacion_productos)
 
             # insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            insert_df_into_redshift_copy_fixed(redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
             print(f"✅ Cargamos un nuevo registro de producto {df_dim_producto[['nombre_producto','product_id','ean']]} en la tabla {table_name}")
             
             return df_dim_producto
