@@ -319,7 +319,7 @@ def upload_dataframe_to_bigquery(client, df, table_id, schema=None):
 def lambda_handler(event, context):
     try:
         tabla = event["table_name"]
-        creds = auth_google('gcp_sa_api_credentials')
+        creds = auth_google('gcp_api_credentials')
         print(f"🔍 Scopes activos de creds {creds}:", creds.scopes)
 
         project_id = 'hazel-pillar-400222'
@@ -373,7 +373,8 @@ def lambda_handler(event, context):
         if tabla == 'mp_data':
             pk = 'report_id'
         elif tabla == 'carrefour_data':
-            pk = 'nro_ticket'
+            # pk = 'nro_ticket'
+            pk = 'operation_id'
         elif tabla == 'dim_producto':
             pk = 'product_id'
         elif tabla == 'archivos_ingestados':
