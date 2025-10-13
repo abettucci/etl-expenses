@@ -299,7 +299,7 @@ def upload_dataframe_to_bigquery(client, df, table_id, schema=None):
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.CSV,
         skip_leading_rows=1,  # Para saltar el header
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE, # WRITE_APPEND
         autodetect=True if schema is None else False,
         schema=schema
     )
@@ -318,95 +318,96 @@ def upload_dataframe_to_bigquery(client, df, table_id, schema=None):
 
 def lambda_handler(event, context):
     try:
-        tabla = event["table_name"]
-        creds = auth_google('gcp_api_credentials')
-        print(f"🔍 Scopes activos de creds {creds}:", creds.scopes)
+        tables = event["table_name"]
+        for table_name in tables:
+            creds = auth_google('gcp_api_credentials')
+            print(f"🔍 Scopes activos de creds {creds}:", creds.scopes)
 
-        project_id = 'hazel-pillar-400222'
-        
-        stg_dataset_id = 'STG'
-        stg_project_dataset = f'{project_id}.{stg_dataset_id}'
-        staging_table_id = f'{stg_project_dataset}.{tabla}'
+            project_id = 'hazel-pillar-400222'
+            
+            stg_dataset_id = 'STG'
+            stg_project_dataset = f'{project_id}.{stg_dataset_id}'
+            staging_table_id = f'{stg_project_dataset}.{table_name}'
 
-        tbl_dataset_id = 'TBL'
-        tbl_project_dataset = f'{project_id}.{tbl_dataset_id}'
-        prod_table_id = f'{tbl_project_dataset}.{tabla}'
+            tbl_dataset_id = 'TBL'
+            tbl_project_dataset = f'{project_id}.{tbl_dataset_id}'
+            prod_table_id = f'{tbl_project_dataset}.{table_name}'
 
-        client = bigquery.Client(credentials=creds, project=f'{project_id}')
-        redshift_data = boto3.client('redshift-data')
-        
-        df = get_df_from_redshift_table(redshift_data, tabla)
+            client = bigquery.Client(credentials=creds, project=f'{project_id}')
+            redshift_data = boto3.client('redshift-data')
+            
+            df = get_df_from_redshift_table(redshift_data, table_name)
 
-        print(df)
-        
-        ################# TABLA  STAGING ######################
-        df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id)        
+            print(df)
+            
+            ################# TABLA  STAGING ######################
+            df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(df, client, table_name, staging_table_id)        
 
-        # Si no existe la tabla, la creamos de forma dinamica con las columnas del dataframe y luego transferimos los datos de redshift a bigquery a traves de pandas df
-        if not table_exists:
-            print(f"🆕 La tabla en staging {staging_table_id} no existe. Creándola...")
-            upload_dataframe_to_bigquery(client, df, staging_table_id, schema)
-        # Si la tabla ya existe, no deberia tener datos porque siempre hacemos un TRUNC TABLE despues de mergear la tabla de staging con la productiva
-        # Procedemos a cargarle los datos del dataframe
-        else:
-            print("📊 La tabla existe pero no tiene datos, ejecutamos insert")
-            upload_dataframe_to_bigquery(client, df, staging_table_id, schema)
-        print("✅ Datos cargados")
+            # Si no existe la tabla, la creamos de forma dinamica con las columnas del dataframe y luego transferimos los datos de redshift a bigquery a traves de pandas df
+            if not table_exists:
+                print(f"🆕 La tabla en staging {staging_table_id} no existe. Creándola...")
+                upload_dataframe_to_bigquery(client, df, staging_table_id, schema)
+            # Si la tabla ya existe, no deberia tener datos porque siempre hacemos un TRUNC TABLE despues de mergear la tabla de staging con la productiva
+            # Procedemos a cargarle los datos del dataframe
+            else:
+                print("📊 La tabla existe pero no tiene datos, ejecutamos insert")
+                upload_dataframe_to_bigquery(client, df, staging_table_id, schema)
+            print("✅ Datos cargados")
 
-        ################# TABLA  PRODUCTIVA ######################
-        df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(df, client, tabla, prod_table_id)    
+            ################# TABLA  PRODUCTIVA ######################
+            df, schema, table_exists, table_has_data = check_exists_and_prepare_schema_for_bq(df, client, table_name, prod_table_id)    
 
-        # Crear tabla productiva si no existe
-        if not table_exists:
-            print(f"🆕 La tabla en prod {prod_table_id} no existe. Creándola...")
-            upload_dataframe_to_bigquery(client, df, prod_table_id, schema)
-            print(f"🆕 La tabla en prod {prod_table_id} no existe. Creándola...")
+            # Crear tabla productiva si no existe
+            if not table_exists:
+                print(f"🆕 La tabla en prod {prod_table_id} no existe. Creándola...")
+                upload_dataframe_to_bigquery(client, df, prod_table_id, schema)
+                print(f"🆕 La tabla en prod {prod_table_id} no existe. Creándola...")
 
-        # Si la tabla ya existe, aunque ya tuviera datos, le insertamos los datos de nuevo, luego hacemos un merge y se evitan los duplicados
-        # y tambien se trunca la tabla de staging. Aca solo transferimos los datos de redshift a bigquery a traves de pandas df.
-        else:
-            upload_dataframe_to_bigquery(client, df, prod_table_id, schema)
-            print(f"✅ Tabla productiva {prod_table_id} creada.")
+            # Si la tabla ya existe, aunque ya tuviera datos, le insertamos los datos de nuevo, luego hacemos un merge y se evitan los duplicados
+            # y tambien se trunca la tabla de staging. Aca solo transferimos los datos de redshift a bigquery a traves de pandas df.
+            else:
+                # upload_dataframe_to_bigquery(client, df, prod_table_id, schema)
+                print(f"✅ Tabla productiva {prod_table_id} ya estaba creada.")
 
-        ################# MERGE STAGING => PROD ######################
-        # Hacemos el merge de la tabla de staging de BQ a la tabla productiva de BQ
-        if tabla == 'mp_data':
-            pk = 'report_id'
-        elif tabla == 'carrefour_data':
-            # pk = 'nro_ticket'
-            pk = 'operation_id'
-        elif tabla == 'dim_producto':
-            pk = 'product_id'
-        elif tabla == 'archivos_ingestados':
-            pk = 'id'
-        else: # tabla = bank_payments
-            pk = 'id'
+            ################# MERGE STAGING => PROD ######################
+            # Hacemos el merge de la tabla de staging de BQ a la tabla productiva de BQ
+            if table_name == 'mp_data':
+                pk = 'report_id'
+            elif table_name == 'carrefour_data':
+                # pk = 'nro_ticket'
+                pk = 'operation_id'
+            elif table_name == 'dim_producto':
+                pk = 'product_id'
+            elif table_name == 'archivos_ingestados':
+                pk = 'id'
+            else: # table_name = bank_payments
+                pk = 'id'
 
-        update_columns = [col for col in df.columns if col not in [pk, 'INS_DTTM', 'UPD_DTTM']]
-        result = table_merge_staging_to_production_bq(client, update_columns, tabla, staging_table_id, pk, tbl_project_dataset)
+            update_columns = [col for col in df.columns if col not in [pk, 'INS_DTTM', 'UPD_DTTM']]
+            result = table_merge_staging_to_production_bq(client, update_columns, table_name, staging_table_id, pk, tbl_project_dataset)
 
-        # Si el merge se ejecutó bien,
-        if result:
-            # Borramos los datos de la tabla de staging
-            try:
-                query = f"TRUNCATE TABLE `{staging_table_id}`"
-                job = client.query(query)
-                job.result()
-                print(f"✅ Tabla {staging_table_id} truncada exitosamente de BigQuery")
-                
-            except GoogleAPICallError as e:
-                print(f"❌ Error truncando la tabla {staging_table_id}: {str(e)}")
+            # Si el merge se ejecutó bien,
+            if result:
+                # Borramos los datos de la tabla de staging
+                try:
+                    query = f"TRUNCATE TABLE `{staging_table_id}`"
+                    job = client.query(query)
+                    job.result()
+                    print(f"✅ Tabla {staging_table_id} truncada exitosamente de BigQuery")
+                    
+                except GoogleAPICallError as e:
+                    print(f"❌ Error truncando la tabla {staging_table_id}: {str(e)}")
 
-            # Y tambien borramos los datos de la tabla de redshift que se transfirieron
-            try:
-                redshift_data.execute_statement(
-                    Database='dev',
-                    WorkgroupName='pdf-etl-workgroup',
-                    Sql=f"TRUNCATE TABLE {tabla}"
-                )    
-                print(f"✅ Tabla {tabla} truncada exitosamente de redshift")
-            except Exception as e:
-                print(f"❌ Error truncando la tabla {tabla} de redshift: {str(e)}") 
+                # Y tambien borramos los datos de la tabla de redshift que se transfirieron
+                try:
+                    redshift_data.execute_statement(
+                        Database='dev',
+                        WorkgroupName='pdf-etl-workgroup',
+                        Sql=f"TRUNCATE TABLE {table_name}"
+                    )    
+                    print(f"✅ Tabla {table_name} truncada exitosamente de redshift")
+                except Exception as e:
+                    print(f"❌ Error truncando la tabla {table_name} de redshift: {str(e)}") 
 
     except Exception as e:
         print("⚠️ Error:", str(e))
