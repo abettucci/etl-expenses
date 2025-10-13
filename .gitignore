@@ -4,6 +4,7 @@
 /extract_data_gmail/test.py
 /extract_data_gmail/test2.py
 /extract_data_gmail/test3.py
+/extract_data_gmail/test4.py
 /extract_data_gmail/evento.json
 /extract_data_gmail/test_pubsub.py
 /gmail_watcher/test.py
