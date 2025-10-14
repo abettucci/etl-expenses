@@ -236,11 +236,12 @@ def check_exists_and_prepare_schema_for_bq(df, client, tabla, staging_table_id):
 
     for col in ["INS_DTTM", "UPD_DTTM"]:
         if col not in df.columns:
-            if col.lower() not in df.columns:
-                df[col] = pd.Timestamp.now(tz='UTC')
+            if col.lower() in df.columns:
+                # Si existe en minúscula, renombrar la columna
+                df = df.rename(columns={col.lower(): col})
             else:
-                # existe pero en miinuscula
-                df[col] = df[col].upper()
+                # Si no existe en absoluto, crear la columna
+                df[col] = pd.Timestamp.now(tz='UTC')
 
     # Si no se provee schema, inferirlo del DataFrame
     schema = build_bq_schema_from_df(df)
