@@ -396,12 +396,12 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
     try:
         id_col = None
         if table_name == 'carrefour_data' and 'operation_id' in df.columns:
-            id_col = 'operation_id'
+            pass #id_col = 'operation_id'
         elif table_name == 'mp_data' and 'report_id' in df.columns:
             id_col = 'report_id'
         elif table_name == 'archivos_ingestados' and 'id' in df.columns:
             id_col = 'id'
-        elif 'product_id' in df.columns: #dim_producto
+        elif table_name == 'dim_producto' and 'product_id' in df.columns:
             id_col = 'product_id'
         elif table_name == 'bank_payments' and 'id' in df.columns:
             id_col = 'id'
@@ -442,6 +442,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             df = df[~df[id_col].isin(existing_ids)]
             after = len(df)
             print(f"🧹 Filtradas {before - after} filas duplicadas ({after} filas nuevas)")
+
 
         # 1. Primero obtener el esquema actual de Redshift
         schema_query = f"""
@@ -690,6 +691,70 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
     
     return df_fixed
 
+def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, id_col='operation_id'):
+    """
+    Elimina duplicados de una tabla en Redshift basándose en una columna única
+    """
+    
+    delete_sql = f"""
+        DELETE FROM {table_name}
+        WHERE {id_col} IN (
+            SELECT {id_col}
+            FROM {table_name}
+            WHERE {id_col} <> 'True'
+            GROUP BY {id_col}
+            HAVING COUNT(*) > 1
+        );
+    """
+    
+    try:
+        print(f"🧹 Eliminando duplicados de {table_name} por columna {id_col}...")
+        
+        resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=delete_sql
+        )
+        
+        # Esperar finalización
+        while True:
+            desc = redshift_data.describe_statement(Id=resp['Id'])
+            if desc['Status'] == 'FINISHED':
+                print(f"✅ Duplicados eliminados de {table_name}")
+                break
+            elif desc['Status'] == 'FAILED':
+                print(f"❌ Error eliminando duplicados: {desc['Error']}")
+                break
+            time.sleep(1)
+            
+    except Exception as e:
+        print(f"⚠️ Error en eliminación de duplicados: {str(e)}")
+
+def delete_tmp_files_in_s3(s3, bucket_name):
+    """
+    Borra todos los archivos de la carpeta tmp/ en S3
+    """    
+    try:
+        # Listar todos los objetos en tmp/
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix='tmp/')
+        
+        if 'Contents' in response:
+            # Crear lista de objetos a borrar
+            objects_to_delete = [{'Key': obj['Key']} for obj in response['Contents']]
+            
+            # Borrar en lote
+            s3.delete_objects(
+                Bucket=bucket_name,
+                Delete={'Objects': objects_to_delete}
+            )
+            
+            print(f"✅ Borrados {len(objects_to_delete)} archivos temporales de s3://{bucket_name}/tmp/")
+        else:
+            print("✅ No hay archivos en la carpeta tmp/")
+            
+    except Exception as e:
+        print(f"❌ Error borrando archivos temporales: {str(e)}")
+
 def lambda_handler(event,context):
     try:
         redshift_data = boto3.client('redshift-data')
@@ -795,7 +860,13 @@ def lambda_handler(event,context):
             # para evitar insertar registros repetidos de cada archivo => deberiamos hacer un check de esta
             # columna dentro del insert_df_into_redshift que se hace en carrefour_data
             aggregate_table_in_redshift(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
-            add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')        
+            add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')      
+
+            # aca meter un borrado de duplicados por operation_id de la tabla de carrefour_data para dejar la tabla de redshift limpia
+            delete_duplicates_by_col_id(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
+
+            # despues nos quedaria limpiar los archivos de "tmp/" de s3 => borrar todos ya que solo se usan para migrar a redshift lo de "raw"
+            delete_tmp_files_in_s3(s3, bucket)
 
             tables = ['archivos_ingestados', 'dim_producto', table_name]   
         else: # es un gasto del banco
