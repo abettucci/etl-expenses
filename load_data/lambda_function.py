@@ -693,32 +693,63 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
 
 def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, id_col='operation_id'):
     """
-    Elimina duplicados de una tabla en Redshift basándose en una columna única
+    Elimina duplicados en una tabla Redshift, conservando una fila por cada id_col.
+    Agrega logs de cantidad de duplicados detectados y filas eliminadas.
     """
-    
-    delete_sql = f"""
-        DELETE FROM {table_name}
-        WHERE {id_col} IN (
-            SELECT {id_col}
-            FROM {table_name}
-            WHERE {id_col} <> 'True'
-            GROUP BY {id_col}
-            HAVING COUNT(*) > 1
-        );
-    """
-    
     try:
-        print(f"🧹 Eliminando duplicados de {table_name} por columna {id_col}...")
-        
-        resp = redshift_data.execute_statement(
+        print(f"🔍 Analizando duplicados en {table_name} por columna {id_col}...")
+
+        # 1️⃣ Contar cuántos IDs tienen duplicados
+        count_sql = f"""
+            SELECT COUNT(*) 
+            FROM (
+                SELECT {id_col}
+                FROM {table_name}
+                GROUP BY {id_col}
+                HAVING COUNT(*) > 1
+            ) dup;
+        """
+        resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=count_sql)
+
+        while True:
+            desc = redshift_data.describe_statement(Id=resp['Id'])
+            if desc["Status"] == "FINISHED":
+                result = redshift_data.get_statement_result(Id=resp['Id'])
+                duplicate_ids = int(result["Records"][0][0]["longValue"])
+                print(f"📊 Se encontraron {duplicate_ids} IDs con duplicados en {table_name}.")
+                break
+            elif desc["Status"] == "FAILED":
+                print(f"❌ Error al contar duplicados: {desc['Error']}")
+                return
+            time.sleep(1)
+
+        if duplicate_ids == 0:
+            print("✅ No hay duplicados para eliminar.")
+            return
+
+        # 2️⃣ Eliminar duplicados conservando una fila (usando CTE + ROW_NUMBER)
+        delete_sql = f"""
+            DELETE FROM {table_name}
+            USING (
+                SELECT {id_col}, ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY {id_col}) AS rn
+                FROM {table_name}
+            ) t
+            WHERE {table_name}.{id_col} = t.{id_col}
+            AND t.rn > 1;
+        """
+
+        print("🧹 Ejecutando eliminación de duplicados...")
+        print(delete_sql)
+
+        resp_del = redshift_data.execute_statement(
             Database=database,
             WorkgroupName=workgroup,
             Sql=delete_sql
         )
-        
-        # Esperar finalización
+
+        # 3️⃣ Esperar y loguear resultado
         while True:
-            desc = redshift_data.describe_statement(Id=resp['Id'])
+            desc = redshift_data.describe_statement(Id=resp_del['Id'])
             if desc['Status'] == 'FINISHED':
                 print(f"✅ Duplicados eliminados de {table_name}")
                 break
@@ -726,7 +757,19 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
                 print(f"❌ Error eliminando duplicados: {desc['Error']}")
                 break
             time.sleep(1)
-            
+
+        # 4️⃣ Verificar cantidad final de filas
+        verify_sql = f"SELECT COUNT(*) FROM {table_name};"
+        resp_verify = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=verify_sql)
+        while True:
+            desc = redshift_data.describe_statement(Id=resp_verify['Id'])
+            if desc["Status"] == "FINISHED":
+                result = redshift_data.get_statement_result(Id=resp_verify['Id'])
+                total_rows = int(result["Records"][0][0]["longValue"])
+                print(f"📋 Total final de filas en {table_name}: {total_rows}")
+                break
+            time.sleep(1)
+
     except Exception as e:
         print(f"⚠️ Error en eliminación de duplicados: {str(e)}")
 
