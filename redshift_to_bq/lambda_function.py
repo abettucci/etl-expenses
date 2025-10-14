@@ -122,6 +122,18 @@ def convert_column_types(df, table_name):
             'total_ticket_bruto': 'float64',
             'total_ticket_meli': 'float64'
         }
+    elif table_name == 'dim_producto':
+        type_mapping = {
+            'product_id': 'int64',
+            'grupo_producto' : 'string',
+            'nombre_producto' : 'string',
+            'ean' : 'string'
+        }
+    elif table_name == 'archivos_ingestados':
+        type_mapping = {
+            'id': 'string',
+            'ins_dttm': 'datetime64[ns]'
+        }
     
     audit_cols_mappings = {
         'INS_DTTM': 'datetime64[ns]',
