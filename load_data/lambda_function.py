@@ -691,118 +691,6 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
     
     return df_fixed
 
-def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, id_col='operation_id'):
-    """
-    Elimina filas completamente duplicadas de una tabla Redshift Serverless,
-    dejando solo una copia exacta de cada fila.
-    Incluye logs con diagnósticos, ejemplos de duplicados y conteos antes y después.
-    """
-    import time
-
-    try:
-        print(f"🔍 Analizando duplicados en {table_name} por columna '{id_col}'...")
-
-        # 1️⃣ Contar cuántos grupos tienen duplicados (solo para diagnóstico)
-        count_sql = f"""
-            SELECT COUNT(*) 
-            FROM (
-                SELECT {id_col}
-                FROM {table_name}
-                GROUP BY {id_col}
-                HAVING COUNT(*) > 1
-            ) dup;
-        """
-        resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=count_sql)
-        while True:
-            desc = redshift_data.describe_statement(Id=resp['Id'])
-            if desc["Status"] == "FINISHED":
-                result = redshift_data.get_statement_result(Id=resp['Id'])
-                duplicate_ids = int(result["Records"][0][0]["longValue"])
-                print(f"📊 Se encontraron {duplicate_ids} valores de '{id_col}' con duplicados.")
-                break
-            elif desc["Status"] == "FAILED":
-                print(f"❌ Error al contar duplicados: {desc['Error']}")
-                return
-            time.sleep(1)
-
-        # 2️⃣ Mostrar ejemplos de duplicados
-        preview_sql = f"""
-            SELECT {id_col}, COUNT(*) AS cantidad
-            FROM {table_name}
-            GROUP BY {id_col}
-            HAVING COUNT(*) > 1
-            ORDER BY cantidad DESC
-            LIMIT 10;
-        """
-        resp_prev = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=preview_sql)
-        while True:
-            desc = redshift_data.describe_statement(Id=resp_prev['Id'])
-            if desc["Status"] == "FINISHED":
-                result = redshift_data.get_statement_result(Id=resp_prev['Id'])
-                if result["Records"]:
-                    print("🔎 Ejemplo de IDs duplicados:")
-                    for row in result["Records"]:
-                        id_val = list(row[0].values())[0]
-                        count_val = list(row[1].values())[0]
-                        print(f"   → {id_val} (x{count_val})")
-                break
-            elif desc["Status"] == "FAILED":
-                break
-            time.sleep(1)
-
-        # 3️⃣ Eliminar duplicados exactos (todas las columnas iguales)
-        #    Conserva una única copia por conjunto de valores idénticos.
-        delete_sql = f"""
-            DELETE FROM {table_name}
-            WHERE ({id_col}, categoria, producto, cantidad, peso, precio_unit, monto_total, ean,
-                   product_id, grupo_producto, nro_ticket, fecha, total_ticket_bruto, total_ticket_meli)
-            IN (
-                SELECT {id_col}, categoria, producto, cantidad, peso, precio_unit, monto_total, ean,
-                       product_id, grupo_producto, nro_ticket, fecha, total_ticket_bruto, total_ticket_meli
-                FROM (
-                    SELECT *,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY {id_col}, categoria, producto, cantidad, peso, precio_unit, monto_total, ean,
-                                            product_id, grupo_producto, nro_ticket, fecha, total_ticket_bruto, total_ticket_meli
-                               ORDER BY {id_col}
-                           ) AS rn
-                    FROM {table_name}
-                ) sub
-                WHERE rn > 1
-            );
-        """
-
-        print("🧹 Ejecutando eliminación de duplicados exactos...")
-        print(delete_sql)
-
-        resp_del = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=delete_sql)
-
-        # 4️⃣ Esperar finalización
-        while True:
-            desc = redshift_data.describe_statement(Id=resp_del['Id'])
-            if desc['Status'] == 'FINISHED':
-                print(f"✅ Duplicados eliminados correctamente en {table_name}.")
-                break
-            elif desc['Status'] == 'FAILED':
-                print(f"❌ Error eliminando duplicados: {desc['Error']}")
-                return
-            time.sleep(1)
-
-        # 5️⃣ Verificar cantidad final de filas
-        verify_sql = f"SELECT COUNT(*) FROM {table_name};"
-        resp_verify = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=verify_sql)
-        while True:
-            desc = redshift_data.describe_statement(Id=resp_verify['Id'])
-            if desc["Status"] == "FINISHED":
-                result = redshift_data.get_statement_result(Id=resp_verify['Id'])
-                total_rows = int(result["Records"][0][0]["longValue"])
-                print(f"📋 Total final de filas en {table_name}: {total_rows}")
-                break
-            time.sleep(1)
-
-    except Exception as e:
-        print(f"⚠️ Error en eliminación de duplicados: {str(e)}")
-
 def delete_tmp_files_in_s3(s3, bucket_name):
     """
     Borra todos los archivos de la carpeta tmp/ en S3
@@ -878,8 +766,7 @@ def get_redshift_table_data(redshift_data):
             break
         else:
             time.sleep(1)
-
-    print(df)
+    return df
 
 def lambda_handler(event,context):
     try:
@@ -988,10 +875,28 @@ def lambda_handler(event,context):
             aggregate_table_in_redshift(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
             add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')      
 
-            get_redshift_table_data(redshift_data)
+            redshift_table_df = get_redshift_table_data(redshift_data)
+            print(redshift_table_df)
 
             # aca meter un borrado de duplicados por operation_id de la tabla de carrefour_data para dejar la tabla de redshift limpia
-            delete_duplicates_by_col_id(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
+            print("🔄 Mergeando datos existentes con nuevos...")
+            df_combined = pd.concat([redshift_table_df, df], ignore_index=True)
+
+            # 3️⃣ Eliminar duplicados por operation_id (o lo que definas)
+            id_col = 'operation_id'
+            df_combined.drop_duplicates(subset=[id_col], keep='first', inplace=True)
+            print(f"✅ DataFrame combinado sin duplicados: {len(df_combined)} filas totales.")
+
+            # 4️⃣ Reescribir la tabla en Redshift (modo truncate + insert)
+            print("🧹 Limpiando tabla en Redshift...")
+            delete_sql = f"TRUNCATE TABLE {table_name};"
+            redshift_data.execute_statement(Database='dev', WorkgroupName='pdf-etl-workgroup', Sql=delete_sql)
+            print("✅ Tabla vaciada correctamente.")
+
+            # 5️⃣ Insertar dataframe completo otra vez (puede usar tu función copy o insert batch)
+            print("📤 Subiendo DataFrame deduplicado a Redshift...")
+            insert_df_into_redshift_copy_fixed(df_combined, table_name)
+            print(f"{len(df_combined)} filas persistidas en {table_name}.")
 
             # despues nos quedaria limpiar los archivos de "tmp/" de s3 => borrar todos ya que solo se usan para migrar a redshift lo de "raw"
             delete_tmp_files_in_s3(s3, bucket)
