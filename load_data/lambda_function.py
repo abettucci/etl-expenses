@@ -693,15 +693,16 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
 
 def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, id_col='operation_id'):
     """
-    Elimina duplicados en una tabla Redshift Serverless conservando una fila por cada valor de id_col.
-    Incluye logs detallados: cuántos IDs tienen duplicados, ejemplos y total final de filas.
+    Elimina filas completamente duplicadas de una tabla Redshift Serverless,
+    dejando solo una copia exacta de cada fila.
+    Incluye logs con diagnósticos, ejemplos de duplicados y conteos antes y después.
     """
     import time
 
     try:
         print(f"🔍 Analizando duplicados en {table_name} por columna '{id_col}'...")
 
-        # 1️⃣ Contar cuántos IDs tienen duplicados
+        # 1️⃣ Contar cuántos grupos tienen duplicados (solo para diagnóstico)
         count_sql = f"""
             SELECT COUNT(*) 
             FROM (
@@ -712,7 +713,6 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
             ) dup;
         """
         resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=count_sql)
-
         while True:
             desc = redshift_data.describe_statement(Id=resp['Id'])
             if desc["Status"] == "FINISHED":
@@ -725,11 +725,7 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
                 return
             time.sleep(1)
 
-        if duplicate_ids == 0:
-            print("✅ No hay duplicados para eliminar.")
-            return
-
-        # 2️⃣ Mostrar algunos ejemplos de duplicados
+        # 2️⃣ Mostrar ejemplos de duplicados
         preview_sql = f"""
             SELECT {id_col}, COUNT(*) AS cantidad
             FROM {table_name}
@@ -754,20 +750,31 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
                 break
             time.sleep(1)
 
-        # 3️⃣ Eliminar duplicados conservando una fila por id_col
+        # 3️⃣ Eliminar duplicados exactos (todas las columnas iguales)
+        #    Conserva una única copia por conjunto de valores idénticos.
         delete_sql = f"""
-            WITH duplicates AS (
-                SELECT *,
-                       ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY {id_col}) AS rn
-                FROM {table_name}
-            )
             DELETE FROM {table_name}
-            USING duplicates
-            WHERE {table_name}.{id_col} = duplicates.{id_col}
-              AND duplicates.rn > 1;
+            WHERE ({id_col}, categoria, producto, cantidad, peso, precio_unit, monto_total, ean,
+                   product_id, grupo_producto, nro_ticket, fecha, total_ticket_bruto, total_ticket_meli)
+            IN (
+                SELECT {id_col}, categoria, producto, cantidad, peso, precio_unit, monto_total, ean,
+                       product_id, grupo_producto, nro_ticket, fecha, total_ticket_bruto, total_ticket_meli
+                FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY {id_col}, categoria, producto, cantidad, peso, precio_unit, monto_total, ean,
+                                            product_id, grupo_producto, nro_ticket, fecha, total_ticket_bruto, total_ticket_meli
+                               ORDER BY {id_col}
+                           ) AS rn
+                    FROM {table_name}
+                ) sub
+                WHERE rn > 1
+            );
         """
 
-        print("🧹 Ejecutando eliminación de duplicados...")
+        print("🧹 Ejecutando eliminación de duplicados exactos...")
+        print(delete_sql)
+
         resp_del = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=delete_sql)
 
         # 4️⃣ Esperar finalización
@@ -781,7 +788,7 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
                 return
             time.sleep(1)
 
-        # 5️⃣ Verificar cantidad final
+        # 5️⃣ Verificar cantidad final de filas
         verify_sql = f"SELECT COUNT(*) FROM {table_name};"
         resp_verify = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=verify_sql)
         while True:
