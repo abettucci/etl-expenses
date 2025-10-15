@@ -693,13 +693,15 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
 
 def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, id_col='operation_id'):
     """
-    Elimina duplicados en una tabla de Redshift, conservando una fila por cada valor de id_col.
-    Incluye logs de cantidad de duplicados detectados y filas eliminadas.
+    Elimina duplicados en una tabla Redshift Serverless conservando una fila por cada valor de id_col.
+    Incluye logs detallados: cuántos IDs tienen duplicados, ejemplos y total final de filas.
     """
+    import time
+
     try:
         print(f"🔍 Analizando duplicados en {table_name} por columna '{id_col}'...")
 
-        # 1️⃣ Contar IDs duplicados
+        # 1️⃣ Contar cuántos IDs tienen duplicados
         count_sql = f"""
             SELECT COUNT(*) 
             FROM (
@@ -710,6 +712,7 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
             ) dup;
         """
         resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=count_sql)
+
         while True:
             desc = redshift_data.describe_statement(Id=resp['Id'])
             if desc["Status"] == "FINISHED":
@@ -726,12 +729,13 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
             print("✅ No hay duplicados para eliminar.")
             return
 
-        # 2️⃣ Previsualizar IDs duplicados (opcional, máximo 10)
+        # 2️⃣ Mostrar algunos ejemplos de duplicados
         preview_sql = f"""
-            SELECT {id_col}, COUNT(*) as cantidad
+            SELECT {id_col}, COUNT(*) AS cantidad
             FROM {table_name}
             GROUP BY {id_col}
             HAVING COUNT(*) > 1
+            ORDER BY cantidad DESC
             LIMIT 10;
         """
         resp_prev = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=preview_sql)
@@ -742,61 +746,39 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
                 if result["Records"]:
                     print("🔎 Ejemplo de IDs duplicados:")
                     for row in result["Records"]:
-                        print(f"   → {list(row[0].values())[0]} (x{list(row[1].values())[0]})")
+                        id_val = list(row[0].values())[0]
+                        count_val = list(row[1].values())[0]
+                        print(f"   → {id_val} (x{count_val})")
                 break
             elif desc["Status"] == "FAILED":
                 break
             time.sleep(1)
 
-        # 3️⃣ Eliminar duplicados conservando solo una fila por cada grupo de id_col
-        delete_sql = f"""
-            DELETE FROM {table_name}
-            WHERE (id_col, ctid) IN (
-                SELECT {id_col}, ctid
-                FROM (
-                    SELECT {id_col}, ctid,
-                           ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY {id_col}) AS rn
-                    FROM {table_name}
-                ) sub
-                WHERE rn > 1
-            );
-        """
-        # ⚠️ Redshift no tiene CTID como PostgreSQL → usamos otra técnica
-        # Usaremos una CTE y eliminamos con JOIN, garantizando que se conserva una fila por grupo
-
+        # 3️⃣ Eliminar duplicados conservando una fila por id_col
         delete_sql = f"""
             WITH duplicates AS (
-                SELECT {id_col},
-                       MIN(ctid) AS keep_ctid
-                FROM (
-                    SELECT {id_col}, CAST(row_number() OVER (PARTITION BY {id_col} ORDER BY {id_col}) AS BIGINT) AS rn,
-                           sys_extract_trailing('_', sys_guid()) as ctid
-                    FROM {table_name}
-                )
-                GROUP BY {id_col}
+                SELECT *,
+                       ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY {id_col}) AS rn
+                FROM {table_name}
             )
             DELETE FROM {table_name}
-            USING (
-                SELECT {id_col},
-                       CAST(row_number() OVER (PARTITION BY {id_col} ORDER BY {id_col}) AS BIGINT) AS rn
-                FROM {table_name}
-            ) dup
-            WHERE {table_name}.{id_col} = dup.{id_col}
-              AND dup.rn > 1;
+            USING duplicates
+            WHERE {table_name}.{id_col} = duplicates.{id_col}
+              AND duplicates.rn > 1;
         """
 
         print("🧹 Ejecutando eliminación de duplicados...")
         resp_del = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=delete_sql)
 
-        # 4️⃣ Esperar y loguear resultado
+        # 4️⃣ Esperar finalización
         while True:
             desc = redshift_data.describe_statement(Id=resp_del['Id'])
             if desc['Status'] == 'FINISHED':
-                print(f"✅ Duplicados eliminados correctamente en {table_name}")
+                print(f"✅ Duplicados eliminados correctamente en {table_name}.")
                 break
             elif desc['Status'] == 'FAILED':
                 print(f"❌ Error eliminando duplicados: {desc['Error']}")
-                break
+                return
             time.sleep(1)
 
         # 5️⃣ Verificar cantidad final
@@ -813,7 +795,7 @@ def delete_duplicates_by_col_id(table_name, redshift_data, database, workgroup, 
 
     except Exception as e:
         print(f"⚠️ Error en eliminación de duplicados: {str(e)}")
-        
+
 def delete_tmp_files_in_s3(s3, bucket_name):
     """
     Borra todos los archivos de la carpeta tmp/ en S3
