@@ -895,7 +895,7 @@ def lambda_handler(event,context):
 
             # 5️⃣ Insertar dataframe completo otra vez (puede usar tu función copy o insert batch)
             print("📤 Subiendo DataFrame deduplicado a Redshift...")
-            insert_df_into_redshift_copy_fixed(df_combined, table_name)
+            insert_df_into_redshift_copy_fixed(redshift_data, s3, df_combined, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
             print(f"{len(df_combined)} filas persistidas en {table_name}.")
 
             # despues nos quedaria limpiar los archivos de "tmp/" de s3 => borrar todos ya que solo se usan para migrar a redshift lo de "raw"
