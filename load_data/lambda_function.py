@@ -768,6 +768,54 @@ def get_redshift_table_data(redshift_data):
             time.sleep(1)
     return df
 
+def persist_to_redshift(redshift_data, s3_client, df_existing, df_new, table_name, bucket_name, database, workgroup, iam_role):
+    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+    print(f"🧩 Combinadas {len(df_combined)} filas (nuevas + existentes)")
+    print('df_combined: ', df_combined)
+    
+    df_dedup = df_combined.drop_duplicates()
+    print(f"🧹 {len(df_combined) - len(df_dedup)} duplicados eliminados — quedan {len(df_dedup)} filas finales")
+
+    csv_buffer = io.StringIO()
+    df_dedup.to_csv(csv_buffer, index=False)
+    s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
+    s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=csv_buffer.getvalue())
+    s3_path = f"s3://{bucket_name}/{s3_key}"
+    print(f"📤 CSV con {len(df_dedup)} filas subido a {s3_path}")
+
+    truncate_sql = f"TRUNCATE TABLE {table_name};"
+    redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
+    print("🧹 Tabla vaciada correctamente")
+
+    copy_sql = f"""
+        COPY {table_name}
+        FROM '{s3_path}'
+        IAM_ROLE '{iam_role}'
+        CSV
+        IGNOREHEADER 1
+        DELIMITER ','
+        EMPTYASNULL
+        BLANKSASNULL
+        TRUNCATECOLUMNS
+        MAXERROR 100;
+    """
+    print("🚀 Ejecutando COPY final (reescritura completa)...")
+    resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=copy_sql)
+
+    # Polling del COPY
+    copy_id = resp["Id"]
+    while True:
+        desc = redshift_data.describe_statement(Id=copy_id)
+        if desc["Status"] == "FINISHED":
+            print("✅ Reescritura completada con éxito.")
+            break
+        elif desc["Status"] == "FAILED":
+            print(f"❌ Error en COPY: {desc.get('Error')}")
+            break
+        time.sleep(2)
+
+    return len(df_dedup)
+
 def lambda_handler(event,context):
     try:
         redshift_data = boto3.client('redshift-data')
@@ -876,27 +924,12 @@ def lambda_handler(event,context):
             add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')      
 
             redshift_table_df = get_redshift_table_data(redshift_data)
-            print(redshift_table_df)
+            print('redshift_table_df:', redshift_table_df)
+            print('df:' , df)
 
-            # aca meter un borrado de duplicados por operation_id de la tabla de carrefour_data para dejar la tabla de redshift limpia
-            print("🔄 Mergeando datos existentes con nuevos...")
-            df_combined = pd.concat([redshift_table_df, df], ignore_index=True)
-
-            # 3️⃣ Eliminar duplicados por operation_id (o lo que definas)
-            id_col = 'operation_id'
-            df_combined.drop_duplicates(subset=[id_col], keep='first', inplace=True)
-            print(f"✅ DataFrame combinado sin duplicados: {len(df_combined)} filas totales.")
-
-            # 4️⃣ Reescribir la tabla en Redshift (modo truncate + insert)
-            print("🧹 Limpiando tabla en Redshift...")
-            delete_sql = f"TRUNCATE TABLE {table_name};"
-            redshift_data.execute_statement(Database='dev', WorkgroupName='pdf-etl-workgroup', Sql=delete_sql)
-            print("✅ Tabla vaciada correctamente.")
-
-            # 5️⃣ Insertar dataframe completo otra vez (puede usar tu función copy o insert batch)
-            print("📤 Subiendo DataFrame deduplicado a Redshift...")
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df_combined, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-            print(f"{len(df_combined)} filas persistidas en {table_name}.")
+            print("🧹 Eliminando duplicados por operation_id en Redshift...")
+            filas_finales = persist_to_redshift(redshift_data, s3, redshift_table_df, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            print(f"✅ Persistencia completada: {filas_finales} filas únicas en {table_name}.")
 
             # despues nos quedaria limpiar los archivos de "tmp/" de s3 => borrar todos ya que solo se usan para migrar a redshift lo de "raw"
             delete_tmp_files_in_s3(s3, bucket)
