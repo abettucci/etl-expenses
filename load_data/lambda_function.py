@@ -137,7 +137,7 @@ def generar_diccionario_normalizacion(productos, threshold=85):
     return normalizacion
 
 def slugify(text):
-    return re.sub(r'[^a-z0-9]+', '_', text.lower()).strip('_')
+    return re.sub(r'[^a-z0-9]+', '', text.lower()).strip('')
 
 def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_name, redshift_data, database, workgroup, pk, flag_check_ids_repetidos):
     # Primero vemos si ya existe la tabla 'dim_producto', si no existe la creamos con pk = 'product_id'   
@@ -337,7 +337,7 @@ def add_concatenated_column(table_name, redshift_data, database, workgroup):
     #quizas tenga que sumar monto al concat
     update_sql = f"""
         UPDATE {table_name}
-        SET operation_id = CONCAT(CONCAT(CONCAT(CAST(nro_ticket AS VARCHAR), '_'),CONCAT(CONCAT(CAST(product_id AS VARCHAR), '_'),CONCAT(CAST(TRUNC(monto_total,2) AS VARCHAR), '_'))),CAST(fecha AS VARCHAR));
+        SET operation_id = CONCAT(CONCAT(CONCAT(CAST(nro_ticket AS VARCHAR), ''),CONCAT(CONCAT(CAST(product_id AS VARCHAR), ''),CONCAT(CAST(TRUNC(monto_total,2) AS VARCHAR), '_'))),CAST(fecha AS VARCHAR));
     """
 
     resp = redshift_data.execute_statement(
@@ -806,9 +806,21 @@ def persist_to_redshift(redshift_data, s3_client, df_existing, df_new, table_nam
     s3_path = f"s3://{bucket_name}/{s3_key}"
     print(f"📤 CSV con {len(df_dedup)} filas subido a {s3_path}")
 
+    # Vaciar tabla y ESPERAR a que termine
     truncate_sql = f"TRUNCATE TABLE {table_name};"
-    redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
-    print("🧹 Tabla vaciada correctamente")
+    truncate_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
+    
+    # IMPORTANTE: Esperar a que el TRUNCATE termine antes de hacer COPY
+    truncate_id = truncate_resp["Id"]
+    while True:
+        desc = redshift_data.describe_statement(Id=truncate_id)
+        if desc["Status"] == "FINISHED":
+            print("🧹 Tabla vaciada correctamente")
+            break
+        elif desc["Status"] == "FAILED":
+            print(f"❌ Error al vaciar tabla: {desc.get('Error')}")
+            raise Exception(f"TRUNCATE failed: {desc.get('Error')}")
+        time.sleep(1)
 
     copy_sql = f"""
         COPY {table_name}
@@ -863,10 +875,21 @@ def persist_to_redshift_dedup_only(redshift_data, s3_client, df_all_data, table_
     s3_path = f"s3://{bucket_name}/{s3_key}"
     print(f"📤 CSV con {len(df_dedup)} filas subido a {s3_path}")
 
-    # Vaciar tabla
+    # Vaciar tabla y ESPERAR a que termine
     truncate_sql = f"TRUNCATE TABLE {table_name};"
-    redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
-    print("🧹 Tabla vaciada correctamente")
+    truncate_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
+    
+    # IMPORTANTE: Esperar a que el TRUNCATE termine antes de hacer COPY
+    truncate_id = truncate_resp["Id"]
+    while True:
+        desc = redshift_data.describe_statement(Id=truncate_id)
+        if desc["Status"] == "FINISHED":
+            print("🧹 Tabla vaciada correctamente")
+            break
+        elif desc["Status"] == "FAILED":
+            print(f"❌ Error al vaciar tabla: {desc.get('Error')}")
+            raise Exception(f"TRUNCATE failed: {desc.get('Error')}")
+        time.sleep(1)
 
     # Recargar datos sin duplicados
     copy_sql = f"""
@@ -1029,3 +1052,26 @@ def lambda_handler(event,context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
+
+# s3_client = boto3.client('s3')
+# bucket_name = 'market-tickets'
+# folder = 'processed/'
+# response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+# csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
+
+# dtype = {}
+# for csv_key in csvs:
+#     response = s3_client.get_object(Bucket=bucket_name, Key=csv_key)
+#     if csv_key.endswith(".csv"):
+#         df = pd.read_csv(io.BytesIO(response['Body'].read()),dtype=dtype)
+
+#     event = {
+#         "body": json.dumps({
+#             "etl_flow": 'TICKET',
+#             "bucket": 'market-tickets',
+#             "key": csv_key
+#         })
+#     }
+
+#     lambda_handler(event,'')
+#     exit()
