@@ -484,6 +484,16 @@ resource "google_pubsub_subscription" "gmail_subscription_market_tickets" {
   name  = "market-tickets-sub-to-api-gateway"
   topic = google_pubsub_topic.gmail_events.id
   
+  # Configuración del expiration policy
+  expiration_policy {
+    ttl = "864000s"  # 10 días en segundos (máximo permitido)
+  }
+
+  # Otras configuraciones recomendadas
+  ack_deadline_seconds = 300
+  retain_acked_messages = true
+  message_retention_duration = "604800s"  # 7 días
+
   push_config {
     push_endpoint = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
   }

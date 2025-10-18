@@ -149,13 +149,15 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
     """
 
     if flag_check_ids_repetidos == False:
-        flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, database, workgroup, pk)
+        flag_exists, tiene_datos = create_redshift_table_from_df(
+            df, columnas_sql, table_name, redshift_data, database, workgroup, pk
+        )
     else:
         flag_exists, tiene_datos = False, False
 
-    # Luego cargamos los datos en la tabla dim_producto
-    # Si la tabla no existia, leemos todas las filas de las columnas de nombre_producto y EAN de la tabla de redshift de carrefour_data
-    # y creamos el diccionario inicial que va a insertarse en la tabla dim_producto
+    # ------------------------------------------------------------------------------------------
+    # Si la tabla NO existe o está vacía → inicializamos la dimensión desde carrefour_data
+    # ------------------------------------------------------------------------------------------
     if flag_exists == False or tiene_datos == False:
         query_distinct_products = f"""
             SELECT DISTINCT producto, ean
@@ -173,50 +175,58 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
             desc = redshift_data.describe_statement(Id=response['Id'])
             if desc['Status'] == 'FINISHED':
                 if desc['HasResultSet']:
-                    result = redshift_data.get_statement_result(Id=response['Id'])     
-                    if result['Records'] == []:
-                        pass
-                        print('Tabla vacia, se cargan todos los gastos')
-                    else:                    
+                    result = redshift_data.get_statement_result(Id=response['Id'])
+                    if not result['Records']:
+                        print('Tabla vacía, se cargan todos los productos')
+                    else:
                         for record in result['Records']:
                             nombre_producto = record[0].get('stringValue', None)
                             ean = (
-                                record[1].get('stringValue') or
-                                record[1].get('doubleValue') or
-                                record[1].get('longValue') or
-                                None
+                                record[1].get('stringValue')
+                                or record[1].get('doubleValue')
+                                or record[1].get('longValue')
+                                or None
                             )
                             if ean is not None:
                                 ean = str(ean).split('.')[0]
-
                             tupla = (nombre_producto, ean)
                             set_nombre_producto_ean.add(tupla)
                 break
             elif desc['Status'] == 'FAILED':
                 print("Error al consultar Redshift:", desc['Error'])
                 break
-        
-        normalizacion_productos = {}
+
+        # Normalizamos y generamos el DataFrame base
         df_dim_producto = pd.DataFrame(list(set_nombre_producto_ean), columns=["nombre_producto", "ean"])
+
+        # Si hay ean nulo, lo reemplazamos temporalmente para no perder el registro
+        df_dim_producto['ean'] = df_dim_producto['ean'].fillna('NO_EAN')
+
+        # Generamos grupo_producto (usando tu función)
         nombres_unicos = df_dim_producto['nombre_producto'].unique().tolist()
-        normalizacion_productos.update(generar_diccionario_normalizacion(nombres_unicos))
+        normalizacion_productos = generar_diccionario_normalizacion(nombres_unicos)
         df_dim_producto['grupo_producto'] = df_dim_producto['nombre_producto'].map(normalizacion_productos)
 
-        # ver si no lo modifico por una unica funcion que se usa en ambas condiciones del if
-        df_dim_producto["product_id"] = pd.factorize(df_dim_producto["nombre_producto"].astype(str) + "_" + df_dim_producto["ean"].astype(str))[0] + 1
-        df_dim_producto = df_dim_producto.drop_duplicates(subset=['nombre_producto','ean'])
+        # Asignamos product_id incremental
+        df_dim_producto["product_id"] = pd.factorize(
+            df_dim_producto["nombre_producto"].astype(str) + "_" + df_dim_producto["ean"].astype(str)
+        )[0] + 1
 
-        # insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
-        insert_df_into_redshift_copy_fixed(redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+        df_dim_producto = df_dim_producto.drop_duplicates(subset=['nombre_producto', 'ean'])
+
+        insert_df_into_redshift_copy_fixed(
+            redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role
+        )
+
         print(f"✅ Cargamos los primeros datos en la tabla {table_name}")
-
         return df_dim_producto
 
-    # Si la tabla dim_producto ya existe, vemos si el nombre_producto de input del nuevo archivo a ingestar ya existe en la tabla y en caso de no
-    # estar, lo agregamos.
-    else: # flag_exists == True y no es vacia
+    # ------------------------------------------------------------------------------------------
+    # Si la tabla dim_producto ya existe y tiene datos → agregamos nuevos productos
+    # ------------------------------------------------------------------------------------------
+    else:
         query_distinct_product_id = f"""
-            SELECT DISTINCT nombre_producto, ean
+            SELECT DISTINCT nombre_producto, ean, product_id
             FROM dim_producto;
         """
 
@@ -227,59 +237,70 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
         )
 
         set_nombre_producto_ean = set()
+        max_product_id = 0
         while True:
             desc = redshift_data.describe_statement(Id=response['Id'])
             if desc['Status'] == 'FINISHED':
                 if desc['HasResultSet']:
-                    result = redshift_data.get_statement_result(Id=response['Id'])     
-                    if result['Records'] == []:
-                        pass
-                        print('Tabla vacia, se cargan todos los gastos')
-                    else:                
+                    result = redshift_data.get_statement_result(Id=response['Id'])
+                    if not result['Records']:
+                        print('Tabla vacía, se cargan todos los productos')
+                    else:
                         for record in result['Records']:
                             nombre_producto = record[0].get('stringValue', None)
                             ean = (
-                                record[1].get('stringValue') or
-                                record[1].get('doubleValue') or
-                                record[1].get('longValue') or
-                                None # o usar np.NaN pero implica importar Numpy solo para esto
+                                record[1].get('stringValue')
+                                or record[1].get('doubleValue')
+                                or record[1].get('longValue')
+                                or None
                             )
                             if ean is not None:
                                 ean = str(ean).split('.')[0]
-
                             tupla = (nombre_producto, ean)
                             set_nombre_producto_ean.add(tupla)
+                            # Obtenemos el último product_id
+                            if len(record) > 2 and record[2].get('longValue'):
+                                max_product_id = max(max_product_id, record[2]['longValue'])
                 break
             elif desc['Status'] == 'FAILED':
                 print("Error al consultar Redshift:", desc['Error'])
                 break
-        
-        df['ean'] = df['ean'].where(pd.notna(df['ean']), None)
+
+        # Reemplazar NaN en ean y detectar nuevos productos
+        df['ean'] = df['ean'].where(pd.notna(df['ean']), 'NO_EAN')
         df['existe_en_set'] = [t in set_nombre_producto_ean for t in zip(df['producto'], df['ean'])]
-        df = df.loc[df['existe_en_set']==False]
-        df = df.drop_duplicates(subset=['producto','ean'])
+        df = df.loc[df['existe_en_set'] == False]
+        df = df.drop_duplicates(subset=['producto', 'ean'])
+
+        if df.empty:
+            print("✅ No hay nuevos productos para insertar en dim_producto.")
+            return None
 
         cont = 0
         for producto in list(df['producto'].unique()):
             if cont == 0:
-                product_id = len(set_nombre_producto_ean) + 1
+                product_id = max_product_id + 1
                 cont += 1
             else:
                 product_id += 1
 
             normalizacion_productos = {}
-            ean = df.loc[df['producto']==producto]['ean'].unique()[0]
+            ean = df.loc[df['producto'] == producto]['ean'].unique()[0]
             data = [producto, product_id, ean]
             df_dim_producto = pd.DataFrame([data], columns=["nombre_producto", "product_id", "ean"])
+
+            # Generar grupo_producto
             nombres_unicos = df_dim_producto['nombre_producto'].unique().tolist()
             normalizacion_productos.update(generar_diccionario_normalizacion(nombres_unicos))
             df_dim_producto['grupo_producto'] = df_dim_producto['nombre_producto'].map(normalizacion_productos)
 
-            # insert_df_into_redshift_copy(df_dim_producto, columnas_sql, table_name, redshift_data, database, workgroup, '', '')
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-            print(f"✅ Cargamos un nuevo registro de producto {df_dim_producto[['nombre_producto','product_id','ean']]} en la tabla {table_name}")
-            
-            return df_dim_producto
+            insert_df_into_redshift_copy_fixed(
+                redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role
+            )
+
+            print(f"✅ Cargamos nuevo producto {df_dim_producto[['nombre_producto','product_id','ean']].to_dict(orient='records')} en {table_name}")
+
+        return df_dim_producto
 
 # El objetivo de esta funcion es agregar la columna "product_id" a la tabla carrefour_data para luego crear un "id" para cada fila
 # que va a ser un concatenado de "column_id", "nro_ticket" y "fecha"
@@ -772,7 +793,7 @@ def persist_to_redshift(redshift_data, s3_client, df_existing, df_new, table_nam
     df_combined = pd.concat([df_existing, df_new], ignore_index=True)
     print(f"🧩 Combinadas {len(df_combined)} filas (nuevas + existentes)")
     print('df_combined: ', df_combined)
-    
+
     df_dedup = df_combined.drop_duplicates()
     print(f"🧹 {len(df_combined) - len(df_dedup)} duplicados eliminados — quedan {len(df_dedup)} filas finales")
 
@@ -874,7 +895,6 @@ def lambda_handler(event,context):
             column_names_insert = [clean_column_name(col) for col in df.columns]
             column_names_insert += ["REPORT_ID", "REPORT_DATE"]
             columnas_sql_insert = ", ".join(column_names_insert)
-            # insert_df_into_redshift_copy(df, columnas_sql_insert, table_name, 'dev', 'pdf-etl-workgroup', report_id, report_date)
             insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
             tables = [table_name] 
@@ -887,14 +907,8 @@ def lambda_handler(event,context):
 
             print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
             flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
-
-            # column_names_insert = [clean_column_name(col) for col in df.columns]
-            # insert_df_into_redshift(df, '', table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
-
-            # Mostrar diagnóstico inicial
-            print(f"🔍 DIAGNÓSTICO INICIAL:")
-            print(f"DataFrame original: {df.shape[0]} filas, {df.shape[1]} columnas")
-            print(f"Columnas: {list(df.columns)}")
+            
+            print('df:' , df)
 
             insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
@@ -909,7 +923,6 @@ def lambda_handler(event,context):
             column_uploaded_files = ",\n  ".join(column_defs)
             flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
             
-            # insert_df_into_redshift_copy(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', '', '') 
             insert_df_into_redshift_copy_fixed(redshift_data, s3, df, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
             # Crear tabla de dimensiones de producto o utilizarla si ya existe
@@ -925,7 +938,6 @@ def lambda_handler(event,context):
 
             redshift_table_df = get_redshift_table_data(redshift_data)
             print('redshift_table_df:', redshift_table_df)
-            print('df:' , df)
 
             print("🧹 Eliminando duplicados por operation_id en Redshift...")
             filas_finales = persist_to_redshift(redshift_data, s3, redshift_table_df, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
@@ -943,7 +955,6 @@ def lambda_handler(event,context):
             create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
 
             column_names_insert = [clean_column_name(col) for col in df.columns]
-            # insert_df_into_redshift_copy(df, column_names_insert, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', '', '')
             insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
             tables = [table_name]  

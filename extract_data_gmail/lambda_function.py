@@ -579,4 +579,4 @@ def lambda_handler(event, context):
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
 
-reproceso_historico()
+# reproceso_historico()
