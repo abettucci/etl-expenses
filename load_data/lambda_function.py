@@ -788,11 +788,15 @@ def get_redshift_table_data(redshift_data):
     return df
 
 def persist_to_redshift(redshift_data, s3_client, df_existing, df_new, table_name, bucket_name, database, workgroup, iam_role):
+    """
+    Función legacy - combina dos dataframes y elimina duplicados
+    """
     df_combined = pd.concat([df_existing, df_new], ignore_index=True)
     print(f"🧩 Combinadas {len(df_combined)} filas (nuevas + existentes)")
     print('df_combined: ', df_combined)
 
-    df_dedup = df_combined.drop_duplicates()
+    # Eliminar duplicados basándose en operation_id, que es la clave única
+    df_dedup = df_combined.drop_duplicates(subset=['operation_id'], keep='first')
     print(f"🧹 {len(df_combined) - len(df_dedup)} duplicados eliminados — quedan {len(df_dedup)} filas finales")
 
     csv_buffer = io.StringIO()
@@ -819,6 +823,65 @@ def persist_to_redshift(redshift_data, s3_client, df_existing, df_new, table_nam
         MAXERROR 100;
     """
     print("🚀 Ejecutando COPY final (reescritura completa)...")
+    resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=copy_sql)
+
+    # Polling del COPY
+    copy_id = resp["Id"]
+    while True:
+        desc = redshift_data.describe_statement(Id=copy_id)
+        if desc["Status"] == "FINISHED":
+            print("✅ Reescritura completada con éxito.")
+            break
+        elif desc["Status"] == "FAILED":
+            print(f"❌ Error en COPY: {desc.get('Error')}")
+            break
+        time.sleep(2)
+
+    return len(df_dedup)
+
+def persist_to_redshift_dedup_only(redshift_data, s3_client, df_all_data, table_name, bucket_name, database, workgroup, iam_role):
+    """
+    Elimina duplicados de un único DataFrame y lo persiste en Redshift.
+    Usado cuando todos los datos ya están en el DataFrame (viejos + nuevos).
+    """
+    print(f"📊 Total de filas antes de deduplicar: {len(df_all_data)}")
+    
+    # Eliminar duplicados basándose en operation_id
+    df_dedup = df_all_data.drop_duplicates(subset=['operation_id'], keep='first')
+    duplicados_eliminados = len(df_all_data) - len(df_dedup)
+    print(f"🧹 {duplicados_eliminados} duplicados eliminados — quedan {len(df_dedup)} filas únicas")
+
+    if duplicados_eliminados == 0:
+        print("✅ No hay duplicados. No se requiere reescritura.")
+        return len(df_all_data)
+
+    # Subir CSV deduplicado a S3
+    csv_buffer = io.StringIO()
+    df_dedup.to_csv(csv_buffer, index=False)
+    s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
+    s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=csv_buffer.getvalue())
+    s3_path = f"s3://{bucket_name}/{s3_key}"
+    print(f"📤 CSV con {len(df_dedup)} filas subido a {s3_path}")
+
+    # Vaciar tabla
+    truncate_sql = f"TRUNCATE TABLE {table_name};"
+    redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
+    print("🧹 Tabla vaciada correctamente")
+
+    # Recargar datos sin duplicados
+    copy_sql = f"""
+        COPY {table_name}
+        FROM '{s3_path}'
+        IAM_ROLE '{iam_role}'
+        CSV
+        IGNOREHEADER 1
+        DELIMITER ','
+        EMPTYASNULL
+        BLANKSASNULL
+        TRUNCATECOLUMNS
+        MAXERROR 100;
+    """
+    print("🚀 Ejecutando COPY final (reescritura completa sin duplicados)...")
     resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=copy_sql)
 
     # Polling del COPY
@@ -938,7 +1001,9 @@ def lambda_handler(event,context):
             print('redshift_table_df:', redshift_table_df)
 
             print("🧹 Eliminando duplicados por operation_id en Redshift...")
-            filas_finales = persist_to_redshift(redshift_data, s3, redshift_table_df, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            # No pasamos df porque redshift_table_df ya contiene TODOS los datos (viejos + nuevos)
+            # después de que se calculó el operation_id
+            filas_finales = persist_to_redshift_dedup_only(redshift_data, s3, redshift_table_df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
             print(f"✅ Persistencia completada: {filas_finales} filas únicas en {table_name}.")
 
             # despues nos quedaria limpiar los archivos de "tmp/" de s3 => borrar todos ya que solo se usan para migrar a redshift lo de "raw"
@@ -964,26 +1029,3 @@ def lambda_handler(event,context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
-
-# s3_client = boto3.client('s3')
-# bucket_name = 'market-tickets'
-# folder = 'processed/'
-# response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
-# csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
-
-# dtype = {}
-# for csv_key in csvs:
-#     response = s3_client.get_object(Bucket=bucket_name, Key=csv_key)
-#     if csv_key.endswith(".csv"):
-#         df = pd.read_csv(io.BytesIO(response['Body'].read()),dtype=dtype)
-
-#     event = {
-#         "body": json.dumps({
-#             "etl_flow": 'TICKET',
-#             "bucket": 'market-tickets',
-#             "key": csv_key
-#         })
-#     }
-
-#     lambda_handler(event,'')
-#     exit()
