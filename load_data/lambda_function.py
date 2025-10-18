@@ -155,6 +155,13 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
     else:
         flag_exists, tiene_datos = False, False
 
+    df["ean"] = (
+        df["ean"]
+        .astype(str)
+        .replace(["nan", "None", "TRUE", "FALSE", "True", "False"], None)
+        .where(df["ean"].notna(), None)
+    )
+
     # ------------------------------------------------------------------------------------------
     # Si la tabla NO existe o está vacía → inicializamos la dimensión desde carrefour_data
     # ------------------------------------------------------------------------------------------
@@ -196,28 +203,19 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
                 print("Error al consultar Redshift:", desc['Error'])
                 break
 
-        # Normalizamos y generamos el DataFrame base
         df_dim_producto = pd.DataFrame(list(set_nombre_producto_ean), columns=["nombre_producto", "ean"])
 
-        # Si hay ean nulo, lo reemplazamos temporalmente para no perder el registro
-        df_dim_producto['ean'] = df_dim_producto['ean'].fillna('NO_EAN')
+        # Normalización de nombre → grupo_producto
+        normalizacion_productos = generar_diccionario_normalizacion(df_dim_producto["nombre_producto"].unique())
+        df_dim_producto["grupo_producto"] = df_dim_producto["nombre_producto"].map(normalizacion_productos)
 
-        # Generamos grupo_producto (usando tu función)
-        nombres_unicos = df_dim_producto['nombre_producto'].unique().tolist()
-        normalizacion_productos = generar_diccionario_normalizacion(nombres_unicos)
-        df_dim_producto['grupo_producto'] = df_dim_producto['nombre_producto'].map(normalizacion_productos)
-
-        # Asignamos product_id incremental
-        df_dim_producto["product_id"] = pd.factorize(
-            df_dim_producto["nombre_producto"].astype(str) + "_" + df_dim_producto["ean"].astype(str)
-        )[0] + 1
-
-        df_dim_producto = df_dim_producto.drop_duplicates(subset=['nombre_producto', 'ean'])
+        # Asignación de IDs secuenciales incluso si EAN es None
+        df_dim_producto["product_id"] = range(1, len(df_dim_producto) + 1)
+        df_dim_producto.drop_duplicates(subset=["nombre_producto", "ean"], inplace=True)
 
         insert_df_into_redshift_copy_fixed(
-            redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role
+            redshift_data, s3, df_dim_producto, table_name, bucket, "dev", "pdf-etl-workgroup", iam_role
         )
-
         print(f"✅ Cargamos los primeros datos en la tabla {table_name}")
         return df_dim_producto
 
@@ -249,59 +247,59 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
                         for record in result['Records']:
                             nombre_producto = record[0].get('stringValue', None)
                             ean = (
-                                record[1].get('stringValue')
-                                or record[1].get('doubleValue')
-                                or record[1].get('longValue')
+                                record[1].get("stringValue")
+                                or record[1].get("doubleValue")
+                                or record[1].get("longValue")
                                 or None
                             )
                             if ean is not None:
-                                ean = str(ean).split('.')[0]
-                            tupla = (nombre_producto, ean)
-                            set_nombre_producto_ean.add(tupla)
-                            # Obtenemos el último product_id
-                            if len(record) > 2 and record[2].get('longValue'):
-                                max_product_id = max(max_product_id, record[2]['longValue'])
+                                ean = str(ean).split(".")[0]
+                            set_nombre_producto_ean.add((nombre_producto, ean))
                 break
             elif desc['Status'] == 'FAILED':
                 print("Error al consultar Redshift:", desc['Error'])
                 break
+        
+        df["ean"] = (
+            df["ean"]
+            .astype(str)
+            .replace(["nan", "None", "TRUE", "FALSE", "True", "False"], None)
+            .where(df["ean"].notna(), None)
+        )
 
         # Reemplazar NaN en ean y detectar nuevos productos
-        df['ean'] = df['ean'].where(pd.notna(df['ean']), 'NO_EAN')
-        df['existe_en_set'] = [t in set_nombre_producto_ean for t in zip(df['producto'], df['ean'])]
-        df = df.loc[df['existe_en_set'] == False]
-        df = df.drop_duplicates(subset=['producto', 'ean'])
+        df["existe_en_set"] = [t in set_nombre_producto_ean for t in zip(df["producto"], df["ean"])]
+        df_nuevos = df[df["existe_en_set"] == False].drop_duplicates(subset=["producto", "ean"])
 
-        if df.empty:
-            print("✅ No hay nuevos productos para insertar en dim_producto.")
-            return None
+        # Calcular el último product_id actual
+        query_max_id = f"SELECT MAX(product_id) FROM {table_name};"
+        resp_max = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=query_max_id)
+        desc_max = redshift_data.describe_statement(Id=resp_max["Id"])
+        while desc_max["Status"] != "FINISHED":
+            time.sleep(1)
+            desc_max = redshift_data.describe_statement(Id=resp_max["Id"])
+        result_max = redshift_data.get_statement_result(Id=resp_max["Id"])
+        current_max_id = int(result_max["Records"][0][0].get("longValue", 0)) if result_max["Records"][0][0] else 0
 
-        cont = 0
-        for producto in list(df['producto'].unique()):
-            if cont == 0:
-                product_id = max_product_id + 1
-                cont += 1
-            else:
-                product_id += 1
+        new_rows = []
+        for i, row in df_nuevos.iterrows():
+            current_max_id += 1
+            nombre_producto = row["producto"]
+            ean = row["ean"]
+            grupo_producto = generar_diccionario_normalizacion([nombre_producto])[nombre_producto]
+            new_rows.append([nombre_producto, current_max_id, ean, grupo_producto])
 
-            normalizacion_productos = {}
-            ean = df.loc[df['producto'] == producto]['ean'].unique()[0]
-            data = [producto, product_id, ean]
-            df_dim_producto = pd.DataFrame([data], columns=["nombre_producto", "product_id", "ean"])
-
-            # Generar grupo_producto
-            nombres_unicos = df_dim_producto['nombre_producto'].unique().tolist()
-            normalizacion_productos.update(generar_diccionario_normalizacion(nombres_unicos))
-            df_dim_producto['grupo_producto'] = df_dim_producto['nombre_producto'].map(normalizacion_productos)
-
+        if new_rows:
+            df_dim_producto = pd.DataFrame(new_rows, columns=["nombre_producto", "product_id", "ean", "grupo_producto"])
             insert_df_into_redshift_copy_fixed(
-                redshift_data, s3, df_dim_producto, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role
+                redshift_data, s3, df_dim_producto, table_name, bucket, "dev", "pdf-etl-workgroup", iam_role
             )
+            print(f"✅ Se cargaron {len(new_rows)} nuevos productos en {table_name}")
+        else:
+            print("ℹ️ No hay nuevos productos para agregar.")
 
-            print(f"✅ Cargamos nuevo producto {df_dim_producto[['nombre_producto','product_id','ean']].to_dict(orient='records')} en {table_name}")
-
-        return df_dim_producto
-
+        return df_nuevos
+        
 # El objetivo de esta funcion es agregar la columna "product_id" a la tabla carrefour_data para luego crear un "id" para cada fila
 # que va a ser un concatenado de "column_id", "nro_ticket" y "fecha"
 def aggregate_table_in_redshift(table_name, redshift_data, database, workgroup):
