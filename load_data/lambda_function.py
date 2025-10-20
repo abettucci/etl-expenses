@@ -853,71 +853,185 @@ def persist_to_redshift(redshift_data, s3_client, df_existing, df_new, table_nam
 
 def persist_to_redshift_dedup_only(redshift_data, s3_client, df_all_data, table_name, bucket_name, database, workgroup, iam_role):
     """
-    Elimina duplicados de un único DataFrame y lo persiste en Redshift.
-    Usado cuando todos los datos ya están en el DataFrame (viejos + nuevos).
+    Versión que solo usa DELETE (funciona en Redshift Serverless)
     """
     print(f"📊 Total de filas antes de deduplicar: {len(df_all_data)}")
     
-    # Eliminar duplicados basándose en operation_id
+    # Eliminar duplicados
     df_dedup = df_all_data.drop_duplicates(subset=['operation_id'], keep='first')
     duplicados_eliminados = len(df_all_data) - len(df_dedup)
-    print(f"🧹 {duplicados_eliminados} duplicados eliminados — quedan {len(df_dedup)} filas únicas")
-
+    
     if duplicados_eliminados == 0:
         print("✅ No hay duplicados. No se requiere reescritura.")
         return len(df_all_data)
 
-    # Subir CSV deduplicado a S3
+    print(f"🧹 {duplicados_eliminados} duplicados eliminados — {len(df_dedup)} filas únicas")
+
+    # Subir CSV a S3
     csv_buffer = io.StringIO()
     df_dedup.to_csv(csv_buffer, index=False)
     s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
     s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=csv_buffer.getvalue())
     s3_path = f"s3://{bucket_name}/{s3_key}"
-    print(f"📤 CSV con {len(df_dedup)} filas subido a {s3_path}")
+    print(f"📤 CSV subido a {s3_path}")
 
-    # Vaciar tabla y ESPERAR a que termine
-    truncate_sql = f"TRUNCATE TABLE {table_name};"
-    truncate_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
+    # Estrategia: Crear tabla temporal y luego renombrar (evita DELETE/TRUNCATE)
+    temp_table = f"{table_name}_temp_{int(time.time())}"
     
-    # IMPORTANTE: Esperar a que el TRUNCATE termine antes de hacer COPY
-    truncate_id = truncate_resp["Id"]
-    while True:
-        desc = redshift_data.describe_statement(Id=truncate_id)
-        if desc["Status"] == "FINISHED":
-            print("🧹 Tabla vaciada correctamente")
-            break
-        elif desc["Status"] == "FAILED":
-            print(f"❌ Error al vaciar tabla: {desc.get('Error')}")
-            raise Exception(f"TRUNCATE failed: {desc.get('Error')}")
-        time.sleep(1)
+    try:
+        # Paso 1: Crear tabla temporal con los datos nuevos
+        create_temp_sql = f"""
+            CREATE TABLE {temp_table} AS 
+            SELECT * FROM {table_name} WHERE 1=0;
+        """
+        
+        print(f"🔄 Creando tabla temporal: {temp_table}")
+        create_resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=create_temp_sql
+        )
+        
+        create_id = create_resp["Id"]
+        while True:
+            desc = redshift_data.describe_statement(Id=create_id)
+            if desc["Status"] == "FINISHED":
+                break
+            elif desc["Status"] == "FAILED":
+                error_msg = desc.get('Error', 'Error desconocido')
+                print(f"⚠️ Falló creación de tabla temporal: {error_msg}")
+                # Continuar con approach alternativo
+                raise Exception("No se pudo crear tabla temporal")
+            time.sleep(1)
 
-    # Recargar datos sin duplicados
-    copy_sql = f"""
-        COPY {table_name}
-        FROM '{s3_path}'
-        IAM_ROLE '{iam_role}'
-        CSV
-        IGNOREHEADER 1
-        DELIMITER ','
-        EMPTYASNULL
-        BLANKSASNULL
-        TRUNCATECOLUMNS
-        MAXERROR 100;
-    """
-    print("🚀 Ejecutando COPY final (reescritura completa sin duplicados)...")
-    resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=copy_sql)
-
-    # Polling del COPY
-    copy_id = resp["Id"]
-    while True:
-        desc = redshift_data.describe_statement(Id=copy_id)
-        if desc["Status"] == "FINISHED":
-            print("✅ Reescritura completada con éxito.")
-            break
-        elif desc["Status"] == "FAILED":
-            print(f"❌ Error en COPY: {desc.get('Error')}")
-            break
-        time.sleep(2)
+        # Paso 2: Cargar datos en tabla temporal
+        copy_sql = f"""
+            COPY {temp_table}
+            FROM '{s3_path}'
+            IAM_ROLE '{iam_role}'
+            CSV
+            IGNOREHEADER 1
+            DELIMITER ','
+            EMPTYASNULL
+            BLANKSASNULL
+            TRUNCATECOLUMNS
+            MAXERROR 100;
+        """
+        
+        print("🚀 Cargando datos en tabla temporal...")
+        copy_resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=copy_sql
+        )
+        
+        copy_id = copy_resp["Id"]
+        while True:
+            desc = redshift_data.describe_statement(Id=copy_id)
+            if desc["Status"] == "FINISHED":
+                print("✅ Datos cargados en tabla temporal")
+                break
+            elif desc["Status"] == "FAILED":
+                error_msg = desc.get('Error', 'Error desconocido')
+                print(f"❌ Error en COPY: {error_msg}")
+                raise Exception(f"COPY failed: {error_msg}")
+            time.sleep(2)
+            
+        # Paso 3: Intercambiar tablas
+        print("🔄 Intercambiando tablas...")
+        
+        # Primero dropear la tabla original
+        drop_sql = f"DROP TABLE {table_name};"
+        drop_resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=drop_sql
+        )
+        
+        drop_id = drop_resp["Id"]
+        while True:
+            desc = redshift_data.describe_statement(Id=drop_id)
+            if desc["Status"] == "FINISHED":
+                break
+            elif desc["Status"] == "FAILED":
+                error_msg = desc.get('Error', 'Error desconocido')
+                print(f"⚠️ No se pudo dropear tabla original: {error_msg}")
+            time.sleep(1)
+        
+        # Renombrar tabla temporal
+        rename_sql = f"ALTER TABLE {temp_table} RENAME TO {table_name};"
+        rename_resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=rename_sql
+        )
+        
+        rename_id = rename_resp["Id"]
+        while True:
+            desc = redshift_data.describe_statement(Id=rename_id)
+            if desc["Status"] == "FINISHED":
+                print("✅ Tablas intercambiadas exitosamente")
+                break
+            elif desc["Status"] == "FAILED":
+                error_msg = desc.get('Error', 'Error desconocido')
+                print(f"❌ Error renombrando tabla: {error_msg}")
+                raise Exception(f"RENAME failed: {error_msg}")
+            time.sleep(1)
+            
+    except Exception as e:
+        print(f"❌ Error en proceso de tabla temporal: {str(e)}")
+        print("🔄 Intentando approach alternativo...")
+        
+        # Approach alternativo: Usar DELETE (puede funcionar para tablas pequeñas)
+        try:
+            delete_sql = f"DELETE FROM {table_name};"
+            delete_resp = redshift_data.execute_statement(
+                Database=database,
+                WorkgroupName=workgroup,
+                Sql=delete_sql
+            )
+            
+            delete_id = delete_resp["Id"]
+            while True:
+                desc = redshift_data.describe_statement(Id=delete_id)
+                if desc["Status"] in ["FINISHED", "FAILED"]:
+                    break
+                time.sleep(1)
+                
+            # Cargar datos de todas formas
+            copy_sql = f"""
+                COPY {table_name}
+                FROM '{s3_path}'
+                IAM_ROLE '{iam_role}'
+                CSV
+                IGNOREHEADER 1
+                DELIMITER ','
+                EMPTYASNULL
+                BLANKSASNULL
+                TRUNCATECOLUMNS
+                MAXERROR 100;
+            """
+            
+            copy_resp = redshift_data.execute_statement(
+                Database=database,
+                WorkgroupName=workgroup,
+                Sql=copy_sql
+            )
+            
+            copy_id = copy_resp["Id"]
+            while True:
+                desc = redshift_data.describe_statement(Id=copy_id)
+                if desc["Status"] == "FINISHED":
+                    print("✅ Datos cargados exitosamente (approach alternativo)")
+                    break
+                elif desc["Status"] == "FAILED":
+                    error_msg = desc.get('Error', 'Error desconocido')
+                    raise Exception(f"COPY failed: {error_msg}")
+                time.sleep(2)
+                
+        except Exception as alt_error:
+            print(f"❌ Approach alternativo también falló: {str(alt_error)}")
+            raise
 
     return len(df_dedup)
 
