@@ -807,7 +807,7 @@ def persist_to_redshift(redshift_data, s3_client, df_existing, df_new, table_nam
     print(f"📤 CSV con {len(df_dedup)} filas subido a {s3_path}")
 
     # Vaciar tabla y ESPERAR a que termine
-    truncate_sql = f"TRUNCATE TABLE {table_name};"
+    truncate_sql = f"DELETE FROM {table_name};"
     truncate_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=truncate_sql)
     
     # IMPORTANTE: Esperar a que el TRUNCATE termine antes de hacer COPY
