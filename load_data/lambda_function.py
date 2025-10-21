@@ -955,14 +955,45 @@ def lambda_handler(event,context):
 
             print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
             flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
-            
-            print('df:' , df)
 
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            # Obtener la tabla actual y la dimensión de productos desde Redshift
+            df_actual = get_redshift_table_data(redshift_data)
+            df_dim_producto = get_redshift_table_data(redshift_data)
+            df_dim_producto = df_dim_producto.rename(columns={
+                'nombre_producto': 'producto',  # asegurar que los nombres coincidan
+            })
 
-            # Cargamos el valor de nro_ticket a la tabla de archivos ingestados para no duplicar datos en una proxima carga
-            # estandarizar nombre columna "id", "fecha_insert", "fecha_update" donde id para carrefour va a ser nro_ticket, para mp va a ser report_id
-            # y para bank_payments va a ser id.
+            # Enriquecer df con df_dim_producto (para obtener product_id y grupo_producto)
+            df_enriquecido = df.merge(
+                df_dim_producto[['producto', 'product_id', 'grupo_producto']],
+                on='producto',
+                how='left'
+            )
+
+            # Generar operation_id directamente en pandas
+            df_enriquecido['operation_id'] = (
+                df_enriquecido['nro_ticket'].astype(str)
+                + df_enriquecido['product_id'].astype(str)
+                + df_enriquecido['monto_total'].astype(str)
+                + '_'
+                + df_enriquecido['fecha'].astype(str)
+            )
+
+            # Combinar con datos actuales y eliminar duplicados
+            if not df_actual.empty:
+                df_final = pd.concat([df_actual, df_enriquecido], ignore_index=True)
+                df_final.drop_duplicates(subset=['operation_id'], inplace=True)
+            else:
+                df_final = df_enriquecido
+
+            print(f"✅ Total filas únicas luego de merge: {len(df_final)}")
+
+            # Cargar DataFrame final consolidado en Redshift
+            insert_df_into_redshift_copy_fixed(
+                redshift_data, s3, df_final, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role
+            )
+
+            # Registrar nro_ticket en tabla de control
             data = df['nro_ticket'].unique().tolist()
             df_uploaded_files = pd.DataFrame(data, columns=['id'])
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -970,30 +1001,9 @@ def lambda_handler(event,context):
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df_uploaded_files.columns, df_uploaded_files.dtypes)]
             column_uploaded_files = ",\n  ".join(column_defs)
             flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
-            
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            insert_df_into_redshift_copy_fixed(redshift_data, s3, df_uploaded_files, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
-            # Crear tabla de dimensiones de producto o utilizarla si ya existe
-            df_dim_producto = create_and_fill_product_dim_table_in_redshift(s3, bucket, 'dim_producto/', df, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup','product_id', False)
-
-            # Una vez cargados los nuevos datos, ahi ejecutamos el join con la tabla de dim_producto para completar el valor de product_id,
-            # grupo_producto y otros.
-            # Agregamos la columna nueva que creamos "operation_id" a la tabla de carrefour_data 
-            # para evitar insertar registros repetidos de cada archivo => deberiamos hacer un check de esta
-            # columna dentro del insert_df_into_redshift que se hace en carrefour_data
-            aggregate_table_in_redshift(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')
-            add_concatenated_column(table_name, redshift_data, 'dev', 'pdf-etl-workgroup')      
-
-            redshift_table_df = get_redshift_table_data(redshift_data)
-            print('redshift_table_df:', redshift_table_df)
-
-            print("🧹 Eliminando duplicados por operation_id en Redshift...")
-            # No pasamos df porque redshift_table_df ya contiene TODOS los datos (viejos + nuevos)
-            # después de que se calculó el operation_id
-            filas_finales = persist_to_redshift_dedup_only(redshift_data, s3, redshift_table_df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-            print(f"✅ Persistencia completada: {filas_finales} filas únicas en {table_name}.")
-
-            # despues nos quedaria limpiar los archivos de "tmp/" de s3 => borrar todos ya que solo se usan para migrar a redshift lo de "raw"
+            # Limpieza de temporales
             delete_tmp_files_in_s3(s3, bucket)
 
             tables = ['archivos_ingestados', 'dim_producto', table_name]   
