@@ -865,6 +865,23 @@ def persist_to_redshift_dedup_only(redshift_data, s3_client, df_all_data, table_
         Sql=merge_sql
     )
 
+    merge_id = merge_resp["Id"]
+
+    # Esperar hasta que termine el INSERT SELECT
+    while True:
+        desc = redshift_data.describe_statement(Id=merge_id)
+        status = desc["Status"]
+        if status == "FINISHED":
+            print("✅ Nuevos registros insertados correctamente sin borrar tabla.")
+            break
+        elif status == "FAILED":
+            error_msg = desc.get("Error", "Error desconocido")
+            print(f"❌ Falló el merge_sql: {error_msg}")
+            raise Exception(f"INSERT/SELECT failed: {error_msg}")
+        else:
+            print(f"⏳ Esperando que termine el merge_sql... (estado: {status})")
+            time.sleep(2)
+
     print("✅ Nuevos registros insertados correctamente sin borrar tabla.")
     return len(df_dedup)
 
