@@ -120,7 +120,7 @@ resource "aws_s3_bucket" "bank_payments" {
 resource "aws_redshiftserverless_namespace" "etl_namespace" {
   namespace_name = "pdf-etl-namespace"
   db_name        = "dev"
-  iam_roles = [aws_iam_role.lambda_exec.arn]
+  iam_roles = [aws_iam_role.redshift_iam_role.arn]
 }
 
 # Creamos el workgroup
@@ -130,6 +130,11 @@ resource "aws_redshiftserverless_workgroup" "etl_workgroup" {
   base_capacity  = 8 # RPUs
   # Configuración correcta para Data API:
   publicly_accessible = true
+}
+
+resource "aws_redshiftserverless_workgroup_iam_role_association" "etl_workgroup_role" {
+  workgroup_name = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
+  iam_role_arn   = aws_iam_role.redshift_iam_role.arn
 }
 
 ########### 3. Repositorio ECR para las imágenes Lambda ###########
@@ -806,6 +811,32 @@ resource "aws_iam_role" "api_gateway_role" {
     ]
   })
 }
+
+resource "aws_iam_role" "redshift_iam_role" {
+  name = "redshift_s3_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Service = [
+            "redshift.amazonaws.com",
+            "redshift-serverless.amazonaws.com"
+          ]
+        },
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "redshift_s3_access" {
+  role       = aws_iam_role.redshift_iam_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+}
+
 ###########  6. Permisos IAM Policies ###########
 
 # Policy para acceder a los secrets de Secret Manager con Lambda
@@ -832,24 +863,24 @@ resource "aws_iam_role_policy" "secrets_token_access" {
 }
 
 # Separar las políticas en recursos distintos
-resource "aws_iam_policy" "lambda_redshift_access" {
-  name = "lambda_redshift_access"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action = [
-          "redshift-data:*",
-          "redshift:GetClusterCredentials",
-          "redshift:Describe*",
-          "redshift-serverless:*"
-        ],
-        Effect   = "Allow",
-        Resource = "*"
-      }
-    ]
-  })
-}
+# resource "aws_iam_policy" "lambda_redshift_access" {
+#   name = "lambda_redshift_access"
+#   policy = jsonencode({
+#     Version = "2012-10-17",
+#     Statement = [
+#       {
+#         Action = [
+#           "redshift-data:*",
+#           "redshift:GetClusterCredentials",
+#           "redshift:Describe*",
+#           "redshift-serverless:*"
+#         ],
+#         Effect   = "Allow",
+#         Resource = "*"
+#       }
+#     ]
+#   })
+# }
 
 resource "aws_iam_policy" "lambda_ecr_access" {
   name = "lambda_ecr_access"
@@ -969,11 +1000,16 @@ resource "aws_iam_role_policy" "api_gateway_step_function_policy" {
   })
 }
 
-# Attachments de las políticas al rol
-resource "aws_iam_role_policy_attachment" "lambda_redshift" {
+resource "aws_iam_role_policy_attachment" "lambda_redshift_data" {
   role       = aws_iam_role.lambda_exec.name
-  policy_arn = aws_iam_policy.lambda_redshift_access.arn
+  policy_arn = "arn:aws:iam::aws:policy/AmazonRedshiftDataFullAccess"
 }
+
+# Attachments de las políticas al rol
+# resource "aws_iam_role_policy_attachment" "lambda_redshift" {
+#   role       = aws_iam_role.lambda_exec.name
+#   policy_arn = aws_iam_policy.lambda_redshift_access.arn
+# }
 
 resource "aws_iam_role_policy_attachment" "lambda_ecr" {
   role       = aws_iam_role.lambda_exec.name
@@ -1784,5 +1820,5 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure"
 }
 
 output "redshift_iam_role_arn" {
-  value = aws_iam_role.lambda_exec.arn
+  value = aws_iam_role.redshift_iam_role.arn
 }
