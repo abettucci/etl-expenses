@@ -132,11 +132,6 @@ resource "aws_redshiftserverless_workgroup" "etl_workgroup" {
   publicly_accessible = true
 }
 
-resource "aws_redshiftserverless_workgroup_iam_role_association" "etl_workgroup_role" {
-  workgroup_name = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-  iam_role_arn   = aws_iam_role.redshift_iam_role.arn
-}
-
 ########### 3. Repositorio ECR para las imágenes Lambda ###########
 resource "aws_ecr_repository" "lambda_images" {
   name                 = "etl-expenses"
