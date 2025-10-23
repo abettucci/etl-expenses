@@ -362,7 +362,7 @@ def run_step_function_sync(sfn_client, step_function_arn, payload, poll_interval
             print(f"⏳ Step Function sigue en {status}... esperando {poll_interval}s")
             time.sleep(poll_interval)
 
-def reproceso_historico():
+def carga_inicial_historico():
     try:
         creds = auth_google('gcp_api_credentials')
         gmail_service = build('gmail', 'v1', credentials=creds)
@@ -579,4 +579,4 @@ def lambda_handler(event, context):
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
 
-# reproceso_historico()
+# carga_inicial_historico()

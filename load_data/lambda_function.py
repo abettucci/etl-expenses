@@ -12,7 +12,8 @@ from datetime import datetime
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
-iam_role = os.environ["IAM_ROLE_REDSHIFT"]
+# iam_role = os.environ["IAM_ROLE_REDSHIFT"]
+iam_role = 'arn:aws:iam::039434644707:role/lambda_exec_role'
 
 def format_value(val):
     if val is None or pd.isna(val):
@@ -735,10 +736,9 @@ def delete_tmp_files_in_s3(s3, bucket_name):
     except Exception as e:
         print(f"❌ Error borrando archivos temporales: {str(e)}")
 
-def get_redshift_table_data(redshift_data):
+def get_redshift_table_data(redshift_data, table_name):
     database = "dev"
     workgroup = "pdf-etl-workgroup"
-    table_name = "carrefour_data"
     query = f"SELECT * FROM {table_name};"
 
     # Ejecutar consulta
@@ -885,10 +885,73 @@ def persist_to_redshift_dedup_only(redshift_data, s3_client, df_all_data, table_
     print("✅ Nuevos registros insertados correctamente sin borrar tabla.")
     return len(df_dedup)
 
+def merge_and_upload_to_redshift(df_nuevo, df_actual, redshift_data, s3, table_name, bucket, database, workgroup, iam_role):
+    """
+    Une el df nuevo con el existente (si hay datos previos), elimina duplicados por 'operation_id'
+    y sube la versión limpia a Redshift.
+    """
+    import io, time
+    import pandas as pd
+
+    print(f"📊 Nuevas filas a insertar: {len(df_nuevo)}")
+    print(f"📊 Filas existentes en Redshift: {len(df_actual)}")
+
+    # Si df_actual está vacío, no concatenar (evita duplicar)
+    if df_actual is None or df_actual.empty:
+        df_final = df_nuevo.copy()
+    else:
+        df_final = pd.concat([df_actual, df_nuevo], ignore_index=True)
+
+    print(f"🧮 Total antes de eliminar duplicados: {len(df_final)}")
+
+    # Eliminar duplicados por operation_id
+    df_final.drop_duplicates(subset=["operation_id"], keep="first", inplace=True)
+    print(f"✅ Total después de eliminar duplicados: {len(df_final)}")
+
+    # Subir CSV a S3
+    csv_buffer = io.StringIO()
+    df_final.to_csv(csv_buffer, index=False)
+    s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
+    s3.put_object(Bucket=bucket, Key=s3_key, Body=csv_buffer.getvalue())
+    s3_path = f"s3://{bucket}/{s3_key}"
+
+    print(f"📤 Subiendo {len(df_final)} filas únicas a {s3_path}")
+
+    # COPY a Redshift
+    copy_sql = f"""
+        COPY {table_name}
+        FROM '{s3_path}'
+        IAM_ROLE '{iam_role}'
+        CSV
+        IGNOREHEADER 1
+        DELIMITER ','
+        EMPTYASNULL
+        BLANKSASNULL
+        TRUNCATECOLUMNS
+        MAXERROR 100;
+    """
+    print("🚀 Ejecutando COPY en Redshift...")
+    resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=copy_sql)
+    copy_id = resp["Id"]
+
+    # Esperar a que termine
+    while True:
+        desc = redshift_data.describe_statement(Id=copy_id)
+        if desc["Status"] == "FINISHED":
+            print("✅ COPY finalizado correctamente")
+            break
+        elif desc["Status"] == "FAILED":
+            raise Exception(f"❌ Error en COPY: {desc.get('Error')}")
+        time.sleep(2)
+
+    return len(df_final)
+
 def lambda_handler(event,context):
     try:
         redshift_data = boto3.client('redshift-data')
         print(event)
+
+        event = json.loads(event["body"])
 
         etl_flow = event['etl_flow']
         bucket = event['bucket']
@@ -956,12 +1019,18 @@ def lambda_handler(event,context):
             print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
             flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
 
+            print('df: ', df)
+
             # Obtener la tabla actual y la dimensión de productos desde Redshift
-            df_actual = get_redshift_table_data(redshift_data)
-            df_dim_producto = get_redshift_table_data(redshift_data)
+            df_actual = get_redshift_table_data(redshift_data, "carrefour_data")
+            df_dim_producto = get_redshift_table_data(redshift_data, "dim_producto")
             df_dim_producto = df_dim_producto.rename(columns={
                 'nombre_producto': 'producto',  # asegurar que los nombres coincidan
             })
+            
+            print('df_actual: ', df_actual)
+
+            df_dim_producto = df_dim_producto.drop_duplicates(subset=['producto'], keep='first')
 
             # Enriquecer df con df_dim_producto (para obtener product_id y grupo_producto)
             df_enriquecido = df.merge(
@@ -969,6 +1038,24 @@ def lambda_handler(event,context):
                 on='producto',
                 how='left'
             )
+
+            print('df_enriquecido: ', df_enriquecido)
+
+            # dups = df_enriquecido[df_enriquecido.duplicated(subset=['producto', 'nro_ticket'], keep=False)]
+            # if not dups.empty:
+            #     print("⚠️ Aún hay duplicados después del merge:")
+            #     print(dups[['producto', 'nro_ticket', 'product_id']])
+
+            for col in ['product_id', 'grupo_producto']:
+                col_x, col_y = f"{col}_x", f"{col}_y"
+                if col_x in df_enriquecido.columns and col_y in df_enriquecido.columns:
+                    # Si hay dos columnas, elegimos los valores nuevos de la derecha (_y)
+                    df_enriquecido[col] = df_enriquecido[col_y].combine_first(df_enriquecido[col_x])
+                    df_enriquecido.drop(columns=[col_x, col_y], inplace=True)
+                elif col_y in df_enriquecido.columns:
+                    df_enriquecido.rename(columns={col_y: col}, inplace=True)
+                elif col_x in df_enriquecido.columns:
+                    df_enriquecido.rename(columns={col_x: col}, inplace=True)
 
             # Generar operation_id directamente en pandas
             df_enriquecido['operation_id'] = (
@@ -988,10 +1075,24 @@ def lambda_handler(event,context):
 
             print(f"✅ Total filas únicas luego de merge: {len(df_final)}")
 
+            existing_df = get_redshift_table_data(redshift_data, "carrefour_data")
+
+            if not existing_df.empty:
+                print(f"📦 Tabla actual en Redshift: {len(existing_df)} filas")
+                # 2️⃣ Mantener solo las filas nuevas
+                df_enriquecido = df_enriquecido[~df_enriquecido['operation_id'].isin(existing_df['operation_id'])]
+                print(f"🧮 Filas nuevas detectadas: {len(df_enriquecido)}")
+            else:
+                print("📭 Tabla vacía en Redshift, se insertan todas las filas")
+
+            # Si no hay filas nuevas, abortar el insert
+            if df_enriquecido.empty:
+                print("✅ No hay filas nuevas para insertar, omitiendo COPY.")
+            else:
+                merge_and_upload_to_redshift(df_enriquecido, df_actual, redshift_data, s3, "carrefour_data", bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+
             # Cargar DataFrame final consolidado en Redshift
-            insert_df_into_redshift_copy_fixed(
-                redshift_data, s3, df_final, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role
-            )
+            merge_and_upload_to_redshift(df_enriquecido, df_actual, redshift_data, s3, "carrefour_data", bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
             # Registrar nro_ticket en tabla de control
             data = df['nro_ticket'].unique().tolist()
@@ -1026,26 +1127,3 @@ def lambda_handler(event,context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
-
-# s3_client = boto3.client('s3')
-# bucket_name = 'market-tickets'
-# folder = 'processed/'
-# response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
-# csvs = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
-
-# dtype = {}
-# for csv_key in csvs:
-#     response = s3_client.get_object(Bucket=bucket_name, Key=csv_key)
-#     if csv_key.endswith(".csv"):
-#         df = pd.read_csv(io.BytesIO(response['Body'].read()),dtype=dtype)
-
-#     event = {
-#         "body": json.dumps({
-#             "etl_flow": 'TICKET',
-#             "bucket": 'market-tickets',
-#             "key": csv_key
-#         })
-#     }
-
-#     lambda_handler(event,'')
-#     exit()
