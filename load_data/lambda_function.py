@@ -550,10 +550,33 @@ def lambda_handler(event,context):
             print(f'Se lee el csv {key} o xlsx de reporte de mp convertido en S3 y se mergea a la tabla de mp_data')
             flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup','REPORT_ID')
 
-            column_names_insert = [clean_column_name(col) for col in df.columns]
-            column_names_insert += ["REPORT_ID", "REPORT_DATE"]
-            columnas_sql_insert = ", ".join(column_names_insert)
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            # Agregar REPORT_ID y REPORT_DATE al DataFrame
+            df['REPORT_ID'] = report_id
+            df['REPORT_DATE'] = report_date
+
+            # Obtener datos existentes en Redshift para evitar duplicados
+            try:
+                existing_df = get_redshift_table_data(redshift_data, "mp_data")
+            except Exception as e:
+                print(f"⚠️ No se pudo obtener datos existentes de mp_data: {str(e)}")
+                existing_df = pd.DataFrame()  # DataFrame vacío como fallback
+
+            if not existing_df.empty:
+                print(f"📦 Tabla actual en Redshift: {len(existing_df)} filas")
+                # Mantener solo las filas nuevas usando REPORT_ID
+                df = df[~df['REPORT_ID'].isin(existing_df['REPORT_ID'])]
+                print(f"🧮 Filas nuevas detectadas: {len(df)}")
+            else:
+                print("📭 Tabla vacía en Redshift, se insertan todas las filas")
+
+            # Si no hay filas nuevas, abortar el insert
+            if df.empty:
+                print("✅ No hay filas nuevas para insertar, omitiendo COPY.")
+            else:
+                insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+
+            # Limpieza de temporales
+            delete_tmp_files_in_s3(s3, bucket)
 
             tables = [table_name] 
 
@@ -569,22 +592,36 @@ def lambda_handler(event,context):
             print('df: ', df)
 
             # Obtener la tabla actual y la dimensión de productos desde Redshift
-            df_actual = get_redshift_table_data(redshift_data, "carrefour_data")
-            df_dim_producto = get_redshift_table_data(redshift_data, "dim_producto")
-            df_dim_producto = df_dim_producto.rename(columns={
-                'nombre_producto': 'producto',  # asegurar que los nombres coincidan
-            })
+            try:
+                df_actual = get_redshift_table_data(redshift_data, "carrefour_data")
+                print('df_actual: ', df_actual)
+            except Exception as e:
+                print(f"⚠️ No se pudo obtener datos de carrefour_data: {str(e)}")
+                df_actual = pd.DataFrame()  # DataFrame vacío como fallback
             
-            print('df_actual: ', df_actual)
+            try:
+                df_dim_producto = get_redshift_table_data(redshift_data, "dim_producto")
+                df_dim_producto = df_dim_producto.rename(columns={
+                    'nombre_producto': 'producto',  # asegurar que los nombres coincidan
+                })
+            except Exception as e:
+                print(f"⚠️ No se pudo obtener datos de dim_producto: {str(e)}")
+                df_dim_producto = pd.DataFrame()  # DataFrame vacío como fallback
 
             df_dim_producto = df_dim_producto.drop_duplicates(subset=['producto'], keep='first')
 
             # Enriquecer df con df_dim_producto (para obtener product_id y grupo_producto)
-            df_enriquecido = df.merge(
-                df_dim_producto[['producto', 'product_id', 'grupo_producto']],
-                on='producto',
-                how='left'
-            )
+            if not df_dim_producto.empty:
+                df_enriquecido = df.merge(
+                    df_dim_producto[['producto', 'product_id', 'grupo_producto']],
+                    on='producto',
+                    how='left'
+                )
+            else:
+                print("⚠️ df_dim_producto está vacío, usando df original")
+                df_enriquecido = df.copy()
+                df_enriquecido['product_id'] = None
+                df_enriquecido['grupo_producto'] = None
 
             print('df_enriquecido: ', df_enriquecido)
 
@@ -622,7 +659,11 @@ def lambda_handler(event,context):
 
             print(f"✅ Total filas únicas luego de merge: {len(df_final)}")
 
-            existing_df = get_redshift_table_data(redshift_data, "carrefour_data")
+            try:
+                existing_df = get_redshift_table_data(redshift_data, "carrefour_data")
+            except Exception as e:
+                print(f"⚠️ No se pudo obtener datos existentes de carrefour_data: {str(e)}")
+                existing_df = pd.DataFrame()  # DataFrame vacío como fallback
 
             if not existing_df.empty:
                 print(f"📦 Tabla actual en Redshift: {len(existing_df)} filas")
@@ -657,10 +698,31 @@ def lambda_handler(event,context):
             columnas_sql = ",\n  ".join(column_defs)
             
             print(f'Se lee el mail {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
-            create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
+            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
 
-            column_names_insert = [clean_column_name(col) for col in df.columns]
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            # Obtener datos existentes en Redshift para evitar duplicados
+            try:
+                existing_df = get_redshift_table_data(redshift_data, table_name)
+            except Exception as e:
+                print(f"⚠️ No se pudo obtener datos existentes de {table_name}: {str(e)}")
+                existing_df = pd.DataFrame()  # DataFrame vacío como fallback
+
+            if not existing_df.empty:
+                print(f"📦 Tabla actual en Redshift: {len(existing_df)} filas")
+                # Mantener solo las filas nuevas usando id
+                df = df[~df['id'].isin(existing_df['id'])]
+                print(f"🧮 Filas nuevas detectadas: {len(df)}")
+            else:
+                print("📭 Tabla vacía en Redshift, se insertan todas las filas")
+
+            # Si no hay filas nuevas, abortar el insert
+            if df.empty:
+                print("✅ No hay filas nuevas para insertar, omitiendo COPY.")
+            else:
+                insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+
+            # Limpieza de temporales
+            delete_tmp_files_in_s3(s3, bucket)
 
             tables = [table_name]  
 
@@ -671,3 +733,36 @@ def lambda_handler(event,context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
+
+# event = {
+#     "body": json.dumps({
+#         'bucket': 'market-tickets', 
+#         'report_id': '', 
+#         'key': 'processed/Ticket_16-10-25.csv', 
+#         'etl_flow': 'TICKET', 
+#         'report_date': ''
+#     })
+# }
+
+# event = {
+#     "body": json.dumps({
+#         'bucket': 'mercadopago-reports', 
+#         'report_id': '', 
+#         'key': 'processed/settlement-279729559-manual-2025-09-02-022312.csv', 
+#         'etl_flow': 'MP', 
+#         'report_date': ''
+#     })
+# }
+
+# event = {
+#     "body": json.dumps({
+#         'bucket': 'bank-payments', 
+#         'report_id': '', 
+#         'key': 'processed/2025-08-05T05:32:21-198795dc22de7c7e.csv', 
+#         'etl_flow': 'BANK', 
+#         'report_date': ''
+#     })
+# }
+
+# lambda_handler(event,'')
+# exit()
