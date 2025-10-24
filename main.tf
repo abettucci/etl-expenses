@@ -232,6 +232,8 @@ resource "aws_api_gateway_integration_response" "market_pdf_integration_response
   response_templates = {
     "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
   }
+
+  depends_on = [aws_api_gateway_integration.market_pdf_integration]
 }
 
 # resource "aws_api_gateway_integration" "market_pdf_integration" {
@@ -312,6 +314,8 @@ resource "aws_api_gateway_integration_response" "bank_pdf_extractor_integration_
   response_templates = {
     "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
   }
+
+  depends_on = [aws_api_gateway_integration.bank_pdf_extractor_integration]
 }
 
 # Recurso /mp_webhook
