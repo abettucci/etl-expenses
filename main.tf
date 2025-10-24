@@ -120,7 +120,7 @@ resource "aws_s3_bucket" "bank_payments" {
 resource "aws_redshiftserverless_namespace" "etl_namespace" {
   namespace_name = "pdf-etl-namespace"
   db_name        = "dev"
-  iam_roles = [aws_iam_role.redshift_iam_role.arn]
+  iam_roles = [aws_iam_role.lambda_exec.arn]
 }
 
 # Creamos el workgroup
@@ -737,7 +737,7 @@ resource "aws_lambda_function" "ai_agent" {
 
 ###########  5. Permisos IAM Roles ###########
 # IAM role para Lambda execution
-resource "aws_iam_role" "lambda_exec" {  # Asumiendo que ya existe; modifícalo
+resource "aws_iam_role" "lambda_exec" { 
   name = "lambda_exec_role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
