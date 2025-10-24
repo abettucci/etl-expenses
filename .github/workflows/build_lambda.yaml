@@ -140,7 +140,7 @@ jobs:
           
           if [ ! -z "$API_ID" ]; then
 
-            terraform import aws_api_gateway_stage.main_api_stage $API_ID/prod
+            # terraform import aws_api_gateway_stage.main_api_stage $API_ID/prod
 
             terraform import aws_api_gateway_rest_api.main_api $API_ID || true
             import_api_resource() {
