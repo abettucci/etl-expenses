@@ -447,7 +447,7 @@ def delete_tmp_files_in_s3(s3, bucket_name):
 def get_redshift_table_data(redshift_data, table_name):
     database = "dev"
     workgroup = "pdf-etl-workgroup"
-    query = f"SELECT * FROM {table_name};"
+    query = f"SELECT * FROM public.{table_name};"
 
     # Ejecutar consulta
     response = redshift_data.execute_statement(

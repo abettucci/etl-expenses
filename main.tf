@@ -661,7 +661,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
     variables = {
       WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
       BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
-      IAM_ROLE_REDSHIFT = aws_iam_role.lambda_exec.arn
+      IAM_ROLE_REDSHIFT = aws_iam_role.redshift_iam_role.arn
     }
   }
 }
