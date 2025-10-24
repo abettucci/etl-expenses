@@ -953,7 +953,9 @@ def lambda_handler(event,context):
             columnas_sql = ",\n  ".join(column_defs)
 
             print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
-            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
+            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "carrefour_data", redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
+            
+            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "dim_producto", redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
 
             print('df: ', df)
 
