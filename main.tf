@@ -807,6 +807,27 @@ resource "aws_iam_role" "api_gateway_role" {
   })
 }
 ###########  6. Permisos IAM Policies ###########
+resource "aws_iam_role_policy" "lambda_kms_policy" {
+  name = "lambda-kms-access"
+  role = aws_iam_role.lambda_exec.name
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "kms:Decrypt",
+          "kms:Encrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ],
+        Resource = "arn:aws:kms:us-east-2:039434644707:key/5009b119-f50c-413c-9873-0e216eb14005"
+      }
+    ]
+  })
+}
+
 
 # Policy para acceder a los secrets de Secret Manager con Lambda
 resource "aws_iam_role_policy" "secrets_token_access" {
