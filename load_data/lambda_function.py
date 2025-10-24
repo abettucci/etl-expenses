@@ -1050,9 +1050,15 @@ def lambda_handler(event,context):
             # Registrar nro_ticket en tabla de control
             data = df['nro_ticket'].unique().tolist()
             df_uploaded_files = pd.DataFrame(data, columns=['id'])
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            now = pd.to_datetime(datetime.now())
             df_uploaded_files['INS_DTTM'] = now
-            column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df_uploaded_files.columns, df_uploaded_files.dtypes)]
+
+            column_defs = []
+            for col, dtype in zip(df_uploaded_files.columns, df_uploaded_files.dtypes):
+                if col.lower() == 'ins_dttm':
+                    column_defs.append(f"{clean_column_name(col)} TIMESTAMP")
+                else:
+                    column_defs.append(f"{clean_column_name(col)} {redshift_type(dtype)}")
             column_uploaded_files = ",\n  ".join(column_defs)
             flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
             insert_df_into_redshift_copy_fixed(redshift_data, s3, df_uploaded_files, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
