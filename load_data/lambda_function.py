@@ -426,6 +426,40 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             id_col = 'id'
 
         if id_col:
+            print('Vemos que hay en el df actual en redshift')
+            query = f"SELECT * FROM {table_name};"
+            response = redshift_data.execute_statement(
+                Database=database,
+                WorkgroupName=workgroup,
+                Sql=query
+            )
+            query_id = response["Id"]
+            while True:
+                desc = redshift_data.describe_statement(Id=query_id)
+                status = desc["Status"]
+                if status == "FAILED":
+                    print("❌ Error al consultar Redshift:", desc.get("Error", "Error desconocido"))
+                    break
+                elif status == "FINISHED":
+                    print("✅ Query finalizada correctamente.\n")
+                    if desc.get("HasResultSet"):
+                        result = redshift_data.get_statement_result(Id=query_id)
+                        columns = [col["name"] for col in result["ColumnMetadata"]]
+                        rows = []
+                        for record in result["Records"]:
+                            row = [list(cell.values())[0] if cell else None for cell in record]
+                            rows.append(row)
+                            
+                        df_existing = pd.DataFrame(rows, columns=columns)
+                        print("📊 Resultados de la tabla Redshift:")
+                        print(df_existing.to_string(index=False))
+                    else:
+                        print("⚠️ La consulta no devolvió resultados.")
+                    break
+                else:
+                    time.sleep(1)
+            print(df)
+
             print(f"🔍 Verificando duplicados en columna clave '{id_col}' para {table_name}...")
 
             # Consultar los valores existentes en Redshift
@@ -465,10 +499,10 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
 
         # 1. Primero obtener el esquema actual de Redshift
         schema_query = f"""
-        SELECT column_name, data_type, is_nullable
-        FROM information_schema.columns 
-        WHERE table_name = '{table_name}'
-        ORDER BY ordinal_position;
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns 
+            WHERE table_name = '{table_name}'
+            ORDER BY ordinal_position;
         """
         
         schema_resp = redshift_data.execute_statement(
@@ -491,6 +525,8 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
         
         print(f"🔍 Esquema Redshift: {redshift_columns}")
         
+        print('df antes de fix dataframe for redshift copy: ', df)
+
         # 2. Corregir el DataFrame para que coincida
         df_fixed = fix_dataframe_for_redshift_copy(df, redshift_columns)
         
