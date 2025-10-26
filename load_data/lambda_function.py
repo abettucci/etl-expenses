@@ -449,7 +449,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                         for record in result["Records"]:
                             row = [list(cell.values())[0] if cell else None for cell in record]
                             rows.append(row)
-                            
+
                         df_existing = pd.DataFrame(rows, columns=columns)
                         print("📊 Resultados de la tabla Redshift:")
                         print(df_existing.to_string(index=False))
@@ -919,7 +919,7 @@ def persist_to_redshift_dedup_only(redshift_data, s3_client, df_all_data, table_
 
     print("✅ Nuevos registros insertados correctamente sin borrar tabla.")
     return len(df_dedup)
-
+         
 def lambda_handler(event,context):
     try:
         redshift_data = boto3.client('redshift-data')
@@ -991,9 +991,11 @@ def lambda_handler(event,context):
             print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
             flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "carrefour_data", redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
             
-            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "dim_producto", redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
+            # flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "dim_producto", redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
 
-            print('df: ', df)
+            df_dim_producto = create_and_fill_product_dim_table_in_redshift(s3, bucket, 'dim_producto/', df, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup','product_id', False)
+
+            print('df leido de s3: ', df)
 
             # Obtener la tabla actual y la dimensión de productos desde Redshift
             try:
