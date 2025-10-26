@@ -150,7 +150,7 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
 
     if flag_check_ids_repetidos == False:
         flag_exists, tiene_datos = create_redshift_table_from_df(
-            df, columnas_sql, table_name, redshift_data, database, workgroup, pk
+            df, columnas_sql, table_name, redshift_data, database, workgroup, None #pk
         )
     else:
         flag_exists, tiene_datos = False, False
@@ -212,6 +212,8 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
         # Asignación de IDs secuenciales incluso si EAN es None
         df_dim_producto["product_id"] = range(1, len(df_dim_producto) + 1)
         df_dim_producto.drop_duplicates(subset=["nombre_producto", "ean"], inplace=True)
+
+        print('df_dim_producto a partir de la tabla de carerfour_data en redshift que se va a insertar: ', df_dim_producto)
 
         insert_df_into_redshift_copy_fixed(
             redshift_data, s3, df_dim_producto, table_name, bucket, "dev", "pdf-etl-workgroup", iam_role
@@ -426,7 +428,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             id_col = 'id'
 
         if id_col:
-            print('Vemos que hay en el df actual en redshift')
+            print(f'Vemos en un df lo que hay actualmente en la tabla {table_name} en redshift')
             query = f"SELECT * FROM {table_name};"
             response = redshift_data.execute_statement(
                 Database=database,
@@ -451,14 +453,13 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                             rows.append(row)
 
                         df_existing = pd.DataFrame(rows, columns=columns)
-                        print("📊 Resultados de la tabla Redshift:")
+                        print(f"📊 Resultados de la tabla {table_name} Redshift:")
                         print(df_existing.to_string(index=False))
                     else:
                         print("⚠️ La consulta no devolvió resultados.")
                     break
                 else:
                     time.sleep(1)
-            print(df)
 
             print(f"🔍 Verificando duplicados en columna clave '{id_col}' para {table_name}...")
 
