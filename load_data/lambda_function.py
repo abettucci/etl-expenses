@@ -528,8 +528,6 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                     nullable = r[3]["stringValue"]
                     print(f"{pos:>2}. {col:<25} {dtype:<15} (nullable={nullable})")
                     redshift_columns.append(col)
-                
-                print(f"\n🔍 Esquema Redshift (solo nombres): {redshift_columns}")
                 break
 
             elif desc["Status"] == "FAILED":
@@ -585,6 +583,22 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
         if lines:
             print(f"📋 Header CSV: {lines[0]}")
         
+        print("🔎 Contexto ANTES del COPY:")
+        ctx_before_sql = "SELECT current_database() AS db, current_schema() AS schema, current_user AS user;"
+        ctx_before_stmt = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=ctx_before_sql
+        )
+        ctx_before_id = ctx_before_stmt["Id"]
+        while True:
+            ctx_before_desc = redshift_data.describe_statement(Id=ctx_before_id)
+            if ctx_before_desc["Status"] == "FINISHED":
+                ctx_before_result = redshift_data.get_statement_result(Id=ctx_before_id)
+                print(ctx_before_result["Records"])
+                break
+            time.sleep(1)
+
         # 8. Ejecutar COPY
         copy_sql = f"""
             COPY {table_name}
@@ -620,6 +634,23 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                 raise Exception(f"COPY failed: {error_msg}")
                 
             elif status == "FINISHED":
+
+                print("🔎 Contexto DESPUÉS del COPY:")
+                ctx_after_sql = "SELECT current_database() AS db, current_schema() AS schema, current_user AS user;"
+                ctx_after_stmt = redshift_data.execute_statement(
+                    Database=database,
+                    WorkgroupName=workgroup,
+                    Sql=ctx_after_sql
+                )
+                ctx_after_id = ctx_after_stmt["Id"]
+                while True:
+                    ctx_after_desc = redshift_data.describe_statement(Id=ctx_after_id)
+                    if ctx_after_desc["Status"] == "FINISHED":
+                        ctx_after_result = redshift_data.get_statement_result(Id=ctx_after_id)
+                        print(ctx_after_result["Records"])
+                        break
+                    time.sleep(1)
+
                 duration = time.time() - start_time
                 print(f"✅ COPY completado en {duration:.2f}s")
                 
@@ -892,7 +923,7 @@ def persist_to_redshift_dedup_only(redshift_data, s3_client, df_all_data, table_
         EMPTYASNULL
         BLANKSASNULL
         TRUNCATECOLUMNS
-        MAXERROR 100;
+        MAXERROR 0;
     """
     redshift_data.execute_statement(
         Database=database,
