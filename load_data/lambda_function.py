@@ -77,7 +77,7 @@ def create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, d
       {columnas_sql}{pk_sql}
     );
     """
-
+    
     redshift_data.execute_statement(
         Database=database,
         WorkgroupName=workgroup,
@@ -580,6 +580,17 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
         # Mostrar header del CSV
         if lines:
             print(f"📋 Header CSV: {lines[0]}")
+            
+        # 🔧 ARREGLO: Mostrar contenido específico para archivos_ingestados
+        if table_name == 'archivos_ingestados' and len(lines) > 1:
+            print(f"🔍 Contenido CSV archivos_ingestados:")
+            for i, line in enumerate(lines[:3]):  # Mostrar primeras 3 líneas
+                print(f"   Línea {i}: {line}")
+        
+        # 🔍 DIAGNÓSTICO: Mostrar primeras filas del CSV para debugging
+        print(f"🔍 PRIMERAS FILAS DEL CSV:")
+        for i, line in enumerate(lines[:5]):  # Mostrar primeras 5 líneas
+            print(f"   Línea {i}: {line}")
         
         print("🔎 Contexto ANTES del COPY:")
         ctx_before_sql = "SELECT current_database() AS db, current_schema() AS schema, current_user AS user;"
@@ -629,6 +640,57 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             if status == "FAILED":
                 error_msg = desc.get('Error', 'Error desconocido')
                 print(f"❌ Error en COPY: {error_msg}")
+                
+                # 🔍 DIAGNÓSTICO: Consultar sys_load_error_detail para más detalles
+                try:
+                    error_detail_query = f"""
+                        SELECT 
+                            filename,
+                            line_number,
+                            colname,
+                            type,
+                            col_length,
+                            raw_field_value,
+                            err_reason
+                        FROM sys_load_error_detail 
+                        WHERE query = {resp['Id']}
+                        ORDER BY line_number, colname;
+                    """
+                    
+                    error_resp = redshift_data.execute_statement(
+                        Database=database,
+                        WorkgroupName=workgroup,
+                        Sql=error_detail_query
+                    )
+                    
+                    error_id = error_resp['Id']
+                    while True:
+                        error_desc = redshift_data.describe_statement(Id=error_id)
+                        if error_desc["Status"] == "FINISHED":
+                            if error_desc.get('HasResultSet'):
+                                error_result = redshift_data.get_statement_result(Id=error_id)
+                                print("🔍 DETALLES DEL ERROR DE CARGA:")
+                                for record in error_result.get("Records", []):
+                                    filename = record[0].get('stringValue', 'N/A')
+                                    line_num = record[1].get('longValue', 'N/A')
+                                    colname = record[2].get('stringValue', 'N/A')
+                                    error_type = record[3].get('stringValue', 'N/A')
+                                    raw_value = record[5].get('stringValue', 'N/A')
+                                    reason = record[6].get('stringValue', 'N/A')
+                                    print(f"   📄 Archivo: {filename}")
+                                    print(f"   📍 Línea: {line_num}, Columna: {colname}")
+                                    print(f"   🔍 Tipo: {error_type}")
+                                    print(f"   💾 Valor: '{raw_value}'")
+                                    print(f"   ❌ Razón: {reason}")
+                                    print("   " + "-" * 50)
+                            break
+                        elif error_desc["Status"] == "FAILED":
+                            print(f"⚠️ No se pudieron obtener detalles del error: {error_desc.get('Error')}")
+                            break
+                        time.sleep(1)
+                except Exception as e:
+                    print(f"⚠️ Error obteniendo detalles: {str(e)}")
+                
                 raise Exception(f"COPY failed: {error_msg}")
                 
             elif status == "FINISHED":
@@ -774,15 +836,22 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
     # 3. Corregir tipos de datos problemáticos
     type_corrections = {
         'product_id': 'Int64',
-        'nro_ticket': 'Int64'
+        'nro_ticket': 'Int64',
+        'id': 'Int64'  # Para archivos_ingestados
     }
     
     for col, target_type in type_corrections.items():
         if col in df_fixed.columns:
             if target_type == 'Int64':
                 # Convertir a Int64 (permite NaN)
-                df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce').astype('Int64')
-                print(f"✅ Corregido {col} a Int64")
+                try:
+                    df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce').astype('Int64')
+                    print(f"✅ Corregido {col} a Int64")
+                except Exception as e:
+                    print(f"⚠️ Error convirtiendo {col} a Int64: {str(e)}")
+                    # Mantener como string si falla la conversión
+                    df_fixed[col] = df_fixed[col].astype(str)
+                    print(f"✅ Mantenido {col} como string")
     
     # 4. Limpiar strings y manejar valores nulos
     for col in df_fixed.columns:
@@ -790,6 +859,26 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
             df_fixed[col] = df_fixed[col].astype(str)
             df_fixed[col] = df_fixed[col].replace(['nan', 'NaN', 'None', '<NA>', 'NULL', 'null'], '')
             df_fixed[col] = df_fixed[col].str.strip()
+            
+            # 🔧 ARREGLO: Manejar timestamps específicamente
+            if col.lower() == 'ins_dttm':
+                print(f"🔍 Procesando timestamp {col}: {df_fixed[col].iloc[0] if len(df_fixed) > 0 else 'N/A'}")
+                print(f"🔍 Tipo de dato timestamp: {df_fixed[col].dtype}")
+                # Asegurar que el formato sea correcto para Redshift
+                if len(df_fixed) > 0:
+                    sample_value = df_fixed[col].iloc[0]
+                    print(f"🔍 Valor de muestra: '{sample_value}' (tipo: {type(sample_value)})")
+                    # Validar formato de timestamp
+                    if sample_value and sample_value != '':
+                        try:
+                            # Intentar parsear como datetime para validar formato
+                            pd.to_datetime(sample_value)
+                            print(f"✅ Timestamp válido: {sample_value}")
+                        except Exception as e:
+                            print(f"⚠️ Timestamp inválido: {sample_value} - {str(e)}")
+                            # Generar timestamp válido si es inválido
+                            df_fixed[col] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            print(f"🔧 Timestamp corregido: {df_fixed[col].iloc[0]}")
     
     print(f"📊 DataFrame final: {df_fixed.shape[0]} filas, {df_fixed.shape[1]} columnas")
     
@@ -1032,13 +1121,13 @@ def lambda_handler(event,context):
             tables = [table_name] 
 
         elif etl_flow == 'TICKET':
-            print(f'🎯 ENFOQUE SIMPLIFICADO: Procesando archivo {key}')
+            report_id, report_date = '', ''
             
-            # 1️⃣ PASO 1: Verificar si el nro_ticket ya existe en archivos_ingestados
+            # 🔍 VERIFICACIÓN SIMPLE: Solo verificar si el ticket ya existe
             tickets_del_archivo = df['nro_ticket'].unique().tolist()
             print(f"🔍 Tickets en el archivo: {tickets_del_archivo}")
             
-            # Consultar tickets ya procesados
+            # Consultar tickets ya procesados (manejo de error si la tabla no existe)
             tickets_existentes = set()
             try:
                 check_tickets_query = "SELECT DISTINCT id FROM archivos_ingestados;"
@@ -1060,7 +1149,7 @@ def lambda_handler(event,context):
                             }
                         break
                     elif desc["Status"] == "FAILED":
-                        print(f"⚠️ Error consultando tickets existentes: {desc['Error']}")
+                        print(f"⚠️ Tabla archivos_ingestados no existe aún, se creará")
                         break
                     time.sleep(1)
             except Exception as e:
@@ -1068,7 +1157,7 @@ def lambda_handler(event,context):
             
             print(f"📦 Tickets ya procesados: {tickets_existentes}")
             
-            # 2️⃣ PASO 2: Filtrar solo tickets nuevos
+            # Filtrar solo tickets nuevos
             tickets_nuevos = [t for t in tickets_del_archivo if t not in tickets_existentes]
             print(f"🆕 Tickets nuevos a procesar: {tickets_nuevos}")
             
@@ -1076,31 +1165,23 @@ def lambda_handler(event,context):
                 print("✅ Todos los tickets ya fueron procesados. No se requiere carga.")
                 tables = ['archivos_ingestados', 'dim_producto', 'carrefour_data']
             else:
-                # 3️⃣ PASO 3: Filtrar DataFrame solo con tickets nuevos
-                df_nuevos = df[df['nro_ticket'].isin(tickets_nuevos)].copy()
-                print(f"📊 Filas a procesar: {len(df_nuevos)} (de {len(df)} total)")
-                
-                # 4️⃣ PASO 4: Crear/actualizar tablas y cargar datos
-                
-                # A) Crear tabla carrefour_data si no existe
-                column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df_nuevos.columns, df_nuevos.dtypes)]
+                # 🔧 VOLVER A LA LÓGICA ORIGINAL QUE FUNCIONABA
+                column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
                 columnas_sql = ",\n  ".join(column_defs)
+
+                print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de carrefour_data')
+                flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "carrefour_data", redshift_data, 'dev', 'pdf-etl-workgroup', None)
                 
-                flag_exists, tiene_datos = create_redshift_table_from_df(
-                    df_nuevos, columnas_sql, "carrefour_data", redshift_data, 'dev', 'pdf-etl-workgroup', None
-                )
-                
-                # B) Cargar datos en carrefour_data (sin deduplicación compleja)
+                # Cargar datos básicos en carrefour_data (solo tickets nuevos)
+                df_nuevos = df[df['nro_ticket'].isin(tickets_nuevos)].copy()
                 insert_df_into_redshift_copy_fixed(redshift_data, s3, df_nuevos, "carrefour_data", bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-                print("✅ Datos cargados en carrefour_data")
+                print("✅ Datos básicos cargados en carrefour_data")
                 
-                # C) Crear/actualizar dim_producto
-                df_dim_producto = create_and_fill_product_dim_table_in_redshift(
-                    s3, bucket, 'dim_producto/', df_nuevos, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup', 'product_id', False
-                )
+                # Crear dim_producto basado en los datos ya persistidos
+                df_dim_producto = create_and_fill_product_dim_table_in_redshift(s3, bucket, 'dim_producto/', df_nuevos, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup','product_id', False)
                 print("✅ dim_producto actualizado")
                 
-                # D) Registrar tickets procesados en archivos_ingestados
+                # Registrar tickets procesados en archivos_ingestados
                 df_uploaded_files = pd.DataFrame(tickets_nuevos, columns=['id'])
                 now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 df_uploaded_files['INS_DTTM'] = now_str
@@ -1114,9 +1195,7 @@ def lambda_handler(event,context):
                         column_defs.append(f"{clean_column_name(col)} {redshift_type(dtype)}")
                 column_uploaded_files = ",\n  ".join(column_defs)
                 
-                flag_exists, tiene_datos = create_redshift_table_from_df(
-                    df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', None
-                )
+                flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', None)
                 insert_df_into_redshift_copy_fixed(redshift_data, s3, df_uploaded_files, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
                 print(f"✅ Registrados {len(df_uploaded_files)} tickets nuevos en archivos_ingestados")
 
