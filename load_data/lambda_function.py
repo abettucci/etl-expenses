@@ -1032,122 +1032,79 @@ def lambda_handler(event,context):
             tables = [table_name] 
 
         elif etl_flow == 'TICKET':
-            report_id, report_date = '', ''
-            column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
-            column_defs += ["operation_id VARCHAR(255)"]
-            columnas_sql = ",\n  ".join(column_defs)
-
-            print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
-            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "carrefour_data", redshift_data, 'dev', 'pdf-etl-workgroup', 'nro_ticket')
+            print(f'🎯 ENFOQUE SIMPLIFICADO: Procesando archivo {key}')
             
-            # 🔧 ARREGLO: Cargar primero carrefour_data, luego crear dim_producto
-            # Primero insertamos los datos básicos en carrefour_data
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, "carrefour_data", bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-            print("✅ Datos básicos cargados en carrefour_data")
+            # 1️⃣ PASO 1: Verificar si el nro_ticket ya existe en archivos_ingestados
+            tickets_del_archivo = df['nro_ticket'].unique().tolist()
+            print(f"🔍 Tickets en el archivo: {tickets_del_archivo}")
             
-            # Ahora creamos dim_producto basado en los datos ya persistidos
-            df_dim_producto = create_and_fill_product_dim_table_in_redshift(s3, bucket, 'dim_producto/', df, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup','product_id', False)
-
-            print('df leido de s3: ', df)
-
-            # Obtener la tabla actual y la dimensión de productos desde Redshift
+            # Consultar tickets ya procesados
+            tickets_existentes = set()
             try:
-                df_actual = get_redshift_table_data(redshift_data, "carrefour_data")
-                print('df_actual: ', df_actual)
-            except Exception as e:
-                print(f"⚠️ No se pudo obtener datos de carrefour_data: {str(e)}")
-                df_actual = pd.DataFrame()  # DataFrame vacío como fallback
-            
-            try:
-                df_dim_producto = get_redshift_table_data(redshift_data, "dim_producto")
-                df_dim_producto = df_dim_producto.rename(columns={
-                    'nombre_producto': 'producto',  # asegurar que los nombres coincidan
-                })
-            except Exception as e:
-                print(f"⚠️ No se pudo obtener datos de dim_producto: {str(e)}")
-                df_dim_producto = pd.DataFrame()  # DataFrame vacío como fallback
-
-            df_dim_producto = df_dim_producto.drop_duplicates(subset=['producto'], keep='first')
-
-            # Enriquecer df con df_dim_producto (para obtener product_id y grupo_producto)
-            if not df_dim_producto.empty:
-                df_enriquecido = df.merge(
-                    df_dim_producto[['producto', 'product_id', 'grupo_producto']],
-                    on='producto',
-                    how='left'
+                check_tickets_query = "SELECT DISTINCT id FROM archivos_ingestados;"
+                check_resp = redshift_data.execute_statement(
+                    Database='dev',
+                    WorkgroupName='pdf-etl-workgroup',
+                    Sql=check_tickets_query
                 )
-            else:
-                print("⚠️ df_dim_producto está vacío, usando df original")
-                df_enriquecido = df.copy()
-                df_enriquecido['product_id'] = None
-                df_enriquecido['grupo_producto'] = None
-
-            print('df_enriquecido: ', df_enriquecido)
-
-            # dups = df_enriquecido[df_enriquecido.duplicated(subset=['producto', 'nro_ticket'], keep=False)]
-            # if not dups.empty:
-            #     print("⚠️ Aún hay duplicados después del merge:")
-            #     print(dups[['producto', 'nro_ticket', 'product_id']])
-
-            for col in ['product_id', 'grupo_producto']:
-                col_x, col_y = f"{col}_x", f"{col}_y"
-                if col_x in df_enriquecido.columns and col_y in df_enriquecido.columns:
-                    # Si hay dos columnas, elegimos los valores nuevos de la derecha (_y)
-                    df_enriquecido[col] = df_enriquecido[col_y].combine_first(df_enriquecido[col_x])
-                    df_enriquecido.drop(columns=[col_x, col_y], inplace=True)
-                elif col_y in df_enriquecido.columns:
-                    df_enriquecido.rename(columns={col_y: col}, inplace=True)
-                elif col_x in df_enriquecido.columns:
-                    df_enriquecido.rename(columns={col_x: col}, inplace=True)
-
-            # Generar operation_id directamente en pandas
-            df_enriquecido['operation_id'] = (
-                df_enriquecido['nro_ticket'].astype(str)
-                + df_enriquecido['product_id'].astype(str)
-                + df_enriquecido['monto_total'].astype(str)
-                + '_'
-                + df_enriquecido['fecha'].astype(str)
-            )
-
-            # Combinar con datos actuales y eliminar duplicados usando nro_ticket
-            if not df_actual.empty:
-                df_final = pd.concat([df_actual, df_enriquecido], ignore_index=True)
-                df_final.drop_duplicates(subset=['nro_ticket'], inplace=True)
-            else:
-                df_final = df_enriquecido
-
-            print(f"✅ Total filas únicas luego de merge: {len(df_final)}")
-
-            try:
-                existing_df = get_redshift_table_data(redshift_data, "carrefour_data")
+                
+                while True:
+                    desc = redshift_data.describe_statement(Id=check_resp['Id'])
+                    if desc["Status"] == "FINISHED":
+                        if desc.get('HasResultSet'):
+                            result = redshift_data.get_statement_result(Id=check_resp['Id'])
+                            tickets_existentes = {
+                                int(record[0]['longValue']) 
+                                for record in result.get("Records", [])
+                                if record and record[0].get('longValue')
+                            }
+                        break
+                    elif desc["Status"] == "FAILED":
+                        print(f"⚠️ Error consultando tickets existentes: {desc['Error']}")
+                        break
+                    time.sleep(1)
             except Exception as e:
-                print(f"⚠️ No se pudo obtener datos existentes de carrefour_data: {str(e)}")
-                existing_df = pd.DataFrame()  # DataFrame vacío como fallback
-
-            if not existing_df.empty:
-                print(f"📦 Tabla actual en Redshift: {len(existing_df)} filas")
-                # 2️⃣ Mantener solo las filas nuevas usando nro_ticket
-                df_enriquecido = df_enriquecido[~df_enriquecido['nro_ticket'].isin(existing_df['nro_ticket'])]
-                print(f"🧮 Filas nuevas detectadas: {len(df_enriquecido)}")
-            else:
-                print("📭 Tabla vacía en Redshift, se insertan todas las filas")
-
-            # 🔧 ARREGLO: Ya cargamos carrefour_data arriba, ahora solo enriquecemos si hay datos nuevos
-            if not df_enriquecido.empty:
-                print(f"🔄 Enriqueciendo carrefour_data con {len(df_enriquecido)} filas adicionales")
-                insert_df_into_redshift_copy_fixed(redshift_data, s3, df_enriquecido, "carrefour_data", bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-            else:
-                print("✅ No hay filas nuevas para enriquecer carrefour_data")
-
-            # Registrar nro_ticket en tabla de control
-            data = df['nro_ticket'].unique().tolist()
-            print(f"🔍 Tickets únicos encontrados: {data}")
+                print(f"⚠️ No se pudo consultar tickets existentes: {str(e)}")
             
-            if data:  # 🔧 ARREGLO: Solo procesar si hay tickets válidos
-                df_uploaded_files = pd.DataFrame(data, columns=['id'])
+            print(f"📦 Tickets ya procesados: {tickets_existentes}")
+            
+            # 2️⃣ PASO 2: Filtrar solo tickets nuevos
+            tickets_nuevos = [t for t in tickets_del_archivo if t not in tickets_existentes]
+            print(f"🆕 Tickets nuevos a procesar: {tickets_nuevos}")
+            
+            if not tickets_nuevos:
+                print("✅ Todos los tickets ya fueron procesados. No se requiere carga.")
+                tables = ['archivos_ingestados', 'dim_producto', 'carrefour_data']
+            else:
+                # 3️⃣ PASO 3: Filtrar DataFrame solo con tickets nuevos
+                df_nuevos = df[df['nro_ticket'].isin(tickets_nuevos)].copy()
+                print(f"📊 Filas a procesar: {len(df_nuevos)} (de {len(df)} total)")
+                
+                # 4️⃣ PASO 4: Crear/actualizar tablas y cargar datos
+                
+                # A) Crear tabla carrefour_data si no existe
+                column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df_nuevos.columns, df_nuevos.dtypes)]
+                columnas_sql = ",\n  ".join(column_defs)
+                
+                flag_exists, tiene_datos = create_redshift_table_from_df(
+                    df_nuevos, columnas_sql, "carrefour_data", redshift_data, 'dev', 'pdf-etl-workgroup', None
+                )
+                
+                # B) Cargar datos en carrefour_data (sin deduplicación compleja)
+                insert_df_into_redshift_copy_fixed(redshift_data, s3, df_nuevos, "carrefour_data", bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+                print("✅ Datos cargados en carrefour_data")
+                
+                # C) Crear/actualizar dim_producto
+                df_dim_producto = create_and_fill_product_dim_table_in_redshift(
+                    s3, bucket, 'dim_producto/', df_nuevos, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup', 'product_id', False
+                )
+                print("✅ dim_producto actualizado")
+                
+                # D) Registrar tickets procesados en archivos_ingestados
+                df_uploaded_files = pd.DataFrame(tickets_nuevos, columns=['id'])
                 now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 df_uploaded_files['INS_DTTM'] = now_str
-                print(f"🔍 DIAGNÓSTICO timestamp: {now_str}")
+                print(f"🔍 Timestamp generado: {now_str}")
 
                 column_defs = []
                 for col, dtype in zip(df_uploaded_files.columns, df_uploaded_files.dtypes):
@@ -1156,16 +1113,14 @@ def lambda_handler(event,context):
                     else:
                         column_defs.append(f"{clean_column_name(col)} {redshift_type(dtype)}")
                 column_uploaded_files = ",\n  ".join(column_defs)
-                flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', None)  # 🔧 ARREGLO: Sin PK
+                
+                flag_exists, tiene_datos = create_redshift_table_from_df(
+                    df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', None
+                )
                 insert_df_into_redshift_copy_fixed(redshift_data, s3, df_uploaded_files, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-                print(f"✅ Registrados {len(df_uploaded_files)} tickets en archivos_ingestados")
-            else:
-                print("⚠️ No hay tickets válidos para registrar en archivos_ingestados")
+                print(f"✅ Registrados {len(df_uploaded_files)} tickets nuevos en archivos_ingestados")
 
-            # Limpieza de temporales
-            # delete_tmp_files_in_s3(s3, bucket)
-
-            tables = ['archivos_ingestados', 'dim_producto', table_name]  
+                tables = ['archivos_ingestados', 'dim_producto', 'carrefour_data']  
         else: # es un gasto del banco
             column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
             columnas_sql = ",\n  ".join(column_defs)
