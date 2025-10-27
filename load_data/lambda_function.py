@@ -214,7 +214,7 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
         df_dim_producto.drop_duplicates(subset=["nombre_producto", "ean"], inplace=True)
 
         print('df_dim_producto a partir de la tabla de carerfour_data en redshift que se va a insertar: ', df_dim_producto)
-
+        
         insert_df_into_redshift_copy_fixed(
             redshift_data, s3, df_dim_producto, table_name, bucket, "dev", "pdf-etl-workgroup", iam_role
         )
@@ -500,9 +500,9 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
 
         # 1. Primero obtener el esquema actual de Redshift
         schema_query = f"""
-            SELECT column_name, data_type, is_nullable
+            SELECT column_name, ordinal_position, data_type, is_nullable
             FROM information_schema.columns 
-            WHERE table_name = '{table_name}'
+            WHERE table_name = '{table_name}' AND table_schema = 'public'
             ORDER BY ordinal_position;
         """
         
@@ -515,15 +515,28 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
         schema_id = schema_resp['Id']
         while True:
             desc = redshift_data.describe_statement(Id=schema_id)
-            if desc['Status'] == 'FINISHED':
-                schema_result = redshift_data.get_statement_result(Id=schema_id)
+            if desc["Status"] == "FINISHED":
+                result = redshift_data.get_statement_result(Id=schema_id)
+                
+                redshift_columns = []  # lista de nombres de columna
+                
+                print("\n📋 Estructura de la tabla dim_producto:")
+                for r in result["Records"]:
+                    col = r[0]["stringValue"]
+                    pos = r[1]["longValue"]
+                    dtype = r[2]["stringValue"]
+                    nullable = r[3]["stringValue"]
+                    print(f"{pos:>2}. {col:<25} {dtype:<15} (nullable={nullable})")
+                    redshift_columns.append(col)
+                
+                print(f"\n🔍 Esquema Redshift (solo nombres): {redshift_columns}")
+                break
+
+            elif desc["Status"] == "FAILED":
+                print(f"❌ Error consultando schema: {desc.get('Error')}")
                 break
             time.sleep(1)
-        
-        redshift_columns = []
-        for record in schema_result['Records']:
-            redshift_columns.append(record[0]['stringValue'])
-        
+                
         print(f"🔍 Esquema Redshift: {redshift_columns}")
         
         print('df antes de fix dataframe for redshift copy: ', df)
@@ -534,6 +547,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
         # 3. Mostrar preview del DataFrame corregido
         print(f"\n🔍 PREVIEW DEL DATAFRAME CORREGIDO:")
         print(f"Columnas: {list(df_fixed.columns)}")
+        print(f"Data types: {list(df_fixed.dtypes)}")
         print(f"Primeras filas:")
         print(df_fixed.head(3).to_string())
         
@@ -1103,7 +1117,7 @@ def lambda_handler(event,context):
             insert_df_into_redshift_copy_fixed(redshift_data, s3, df_uploaded_files, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
 
             # Limpieza de temporales
-            delete_tmp_files_in_s3(s3, bucket)
+            # delete_tmp_files_in_s3(s3, bucket)
 
             tables = ['archivos_ingestados', 'dim_producto', table_name]  
         else: # es un gasto del banco
