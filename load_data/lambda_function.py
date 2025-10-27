@@ -863,12 +863,16 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
                     df_fixed[col] = df_fixed[col].astype(str)
                     print(f"✅ Mantenido {col} como string")
     
+    print(df_fixed)
+    print(list(df_fixed.columns))
+
     # 4. Limpiar strings y manejar valores nulos
     for col in df_fixed.columns:
         if df_fixed[col].dtype == 'object':
+            print(df_fixed[col])
             df_fixed[col] = df_fixed[col].astype(str)
             df_fixed[col] = df_fixed[col].replace(['nan', 'NaN', 'None', '<NA>', 'NULL', 'null'], '')
-            df_fixed[col] = df_fixed[col].str.strip()
+            # df_fixed[col] = df_fixed[col].str.strip()
             
             # 🔧 ARREGLO: Manejar timestamps específicamente
             if col.lower() == 'ins_dttm':
@@ -1194,7 +1198,7 @@ def lambda_handler(event,context):
                 # Registrar tickets procesados en archivos_ingestados
                 df_uploaded_files = pd.DataFrame(tickets_nuevos, columns=['id'])
                 now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                df_uploaded_files['INS_DTTM'] = now_str
+                df_uploaded_files['ins_dttm'] = now_str
                 print(f"🔍 Timestamp generado: {now_str}")
 
                 column_defs = []
