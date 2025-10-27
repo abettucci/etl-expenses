@@ -78,11 +78,20 @@ def create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, d
     );
     """
     
-    redshift_data.execute_statement(
+    # Ejecutar CREATE TABLE y esperar a que termine
+    create_resp = redshift_data.execute_statement(
         Database=database,
         WorkgroupName=workgroup,
         Sql=create_stmt
     )
+    create_id = create_resp["Id"]
+    while True:
+        create_desc = redshift_data.describe_statement(Id=create_id)
+        if create_desc["Status"] == "FINISHED":
+            break
+        elif create_desc["Status"] == "FAILED":
+            raise RuntimeError(create_desc.get("Error", "CREATE TABLE failed"))
+        time.sleep(1)
 
     tiene_datos = False
     if existe_antes:
@@ -504,34 +513,35 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             ORDER BY ordinal_position;
         """
         
-        schema_resp = redshift_data.execute_statement(
-            Database=database,
-            WorkgroupName=workgroup,
-            Sql=schema_query
-        )
-        
-        schema_id = schema_resp['Id']
-        while True:
-            desc = redshift_data.describe_statement(Id=schema_id)
-            if desc["Status"] == "FINISHED":
-                result = redshift_data.get_statement_result(Id=schema_id)
-                
-                redshift_columns = []  # lista de nombres de columna
-                
-                print(f"\n📋 Estructura de la tabla {table_name}:")
-                for r in result["Records"]:
-                    col = r[0]["stringValue"]
-                    pos = r[1]["longValue"]
-                    dtype = r[2]["stringValue"]
-                    nullable = r[3]["stringValue"]
-                    print(f"{pos:>2}. {col:<25} {dtype:<15} (nullable={nullable})")
-                    redshift_columns.append(col)
-                break
-
-            elif desc["Status"] == "FAILED":
-                print(f"❌ Error consultando schema: {desc.get('Error')}")
-                break
-            time.sleep(1)
+        # Ejecutar consulta de esquema con reintentos por eventual consistencia
+        max_retries = 5
+        attempt = 0
+        redshift_columns = []
+        while attempt < max_retries and not redshift_columns:
+            schema_resp = redshift_data.execute_statement(
+                Database=database,
+                WorkgroupName=workgroup,
+                Sql=schema_query
+            )
+            schema_id = schema_resp['Id']
+            while True:
+                desc = redshift_data.describe_statement(Id=schema_id)
+                if desc["Status"] == "FINISHED":
+                    result = redshift_data.get_statement_result(Id=schema_id)
+                    print(f"\n📋 Estructura de la tabla {table_name}:")
+                    for r in result.get("Records", []):
+                        col = r[0].get("stringValue")
+                        if col:
+                            redshift_columns.append(col)
+                    if not redshift_columns:
+                        print("⚠️ Esquema vacío, reintentando...")
+                        time.sleep(1.5)
+                    break
+                elif desc["Status"] == "FAILED":
+                    print(f"❌ Error consultando schema: {desc.get('Error')}")
+                    break
+                time.sleep(0.5)
+            attempt += 1
                 
         print(f"🔍 Esquema Redshift: {redshift_columns}")
         
