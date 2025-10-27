@@ -1145,8 +1145,9 @@ def lambda_handler(event,context):
             
             if data:  # 🔧 ARREGLO: Solo procesar si hay tickets válidos
                 df_uploaded_files = pd.DataFrame(data, columns=['id'])
-                now = pd.to_datetime(datetime.now())
-                df_uploaded_files['INS_DTTM'] = now
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                df_uploaded_files['INS_DTTM'] = now_str
+                print(f"🔍 DIAGNÓSTICO timestamp: {now_str}")
 
                 column_defs = []
                 for col, dtype in zip(df_uploaded_files.columns, df_uploaded_files.dtypes):
