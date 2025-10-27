@@ -610,7 +610,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             EMPTYASNULL
             BLANKSASNULL
             TRUNCATECOLUMNS
-            MAXERROR 100;
+            MAXERROR 0;
         """
         
         print(f"🔧 Ejecutando COPY...")
@@ -634,7 +634,6 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                 raise Exception(f"COPY failed: {error_msg}")
                 
             elif status == "FINISHED":
-
                 print("🔎 Contexto DESPUÉS del COPY:")
                 ctx_after_sql = "SELECT current_database() AS db, current_schema() AS schema, current_user AS user;"
                 ctx_after_stmt = redshift_data.execute_statement(
@@ -653,6 +652,14 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
 
                 duration = time.time() - start_time
                 print(f"✅ COPY completado en {duration:.2f}s")
+                
+                commit_stmt = "COMMIT;"
+                redshift_data.execute_statement(
+                    Database=database,
+                    WorkgroupName=workgroup,
+                    Sql=commit_stmt
+                )
+                print("🧾 Commit ejecutado después del COPY")
                 
                 # Verificar que se insertaron datos
                 count_query = f"SELECT COUNT(*) FROM {table_name};"
