@@ -14,6 +14,110 @@ pd.set_option('display.max_rows', None)
 
 iam_role = os.environ["IAM_ROLE_REDSHIFT"]
 
+# --------------------------
+# Utilidades SQL robustas
+# --------------------------
+def exec_sql_wait(redshift_data, sql, database, workgroup):
+    resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=sql)
+    stmt_id = resp["Id"]
+    while True:
+        d = redshift_data.describe_statement(Id=stmt_id)
+        if d["Status"] == "FINISHED":
+            return True
+        if d["Status"] == "FAILED":
+            raise RuntimeError(d.get("Error", "SQL failed"))
+        time.sleep(1)
+
+def ensure_table_by_sql(redshift_data, create_sql, database, workgroup):
+    return exec_sql_wait(redshift_data, create_sql, database, workgroup)
+
+def get_existing_keys(redshift_data, table_name, key_column, database, workgroup):
+    keys = set()
+    try:
+        resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=f"SELECT DISTINCT {key_column} FROM public.{table_name};"
+        )
+        while True:
+            d = redshift_data.describe_statement(Id=resp['Id'])
+            if d['Status'] == 'FINISHED':
+                if d.get('HasResultSet'):
+                    res = redshift_data.get_statement_result(Id=resp['Id'])
+                    for r in res.get('Records', []):
+                        v = list(r[0].values())[0] if r and r[0] else None
+                        if v is not None:
+                            keys.add(int(v) if isinstance(v, (int,)) or 'longValue' in r[0] else v)
+                break
+            elif d['Status'] == 'FAILED':
+                break
+            time.sleep(1)
+    except Exception:
+        pass
+    return keys
+
+def copy_via_staging_and_insert(redshift_data, s3_client, df, table_name, columns_in_order, key_columns, bucket_name, database, workgroup, iam_role):
+    if df.empty:
+        print(f"ℹ️ No hay filas para {table_name}")
+        return 0
+
+    # 1) Crear staging con estructura del destino
+    staging = f"stg_{table_name}_{int(time.time())}"
+    create_stg_sql = f"CREATE TEMP TABLE {staging} (LIKE public.{table_name});"
+    exec_sql_wait(redshift_data, create_stg_sql, database, workgroup)
+
+    # 2) Subir CSV con columnas en orden
+    df_to_save = df[columns_in_order].copy()
+    csv_buffer = io.StringIO()
+    df_to_save.to_csv(csv_buffer, index=False, sep=',', quoting=csv.QUOTE_MINIMAL)
+    s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
+    s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=csv_buffer.getvalue().encode('utf-8'))
+    s3_path = f"s3://{bucket_name}/{s3_key}"
+    time.sleep(1)
+
+    cols_clause = "(" + ", ".join(columns_in_order) + ")"
+    copy_sql = f"""
+        COPY {staging} {cols_clause}
+        FROM '{s3_path}'
+        IAM_ROLE '{iam_role}'
+        CSV
+        IGNOREHEADER 1
+        DELIMITER ','
+        EMPTYASNULL
+        BLANKSASNULL
+        TRUNCATECOLUMNS
+        MAXERROR 0;
+    """
+    exec_sql_wait(redshift_data, copy_sql, database, workgroup)
+
+    # 3) Insertar solo no existentes por clave(s)
+    on_join = " AND ".join([f"s.{k} = d.{k}" for k in key_columns])
+    null_check = " AND ".join([f"d.{k} IS NULL" for k in key_columns]) if len(key_columns) == 1 else f"({ ' AND '.join([f'd.{k} IS NULL' for k in key_columns]) })"
+    insert_cols = ", ".join(columns_in_order)
+    select_cols = ", ".join([f"s.{c}" for c in columns_in_order])
+    insert_sql = f"""
+        INSERT INTO public.{table_name} ({insert_cols})
+        SELECT {select_cols}
+        FROM {staging} s
+        LEFT JOIN public.{table_name} d
+          ON {on_join}
+        WHERE {null_check};
+    """
+    exec_sql_wait(redshift_data, insert_sql, database, workgroup)
+
+    # 4) Contar insertados
+    cnt_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=f"SELECT COUNT(*) FROM {staging};")
+    while True:
+        d = redshift_data.describe_statement(Id=cnt_resp['Id'])
+        if d['Status'] == 'FINISHED':
+            res = redshift_data.get_statement_result(Id=cnt_resp['Id'])
+            staged = res['Records'][0][0]['longValue']
+            break
+        time.sleep(1)
+
+    # 5) Borrar staging (se borra solo por TEMP al cerrar sesión)
+    return staged
+
 def format_value(val):
     if val is None or pd.isna(val):
         return 'NULL'
@@ -43,89 +147,7 @@ def clean_column_name(col):
     col = re.sub(r'[^A-Za-z0-9_]+', '_', col)
     return col.upper().strip('_')
 
-def create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, database, workgroup, primary_key=None):
-    pk_sql = f", PRIMARY KEY ({primary_key})" if primary_key else ""
-
-    # 1️⃣ Verificar si existe antes
-    check_stmt = f"""
-        SELECT COUNT(*) AS count
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-        AND table_name = '{table_name}';
-    """
-    resp_check = redshift_data.execute_statement(
-        Database=database,
-        WorkgroupName=workgroup,
-        Sql=check_stmt
-    )
-    stmt_id_check = resp_check["Id"]
-
-    # Esperar resultado y mostrarlo para debug
-    while True:
-        desc = redshift_data.describe_statement(Id=stmt_id_check)
-        if desc["Status"] == "FINISHED":
-            result = redshift_data.get_statement_result(Id=stmt_id_check)
-            existe_antes = int(result["Records"][0][0]["longValue"]) > 0
-            break
-        elif desc["Status"] == "FAILED":
-            raise RuntimeError(desc.get("Error"))
-        time.sleep(1)
-
-    # 2️⃣ Ejecutar el create
-    create_stmt = f"""
-    CREATE TABLE IF NOT EXISTS public.{table_name} (
-      {columnas_sql}{pk_sql}
-    );
-    """
-    
-    # Ejecutar CREATE TABLE y esperar a que termine
-    create_resp = redshift_data.execute_statement(
-        Database=database,
-        WorkgroupName=workgroup,
-        Sql=create_stmt
-    )
-    create_id = create_resp["Id"]
-    while True:
-        create_desc = redshift_data.describe_statement(Id=create_id)
-        if create_desc["Status"] == "FINISHED":
-            break
-        elif create_desc["Status"] == "FAILED":
-            raise RuntimeError(create_desc.get("Error", "CREATE TABLE failed"))
-        time.sleep(1)
-
-    tiene_datos = False
-    if existe_antes:
-        count_stmt = f"SELECT COUNT(*) AS count FROM public.{table_name};"
-        resp_count = redshift_data.execute_statement(
-            Database=database,
-            WorkgroupName=workgroup,
-            Sql=count_stmt
-        )
-        stmt_id_count = resp_count["Id"]
-
-        while True:
-            desc = redshift_data.describe_statement(Id=stmt_id_count)
-            if desc["Status"] == "FINISHED":
-                result = redshift_data.get_statement_result(Id=stmt_id_count)
-                tiene_datos = int(result["Records"][0][0]["longValue"]) > 0
-                break
-            elif desc["Status"] == "FAILED":
-                raise RuntimeError(desc.get("Error"))
-            time.sleep(1)
-
-    # 4️⃣ Mensajes y retorno
-    if existe_antes:
-        print(f"ℹ️ La tabla {table_name} ya existía")
-    else:
-        print(f"✅ La tabla {table_name} fue creada ahora")
-
-    if existe_antes:
-        if tiene_datos:
-            print(f"📊 La tabla {table_name} tiene datos")
-        else:
-            print(f"📭 La tabla {table_name} está vacía")
-
-    return existe_antes, tiene_datos
+## Eliminado create_redshift_table_from_df: reemplazado por ensure_table_by_sql + staging
 
 def generar_diccionario_normalizacion(productos, threshold=85):
     grupos = {}
@@ -311,111 +333,13 @@ def create_and_fill_product_dim_table_in_redshift(s3, bucket, folder, df, table_
         
 # El objetivo de esta funcion es agregar la columna "product_id" a la tabla carrefour_data para luego crear un "id" para cada fila
 # que va a ser un concatenado de "column_id", "nro_ticket" y "fecha"
-def aggregate_table_in_redshift(table_name, redshift_data, database, workgroup):
-    if table_name == 'carrefour_data':
-        agregado_dim_producto_sql = """
-            UPDATE carrefour_data AS car
-            SET 
-                grupo_producto = prod.grupo_producto,
-                product_id = prod.product_id
-            FROM dim_producto AS prod
-            WHERE car.producto = prod.nombre_producto
-              AND (car.grupo_producto IS NULL OR car.product_id IS NULL);
-        """
+## Eliminado aggregate_table_in_redshift: ya no se usa
 
-        try:
-            response = redshift_data.execute_statement(
-                Database=database,
-                WorkgroupName=workgroup,
-                Sql=agregado_dim_producto_sql
-            )
+## Eliminado add_concatenated_column: ya no se usa
 
-            # Esperar finalización
-            while True:
-                desc = redshift_data.describe_statement(Id=response['Id'])
-                if desc['Status'] == 'FINISHED':
-                    print(f"✅ Tabla {table_name} actualizada con datos de dim_producto")
-                    break
-                elif desc['Status'] == 'FAILED':
-                    print("❌ Error al consultar Redshift:", desc['Error'])
-                    break
-        except Exception as e:
-            print(f"❌ Error ejecutando query: {str(e)}")
+## Eliminado column_has_data: no se utiliza en el flujo robusto
 
-def add_concatenated_column(table_name, redshift_data, database, workgroup):
-    #quizas tenga que sumar monto al concat
-    update_sql = f"""
-        UPDATE {table_name}
-        SET operation_id = CONCAT(CONCAT(CONCAT(CAST(nro_ticket AS VARCHAR), ''),CONCAT(CONCAT(CAST(product_id AS VARCHAR), ''),CONCAT(CAST(TRUNC(monto_total,2) AS VARCHAR), '_'))),CAST(fecha AS VARCHAR));
-    """
-
-    resp = redshift_data.execute_statement(
-        Database=database,
-        WorkgroupName=workgroup,
-        Sql=update_sql
-    )
-
-    while True:
-        desc = redshift_data.describe_statement(Id=resp['Id'])
-        if desc['Status'] == 'FINISHED':
-            print(f"✅ Ejecutado: {update_sql.strip().split()[0]} en {table_name}")
-            break
-        elif desc['Status'] == 'FAILED':
-            print("❌ Error:", desc['Error'])
-            break
-
-def column_has_data(column_name, table_name, redshift_data, database, workgroup):
-    tiene_datos = False
-
-    count_stmt = f"SELECT COUNT(DISTINCT {column_name}) AS count FROM {table_name};"
-    resp_count = redshift_data.execute_statement(
-        Database=database,
-        WorkgroupName=workgroup,
-        Sql=count_stmt
-    )
-    stmt_id_count = resp_count["Id"]
-
-    while True:
-        desc = redshift_data.describe_statement(Id=stmt_id_count)
-        if desc['Status'] == 'FINISHED':
-            if desc.get('HasResultSet', False):
-                result = redshift_data.get_statement_result(Id=stmt_id_count)
-                tiene_datos = int(result["Records"][0][0]["longValue"]) > 0
-            else:
-                pass
-            break
-        elif desc['Status'] == 'FAILED':
-            print("Error al consultar Redshift:", desc['Error'])
-            break
-        time.sleep(1)
-    
-    return tiene_datos
-
-def column_exists(table_name, column_name, redshift_data, database, workgroup):
-    sql = f"""
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = '{table_name}'
-        AND column_name = '{column_name}';
-    """
-    resp = redshift_data.execute_statement(
-        Database=database,
-        WorkgroupName=workgroup,
-        Sql=sql
-    )
-    statement_id = resp['Id']
-    while True:
-        desc = redshift_data.describe_statement(Id=statement_id)
-        if desc['Status'] == 'FINISHED':
-            if desc.get('HasResultSet', False):
-                result = redshift_data.get_statement_result(Id=statement_id)
-                return result.get('Records', []) != []
-            else:
-                return False
-        elif desc['Status'] == 'FAILED':
-            print("❌ Error:", desc['Error'])
-            return False
-        time.sleep(1)
+## Eliminado column_exists: no se utiliza en el flujo robusto
 
 def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name, bucket_name, database, workgroup, iam_role):
     """
@@ -436,7 +360,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
 
         if id_col:
             print(f'Vemos en un df lo que hay actualmente en la tabla {table_name} en redshift')
-            query = f"SELECT * FROM {table_name};"
+            query = f"SELECT * FROM public.{table_name};"
             response = redshift_data.execute_statement(
                 Database=database,
                 WorkgroupName=workgroup,
@@ -471,7 +395,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             print(f"🔍 Verificando duplicados en columna clave '{id_col}' para {table_name}...")
 
             # Consultar los valores existentes en Redshift
-            check_query = f"SELECT DISTINCT {id_col} FROM {table_name};"
+            check_query = f"SELECT DISTINCT {id_col} FROM public.{table_name};"
             try:
                 resp = redshift_data.execute_statement(
                     Database=database,
@@ -518,28 +442,28 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
         attempt = 0
         redshift_columns = []
         while attempt < max_retries and not redshift_columns:
-            schema_resp = redshift_data.execute_statement(
-                Database=database,
-                WorkgroupName=workgroup,
-                Sql=schema_query
-            )
-            schema_id = schema_resp['Id']
-            while True:
-                desc = redshift_data.describe_statement(Id=schema_id)
-                if desc["Status"] == "FINISHED":
-                    result = redshift_data.get_statement_result(Id=schema_id)
-                    print(f"\n📋 Estructura de la tabla {table_name}:")
+        schema_resp = redshift_data.execute_statement(
+            Database=database,
+            WorkgroupName=workgroup,
+            Sql=schema_query
+        )
+        schema_id = schema_resp['Id']
+        while True:
+            desc = redshift_data.describe_statement(Id=schema_id)
+            if desc["Status"] == "FINISHED":
+                result = redshift_data.get_statement_result(Id=schema_id)
+                print(f"\n📋 Estructura de la tabla {table_name}:")
                     for r in result.get("Records", []):
                         col = r[0].get("stringValue")
                         if col:
-                            redshift_columns.append(col)
+                    redshift_columns.append(col)
                     if not redshift_columns:
                         print("⚠️ Esquema vacío, reintentando...")
                         time.sleep(2)
-                    break
-                elif desc["Status"] == "FAILED":
-                    print(f"❌ Error consultando schema: {desc.get('Error')}")
-                    break
+                break
+            elif desc["Status"] == "FAILED":
+                print(f"❌ Error consultando schema: {desc.get('Error')}")
+                break
                 time.sleep(2)
             attempt += 1
                 
@@ -620,7 +544,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                 break
             time.sleep(1)
 
-        # 8. Ejecutar COPY
+        # 8. Ejecutar COPY (especificando columnas para evitar desalineaciones)
         columns_for_copy = list(df_fixed.columns)
         columns_clause = f"(" + ", ".join(columns_for_copy) + ")" if columns_for_copy else ""
         copy_sql = f"""
@@ -734,7 +658,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                 # Verificar que se insertaron datos DESPUÉS del COMMIT
                 time.sleep(2)  # Pequeña pausa para asegurar consistencia
                 
-                count_query = f"SELECT COUNT(*) FROM {table_name};"
+                count_query = f"SELECT COUNT(*) FROM public.{table_name};"
                 count_resp = redshift_data.execute_statement(
                     Database=database,
                     WorkgroupName=workgroup,
@@ -760,7 +684,8 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                                 break
                             elif sample_desc['Status'] == 'FAILED':
                                 break
-                            time.sleep(2)
+                            time.sleep(0.5)
+                        
                         if row_count > 0:
                             print(f"🎉 ¡COPY EXITOSO! Se insertaron {row_count} filas")
                         else:
@@ -871,8 +796,8 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
             if target_type == 'Int64':
                 # Convertir a Int64 (permite NaN)
                 try:
-                    df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce').astype('Int64')
-                    print(f"✅ Corregido {col} a Int64")
+                df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce').astype('Int64')
+                print(f"✅ Corregido {col} a Int64")
                 except Exception as e:
                     print(f"⚠️ Error convirtiendo {col} a Int64: {str(e)}")
                     # Mantener como string si falla la conversión
@@ -881,7 +806,7 @@ def fix_dataframe_for_redshift_copy(df, redshift_columns):
     
     print(df_fixed)
     print(list(df_fixed.columns))
-
+    
     # 4. Limpiar strings y manejar valores nulos
     for col in df_fixed.columns:
         if df_fixed[col].dtype == 'object':
@@ -1136,19 +1061,29 @@ def lambda_handler(event,context):
             report_date = event['report_date']
 
             df = column_name_mapping(df)
-            column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
-            column_defs += ["REPORT_ID VARCHAR(500)", "REPORT_DATE VARCHAR(500)"]
-            columnas_sql = ",\n  ".join(column_defs)
+            # Renombrar columnas a identificadores limpios y agregar claves
+            df_mp = df.copy()
+            df_mp.columns = [clean_column_name(c) for c in df_mp.columns]
+            df_mp['REPORT_ID'] = report_id
+            df_mp['REPORT_DATE'] = report_date
 
-            print(f'Se lee el csv {key} o xlsx de reporte de mp convertido en S3 y se mergea a la tabla de mp_data')
-            flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup','REPORT_ID')
+            # Crear tabla si no existe (sin constraints)
+            cols_create = []
+            for col, dtype in zip(df_mp.columns, df_mp.dtypes):
+                if col in ('REPORT_DATE',):
+                    cols_create.append(f"{col} VARCHAR(500)")
+                else:
+                    cols_create.append(f"{col} {redshift_type(dtype)}")
+            create_mp_sql = "CREATE TABLE IF NOT EXISTS public.mp_data (\n  " + ",\n  ".join(cols_create) + "\n);"
+            ensure_table_by_sql(redshift_data, create_mp_sql, 'dev', 'pdf-etl-workgroup')
 
-            column_names_insert = [clean_column_name(col) for col in df.columns]
-            column_names_insert += ["REPORT_ID", "REPORT_DATE"]
-            columnas_sql_insert = ", ".join(column_names_insert)
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            inserted_mp = copy_via_staging_and_insert(
+                redshift_data, s3, df_mp, 'mp_data', list(df_mp.columns), ['REPORT_ID'],
+                bucket, 'dev', 'pdf-etl-workgroup', iam_role
+            )
+            print(f"✅ mp_data: insertadas {inserted_mp} filas")
 
-            tables = [table_name] 
+            tables = [table_name]
 
         elif etl_flow == 'TICKET':
             report_id, report_date = '', ''
@@ -1195,52 +1130,122 @@ def lambda_handler(event,context):
                 print("✅ Todos los tickets ya fueron procesados. No se requiere carga.")
                 tables = ['archivos_ingestados', 'dim_producto', 'carrefour_data']
             else:
-                # 🔧 VOLVER A LA LÓGICA ORIGINAL QUE FUNCIONABA
-                column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
-                columnas_sql = ",\n  ".join(column_defs)
-
-                print(f'Se lee el pdf {key} convertido en csv en S3 y se mergea a la tabla de carrefour_data')
-                flag_exists, tiene_datos = create_redshift_table_from_df(df, columnas_sql, "carrefour_data", redshift_data, 'dev', 'pdf-etl-workgroup', None)
-                
-                # Cargar datos básicos en carrefour_data (solo tickets nuevos)
-                df_nuevos = df[df['nro_ticket'].isin(tickets_nuevos)].copy()
-                insert_df_into_redshift_copy_fixed(redshift_data, s3, df_nuevos, "carrefour_data", bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-                print("✅ Datos básicos cargados en carrefour_data")
-                
-                # Crear dim_producto basado en los datos ya persistidos
-                df_dim_producto = create_and_fill_product_dim_table_in_redshift(s3, bucket, 'dim_producto/', df_nuevos, 'dim_producto', redshift_data, 'dev', 'pdf-etl-workgroup','product_id', False)
-                print("✅ dim_producto actualizado")
-                
-                # Registrar tickets procesados en archivos_ingestados
+                # 1) Registrar primero en archivos_ingestados
                 df_uploaded_files = pd.DataFrame(tickets_nuevos, columns=['id'])
-                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                df_uploaded_files['ins_dttm'] = now_str
-                print(f"🔍 Timestamp generado: {now_str}")
+                df_uploaded_files['ins_dttm'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                create_arch_sql = """
+                    CREATE TABLE IF NOT EXISTS public.archivos_ingestados (
+                        id BIGINT,
+                        ins_dttm TIMESTAMP
+                    );
+                """
+                ensure_table_by_sql(redshift_data, create_arch_sql, 'dev', 'pdf-etl-workgroup')
+                inserted_arch = copy_via_staging_and_insert(
+                    redshift_data, s3, df_uploaded_files,
+                    'archivos_ingestados', ['id','ins_dttm'], ['id'], bucket,
+                    'dev', 'pdf-etl-workgroup', iam_role
+                )
+                print(f"✅ archivos_ingestados: procesados {inserted_arch} tickets")
 
-                column_defs = []
-                for col, dtype in zip(df_uploaded_files.columns, df_uploaded_files.dtypes):
-                    if col.lower() == 'ins_dttm':
-                        column_defs.append(f"{clean_column_name(col)} TIMESTAMP")
-                    else:
-                        column_defs.append(f"{clean_column_name(col)} {redshift_type(dtype)}")
-                column_uploaded_files = ",\n  ".join(column_defs)
-                
-                flag_exists, tiene_datos = create_redshift_table_from_df(df_uploaded_files, column_uploaded_files, 'archivos_ingestados', redshift_data, 'dev', 'pdf-etl-workgroup', None)
-                insert_df_into_redshift_copy_fixed(redshift_data, s3, df_uploaded_files, 'archivos_ingestados', bucket, 'dev', 'pdf-etl-workgroup', iam_role)
-                print(f"✅ Registrados {len(df_uploaded_files)} tickets nuevos en archivos_ingestados")
+                # 2) Crear carrefour_data si no existe y cargar SOLO tickets nuevos
+                create_car_sql = """
+                    CREATE TABLE IF NOT EXISTS public.carrefour_data (
+                        categoria VARCHAR(500),
+                        producto VARCHAR(500),
+                        cantidad DOUBLE PRECISION,
+                        peso DOUBLE PRECISION,
+                        precio_unit DOUBLE PRECISION,
+                        monto_total DOUBLE PRECISION,
+                        ean VARCHAR(500),
+                        product_id BIGINT,
+                        grupo_producto VARCHAR(500),
+                        nro_ticket BIGINT,
+                        fecha VARCHAR(500),
+                        total_ticket_bruto DOUBLE PRECISION,
+                        total_ticket_meli DOUBLE PRECISION
+                    );
+                """
+                ensure_table_by_sql(redshift_data, create_car_sql, 'dev', 'pdf-etl-workgroup')
+                df_nuevos = df[df['nro_ticket'].isin(tickets_nuevos)].copy()
+                inserted_car = copy_via_staging_and_insert(
+                    redshift_data, s3, df_nuevos,
+                    'carrefour_data',
+                    ['categoria','producto','cantidad','peso','precio_unit','monto_total','ean','product_id','grupo_producto','nro_ticket','fecha','total_ticket_bruto','total_ticket_meli'],
+                    ['nro_ticket'], bucket,
+                    'dev', 'pdf-etl-workgroup', iam_role
+                )
+                print(f"✅ carrefour_data: insertadas {inserted_car} filas")
+
+                # 3) Crear/actualizar dim_producto desde carrefour_data actual
+                create_dim_sql = """
+                    CREATE TABLE IF NOT EXISTS public.dim_producto (
+                        nombre_producto VARCHAR(500),
+                        product_id BIGINT,
+                        ean VARCHAR(500),
+                        grupo_producto VARCHAR(500)
+                    );
+                """
+                ensure_table_by_sql(redshift_data, create_dim_sql, 'dev', 'pdf-etl-workgroup')
+
+                # Productos únicos actuales (nombre, ean)
+                resp = redshift_data.execute_statement(
+                    Database='dev', WorkgroupName='pdf-etl-workgroup',
+                    Sql="SELECT DISTINCT producto, ean FROM public.carrefour_data;"
+                )
+                prod = []
+                while True:
+                    d = redshift_data.describe_statement(Id=resp['Id'])
+                    if d['Status'] == 'FINISHED':
+                        if d.get('HasResultSet'):
+                            res = redshift_data.get_statement_result(Id=resp['Id'])
+                            for r in res.get('Records', []):
+                                nombre = r[0].get('stringValue')
+                                ean = r[1].get('stringValue') if r[1].get('stringValue') else None
+                                prod.append((nombre, ean))
+                        break;
+                    time.sleep(1)
+                df_dim = pd.DataFrame(prod, columns=['nombre_producto','ean']).drop_duplicates()
+                # Generar grupo y product_id incremental
+                normalizacion = generar_diccionario_normalizacion(df_dim['nombre_producto'].fillna('').unique())
+                df_dim['grupo_producto'] = df_dim['nombre_producto'].map(normalizacion)
+                # Max product_id existente
+                max_resp = redshift_data.execute_statement(Database='dev', WorkgroupName='pdf-etl-workgroup', Sql="SELECT COALESCE(MAX(product_id),0) FROM public.dim_producto;")
+                while True:
+                    dd = redshift_data.describe_statement(Id=max_resp['Id'])
+                    if dd['Status'] == 'FINISHED':
+                        res = redshift_data.get_statement_result(Id=max_resp['Id'])
+                        max_id = res['Records'][0][0].get('longValue', 0) if res['Records'][0][0] else 0
+                        break
+                    time.sleep(1)
+                df_dim = df_dim.reset_index(drop=True)
+                df_dim['product_id'] = range(max_id + 1, max_id + 1 + len(df_dim))
+
+                inserted_dim = copy_via_staging_and_insert(
+                    redshift_data, s3, df_dim[['nombre_producto','product_id','ean','grupo_producto']],
+                    'dim_producto', ['nombre_producto','product_id','ean','grupo_producto'], ['nombre_producto','ean'],
+                    bucket, 'dev', 'pdf-etl-workgroup', iam_role
+                )
+                print(f"✅ dim_producto: insertados/asegurados {inserted_dim} productos")
 
                 tables = ['archivos_ingestados', 'dim_producto', 'carrefour_data']  
         else: # es un gasto del banco
-            column_defs = [f"{clean_column_name(col)} {redshift_type(dtype)}" for col, dtype in zip(df.columns, df.dtypes)]
-            columnas_sql = ",\n  ".join(column_defs)
-            
             print(f'Se lee el mail {key} convertido en csv en S3 y se mergea a la tabla de {table_name}')
-            create_redshift_table_from_df(df, columnas_sql, table_name, redshift_data, 'dev', 'pdf-etl-workgroup', 'id')
+            df_bank = df.copy()
+            df_bank.columns = [clean_column_name(c) for c in df_bank.columns]
 
-            column_names_insert = [clean_column_name(col) for col in df.columns]
-            insert_df_into_redshift_copy_fixed(redshift_data, s3, df, table_name, bucket, 'dev', 'pdf-etl-workgroup', iam_role)
+            cols_create = [f"{col} {redshift_type(dtype)}" for col, dtype in zip(df_bank.columns, df_bank.dtypes)]
+            create_bank_sql = "CREATE TABLE IF NOT EXISTS public." + table_name + " (\n  " + ",\n  ".join(cols_create) + "\n);"
+            ensure_table_by_sql(redshift_data, create_bank_sql, 'dev', 'pdf-etl-workgroup')
 
-            tables = [table_name]  
+            # Si existe columna ID, usarla como clave para evitar duplicados; si no, inserta todo
+            key_cols = ['ID'] if 'ID' in df_bank.columns else []
+            inserted_bank = copy_via_staging_and_insert(
+                redshift_data, s3, df_bank, table_name, list(df_bank.columns), key_cols if key_cols else [],
+                bucket, 'dev', 'pdf-etl-workgroup', iam_role
+            )
+            print(f"✅ {table_name}: insertadas {inserted_bank} filas")
+
+            tables = [table_name]
 
         return {
             'table_name': tables
