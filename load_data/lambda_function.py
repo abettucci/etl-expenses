@@ -535,12 +535,12 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                             redshift_columns.append(col)
                     if not redshift_columns:
                         print("⚠️ Esquema vacío, reintentando...")
-                        time.sleep(1.5)
+                        time.sleep(2)
                     break
                 elif desc["Status"] == "FAILED":
                     print(f"❌ Error consultando schema: {desc.get('Error')}")
                     break
-                time.sleep(0.5)
+                time.sleep(2)
             attempt += 1
                 
         print(f"🔍 Esquema Redshift: {redshift_columns}")
@@ -580,6 +580,8 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
         )
         s3_path = f"s3://{bucket_name}/{s3_key}"
         print(f"📤 CSV subido a {s3_path}")
+
+        time.sleep(2)
         
         # 7. Verificar contenido del CSV
         csv_obj = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
@@ -725,7 +727,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                     elif commit_desc["Status"] == "FAILED":
                         print(f"❌ Error en COMMIT: {commit_desc.get('Error')}")
                         break
-                    time.sleep(1)
+                    time.sleep(2)
                 
                 # Verificar que se insertaron datos DESPUÉS del COMMIT
                 time.sleep(2)  # Pequeña pausa para asegurar consistencia
@@ -751,7 +753,7 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                             print(f"⚠️ COPY completado pero la tabla sigue vacía")
                             
                         break
-                    time.sleep(1)
+                    time.sleep(2)
                 
                 break
             else:
