@@ -61,10 +61,12 @@ def copy_via_staging_and_insert(redshift_data, s3_client, df, table_name, column
         print(f"ℹ️ No hay filas para {table_name}")
         return 0
 
-    # 1) Crear staging con estructura del destino
-    staging = f"stg_{table_name}_{int(time.time())}"
-    create_stg_sql = f"CREATE TEMP TABLE {staging} (LIKE public.{table_name});"
+    # 1) Crear staging PERMANENTE en public (las TEMP no sobreviven entre statements del API)
+    staging = f"stg_{table_name}"
+    create_stg_sql = f"CREATE TABLE IF NOT EXISTS public.{staging} (LIKE public.{table_name});"
     exec_sql_wait(redshift_data, create_stg_sql, database, workgroup)
+    # Limpiar staging
+    exec_sql_wait(redshift_data, f"TRUNCATE TABLE public.{staging};", database, workgroup)
 
     # 2) Subir CSV con columnas en orden
     df_to_save = df[columns_in_order].copy()
@@ -77,7 +79,7 @@ def copy_via_staging_and_insert(redshift_data, s3_client, df, table_name, column
 
     cols_clause = "(" + ", ".join(columns_in_order) + ")"
     copy_sql = f"""
-        COPY {staging} {cols_clause}
+        COPY public.{staging} {cols_clause}
         FROM '{s3_path}'
         IAM_ROLE '{iam_role}'
         CSV
@@ -90,23 +92,30 @@ def copy_via_staging_and_insert(redshift_data, s3_client, df, table_name, column
     """
     exec_sql_wait(redshift_data, copy_sql, database, workgroup)
 
-    # 3) Insertar solo no existentes por clave(s)
-    on_join = " AND ".join([f"s.{k} = d.{k}" for k in key_columns])
-    null_check = " AND ".join([f"d.{k} IS NULL" for k in key_columns]) if len(key_columns) == 1 else f"({ ' AND '.join([f'd.{k} IS NULL' for k in key_columns]) })"
+    # 3) Insertar no duplicados si hay claves; si no hay claves, insertar todo
     insert_cols = ", ".join(columns_in_order)
     select_cols = ", ".join([f"s.{c}" for c in columns_in_order])
-    insert_sql = f"""
-        INSERT INTO public.{table_name} ({insert_cols})
-        SELECT {select_cols}
-        FROM {staging} s
-        LEFT JOIN public.{table_name} d
-          ON {on_join}
-        WHERE {null_check};
-    """
+    if key_columns:
+        on_join = " AND ".join([f"s.{k} = d.{k}" for k in key_columns])
+        null_checks = " AND ".join([f"d.{k} IS NULL" for k in key_columns])
+        insert_sql = f"""
+            INSERT INTO public.{table_name} ({insert_cols})
+            SELECT {select_cols}
+            FROM public.{staging} s
+            LEFT JOIN public.{table_name} d
+              ON {on_join}
+            WHERE {null_checks};
+        """
+    else:
+        insert_sql = f"""
+            INSERT INTO public.{table_name} ({insert_cols})
+            SELECT {select_cols}
+            FROM public.{staging} s;
+        """
     exec_sql_wait(redshift_data, insert_sql, database, workgroup)
 
     # 4) Contar insertados
-    cnt_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=f"SELECT COUNT(*) FROM {staging};")
+    cnt_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=f"SELECT COUNT(*) FROM public.{staging};")
     while True:
         d = redshift_data.describe_statement(Id=cnt_resp['Id'])
         if d['Status'] == 'FINISHED':
@@ -115,9 +124,10 @@ def copy_via_staging_and_insert(redshift_data, s3_client, df, table_name, column
             break
         time.sleep(1)
 
-    # 5) Borrar staging (se borra solo por TEMP al cerrar sesión)
+    # 5) Limpiar staging para futuras cargas
+    exec_sql_wait(redshift_data, f"TRUNCATE TABLE public.{staging};", database, workgroup)
     return staged
-
+    
 def format_value(val):
     if val is None or pd.isna(val):
         return 'NULL'
