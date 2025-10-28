@@ -621,8 +621,10 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
             time.sleep(1)
 
         # 8. Ejecutar COPY
+        columns_for_copy = list(df_fixed.columns)
+        columns_clause = f"(" + ", ".join(columns_for_copy) + ")" if columns_for_copy else ""
         copy_sql = f"""
-            COPY {table_name}
+            COPY public.{table_name} {columns_clause}
             FROM '{s3_path}'
             IAM_ROLE '{iam_role}'
             CSV
@@ -746,7 +748,19 @@ def insert_df_into_redshift_copy_fixed(redshift_data, s3_client, df, table_name,
                         count_result = redshift_data.get_statement_result(Id=count_id)
                         row_count = count_result["Records"][0][0]["longValue"]
                         print(f"📊 VERIFICACIÓN FINAL: La tabla {table_name} tiene {row_count} filas")
-                        
+                        # Muestra filas de ejemplo para validar persistencia
+                        sample_sql = f"SELECT * FROM public.{table_name} LIMIT 3;"
+                        sample_resp = redshift_data.execute_statement(Database=database, WorkgroupName=workgroup, Sql=sample_sql)
+                        while True:
+                            sample_desc = redshift_data.describe_statement(Id=sample_resp['Id'])
+                            if sample_desc['Status'] == 'FINISHED':
+                                if sample_desc.get('HasResultSet'):
+                                    sample_res = redshift_data.get_statement_result(Id=sample_resp['Id'])
+                                    print(f"🧪 MUESTRA {table_name}: {sample_res.get('Records', [])}")
+                                break
+                            elif sample_desc['Status'] == 'FAILED':
+                                break
+                            time.sleep(2)
                         if row_count > 0:
                             print(f"🎉 ¡COPY EXITOSO! Se insertaron {row_count} filas")
                         else:
