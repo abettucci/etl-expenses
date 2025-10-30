@@ -427,7 +427,8 @@ def reproceso_historico():
                         pk = 'nro_ticket'
 
                     else:
-                        return {"process": False, "reason": "Evento descartado por filtros"}
+                        print(f'Email ignorado (no cumple filtros): {sender} - {subject}')
+                        continue
                                                     
                     print('table_name: ', table_name)
                     print('pk : ', pk)
