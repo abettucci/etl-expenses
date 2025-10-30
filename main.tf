@@ -481,6 +481,38 @@ resource "google_pubsub_topic_iam_member" "sa_publisher" {
   member = "serviceAccount:${google_service_account.pubsub_sa.email}"
 }
 
+# BigQuery permissions for Service Account
+resource "google_project_iam_member" "sa_bigquery_admin" {
+  project = var.GCP_PROJECT_ID
+  role    = "roles/bigquery.admin"
+  member  = "serviceAccount:${google_service_account.pubsub_sa.email}"
+}
+
+# BigQuery Datasets
+resource "google_bigquery_dataset" "staging" {
+  dataset_id  = "STG"
+  project     = var.GCP_PROJECT_ID
+  location    = "US"
+  description = "Staging dataset for ETL intermediate data"
+  
+  labels = {
+    environment = "staging"
+    managed_by  = "terraform"
+  }
+}
+
+resource "google_bigquery_dataset" "production" {
+  dataset_id  = "PRD"
+  project     = var.GCP_PROJECT_ID
+  location    = "US"
+  description = "Production dataset for final ETL data"
+  
+  labels = {
+    environment = "production"
+    managed_by  = "terraform"
+  }
+}
+
 # Lambda Function
 resource "aws_lambda_function" "gmail_watcher" {
   function_name = "gmail-watcher-renewer"
@@ -590,7 +622,9 @@ resource "aws_lambda_function" "extract_data_gmail" {
   environment {
     variables = {
       MARKET_BUCKET_NAME = aws_s3_bucket.market_tickets.bucket
-      BANK_BUCKET_NAME   = aws_s3_bucket.bank_payments.bucket 
+      BANK_BUCKET_NAME   = aws_s3_bucket.bank_payments.bucket
+      GCP_PROJECT_ID     = var.GCP_PROJECT_ID
+      BQ_DATASET_PROD    = "PRD"
     }
   }
 }

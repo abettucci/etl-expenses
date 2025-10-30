@@ -13,6 +13,8 @@ from io import BytesIO
 import requests
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+from google.cloud import bigquery
+from google.oauth2 import service_account
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
@@ -50,6 +52,24 @@ def auth_google(SECRET_NAME):
 
     return creds
 
+def get_bigquery_client():
+    """Obtener cliente de BigQuery autenticado con Service Account"""
+    try:
+        SECRET_NAME = "gcp_service_account"
+        REGION_NAME = "us-east-2"
+        
+        credentials_json = get_secret(SECRET_NAME, REGION_NAME)
+        credentials = service_account.Credentials.from_service_account_info(credentials_json)
+        
+        project_id = os.environ.get('GCP_PROJECT_ID')
+        client = bigquery.Client(credentials=credentials, project=project_id)
+        
+        print(f"✅ Cliente de BigQuery autenticado para proyecto: {project_id}")
+        return client
+    except Exception as e:
+        print(f"❌ Error al autenticar con BigQuery: {e}")
+        raise
+
 def find_html_part(payload, depth=0, max_depth=10):
     # Prevenir recursión infinita
     if depth > max_depth:
@@ -65,106 +85,94 @@ def find_html_part(payload, depth=0, max_depth=10):
                 return result
     return None
 
-def get_message_ids_loaded(redshift_data, table_name, pk):
-    id_existentes_query = f"SELECT DISTINCT {pk} FROM {table_name};"
-
+def get_message_ids_loaded(bq_client, table_name, pk):
+    """Obtener IDs de mensajes ya cargados en BigQuery"""
     try:
-        # Ejecutar consulta
-        response = redshift_data.execute_statement(
-            Database='dev',
-            WorkgroupName='pdf-etl-workgroup',
-            Sql=id_existentes_query
-        )
-
-        ids_existentes_en_redshift = set()
-        while True:
-            desc = redshift_data.describe_statement(Id=response['Id'])
-            if desc['Status'] == 'FINISHED':
-                if desc['HasResultSet']:
-                    try:
-                        result = redshift_data.get_statement_result(Id=response['Id'])
-                        ids_existentes_en_redshift = {
-                            row[0]['stringValue'] for row in result['Records'] if 'stringValue' in row[0]
-                        }
-                    except Exception as e:
-                        print(f"⚠️ Error al obtener resultados de Redshift: {e}")
-                        ids_existentes_en_redshift = set()
-                break
-            elif desc['Status'] == 'FAILED':
-                # ⚠️ Error de consulta → revisar mensaje
-                error_msg = desc.get("Error", "")
-                if "relation" in error_msg and "does not exist" in error_msg:
-                    print(f"⚠️ Tabla {table_name} no existe en Redshift, devolvemos conjunto vacío.")
-                    return set()
-                else:
-                    print("❌ Error al consultar Redshift:", error_msg)
-                break
-
-        return ids_existentes_en_redshift
-
+        project_id = os.environ.get('GCP_PROJECT_ID')
+        dataset = os.environ.get('BQ_DATASET_PROD', 'PRD')
+        
+        query = f"""
+        SELECT DISTINCT {pk}
+        FROM `{project_id}.{dataset}.{table_name}`
+        """
+        
+        print(f"🔍 Consultando IDs existentes en BigQuery: {project_id}.{dataset}.{table_name}")
+        
+        query_job = bq_client.query(query)
+        results = query_job.result()
+        
+        ids_existentes = {row[pk] for row in results}
+        print(f"✅ Se encontraron {len(ids_existentes)} IDs existentes en BigQuery")
+        
+        return ids_existentes
+        
     except Exception as e:
-        print(f"❌ Error inesperado consultando Redshift: {e}")
-        return set()
+        error_msg = str(e)
+        if "Not found: Table" in error_msg or "404" in error_msg:
+            print(f"⚠️ Tabla {table_name} no existe en BigQuery, devolvemos conjunto vacío.")
+            return set()
+        else:
+            print(f"❌ Error al consultar BigQuery: {e}")
+            return set()
 
-def get_last_message_loaded(redshift_data):
-    # Obtenemos la ultima fecha de la tabla de tickets ya ingestados de Redshift        
-    date_query = """
+def get_last_message_loaded(bq_client):
+    """Obtener la última fecha de mensaje cargado en BigQuery"""
+    try:
+        project_id = os.environ.get('GCP_PROJECT_ID')
+        dataset = os.environ.get('BQ_DATASET_PROD', 'PRD')
+        
+        query = f"""
         SELECT MAX(
-            TO_DATE(
+            PARSE_DATE('%d/%m/%Y',
                 CASE 
-                    WHEN LENGTH(SPLIT_PART(fecha_pago, '/', 3)) = 2 THEN 
-                        -- convertimos a formato DD/MM/20YY
-                        SPLIT_PART(fecha_pago, '/', 1) || '/' || 
-                        SPLIT_PART(fecha_pago, '/', 2) || '/' || 
-                        '20' || SPLIT_PART(fecha_pago, '/', 3)
-                    ELSE fecha_pago -- Asumir que ya está en formato DD/MM/YYYY
-                END,
-                'DD/MM/YYYY'
+                    WHEN LENGTH(SPLIT(fecha_pago, '/')[OFFSET(2)]) = 2 THEN 
+                        CONCAT(
+                            SPLIT(fecha_pago, '/')[OFFSET(0)], '/',
+                            SPLIT(fecha_pago, '/')[OFFSET(1)], '/',
+                            '20', SPLIT(fecha_pago, '/')[OFFSET(2)]
+                        )
+                    ELSE fecha_pago
+                END
             )
         ) AS max_date 
-        FROM bank_payments
-    """
-    
-    # Ejecutar consulta
-    response = redshift_data.execute_statement(
-        Database='dev',
-        WorkgroupName='pdf-etl-workgroup',
-        Sql=date_query
-    )
-
-    # Esperar resultados (puede tomar algunos segundos)
-    fecha_ultimo_payment_cargado = None
-    while True:
-        desc = redshift_data.describe_statement(Id=response['Id'])
-        if desc['Status'] == 'FINISHED':
-            if desc['HasResultSet']:
-                result = redshift_data.get_statement_result(Id=response['Id'])
-                try:
-                    fecha_ultimo_payment_cargado = result['Records'][0][0]['stringValue']
-                    if len(fecha_ultimo_payment_cargado.split('/')[-1]) == 2:
-                        day, month, year = fecha_ultimo_payment_cargado.split('/')
-                        fecha_ultimo_payment_cargado = f"{day}/{month}/20{year}"
-                    fecha_ultimo_payment_cargado = datetime.strptime(fecha_ultimo_payment_cargado, '%Y-%m-%d')
-                    fecha_ultimo_payment_cargado += timedelta(days=1)
-                except Exception as e:
-                    fecha_ultimo_payment_cargado = None
-                    print(f"Error: {e}")
-            break
-        elif desc['Status'] == 'FAILED':
-            print("Error al consultar Redshift:", desc['Error'])
-            date_str = '2024/10/01'
-            break
+        FROM `{project_id}.{dataset}.bank_payments`
+        """
         
-    if fecha_ultimo_payment_cargado is None:
-        date_str = '2024/10/01' 
-    else:
-        date_str = fecha_ultimo_payment_cargado.strftime('%Y/%m/%d')
+        print(f"🔍 Consultando última fecha en BigQuery: {project_id}.{dataset}.bank_payments")
+        
+        query_job = bq_client.query(query)
+        results = query_job.result()
+        
+        fecha_ultimo_payment_cargado = None
+        for row in results:
+            if row['max_date']:
+                fecha_ultimo_payment_cargado = row['max_date']
+                # Sumar un día para buscar desde el siguiente
+                fecha_ultimo_payment_cargado = datetime.combine(
+                    fecha_ultimo_payment_cargado, datetime.min.time()
+                ) + timedelta(days=1)
+                break
+        
+        if fecha_ultimo_payment_cargado is None:
+            date_str = '2024/10/01'
+            print(f"⚠️ No se encontró fecha máxima, usando fecha por defecto: {date_str}")
+        else:
+            date_str = fecha_ultimo_payment_cargado.strftime('%Y/%m/%d')
+            print(f"✅ Última fecha encontrada: {date_str}")
 
-    return date_str
+        return date_str
+        
+    except Exception as e:
+        error_msg = str(e)
+        if "Not found: Table" in error_msg or "404" in error_msg:
+            print(f"⚠️ Tabla bank_payments no existe en BigQuery, usando fecha por defecto")
+        else:
+            print(f"❌ Error al consultar BigQuery: {e}")
+        return '2024/10/01'
 
-def extract_by_date_payments_from_gmail(redshift_data, ids_existentes_en_redshift, gmail_service, s3_client, bucket_name, folder):
+def extract_by_date_payments_from_gmail(bq_client, ids_existentes, gmail_service, s3_client, bucket_name, folder):
     for subject in SUBJECT_CONTAINS:
-        date_str = get_last_message_loaded(redshift_data)
+        date_str = get_last_message_loaded(bq_client)
         query = f'from:{SENDER_EMAIL} subject:"{subject}" after:{date_str}'
         results = gmail_service.users().messages().list(userId='me', q=query).execute()
         messages = results.get('messages', [])
@@ -174,7 +182,7 @@ def extract_by_date_payments_from_gmail(redshift_data, ids_existentes_en_redshif
             message = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
             msg_id = msg['id']
 
-            if msg_id not in ids_existentes_en_redshift:
+            if msg_id not in ids_existentes:
                 payload = message['payload']
                 parts = payload.get('parts', [])
                 html_encoded = find_html_part(payload)
@@ -369,7 +377,7 @@ def reproceso_historico():
         sfn_client = boto3.client("stepfunctions")
         dynamodb = boto3.resource('dynamodb')
         dynamo_table_name = "gmail-history-tracker"
-        redshift_data = boto3.client('redshift-data')
+        bq_client = get_bigquery_client()
         s3_client = boto3.client('s3')
         bank_bucket = 'bank-payments'
         market_bucket = 'market-tickets'
@@ -423,12 +431,12 @@ def reproceso_historico():
                     print('table_name: ', table_name)
                     print('pk : ', pk)
 
-                    ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, table_name, pk)
+                    ids_existentes = get_message_ids_loaded(bq_client, table_name, pk)
 
                     print('mail_msg_id: ', msg_id)
-                    print('ids_existentes_en_redshift: ', ids_existentes_en_redshift)
+                    print('ids_existentes en BigQuery: ', ids_existentes)
                     
-                    if msg_id not in ids_existentes_en_redshift:
+                    if msg_id not in ids_existentes:
                         print('Intentamos extraer los datos del mail y cargarlos a S3')
                         response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
 
@@ -467,7 +475,7 @@ def lambda_handler(event, context):
         dynamodb = boto3.resource('dynamodb')
         dynamo_table_name = "gmail-history-tracker"
         gmail_service = build('gmail', 'v1', credentials=creds)
-        redshift_data = boto3.client('redshift-data')
+        bq_client = get_bigquery_client()
         s3_client = boto3.client('s3')
         bank_bucket = os.environ['BANK_BUCKET_NAME']
         market_bucket = os.environ['MARKET_BUCKET_NAME']
@@ -550,12 +558,12 @@ def lambda_handler(event, context):
                                 print('table_name: ', table_name)
                                 print('pk : ', pk)
 
-                                ids_existentes_en_redshift = get_message_ids_loaded(redshift_data, table_name, pk)
+                                ids_existentes = get_message_ids_loaded(bq_client, table_name, pk)
 
                                 print('mail_msg_id: ', mail_msg_id)
-                                print('ids_existentes_en_redshift: ', ids_existentes_en_redshift)
+                                print('ids_existentes en BigQuery: ', ids_existentes)
                                 
-                                if mail_msg_id not in ids_existentes_en_redshift:
+                                if mail_msg_id not in ids_existentes:
                                     print('Intentamos extraer los datos del mail y cargarlos a S3')
                                     response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
 
@@ -574,7 +582,7 @@ def lambda_handler(event, context):
             
     except Exception as e:
         # Si falla la logica de filtrado por ids podria probar con traer los mails recibidos desde la ultima fecha de ingestion
-        # extract_by_date_payments_from_gmail(redshift_data, ids_existentes_en_redshift, gmail_service, s3_client, bucket_name, folder)
+        # extract_by_date_payments_from_gmail(bq_client, ids_existentes, gmail_service, s3_client, bucket_name, folder)
 
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
