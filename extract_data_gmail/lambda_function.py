@@ -38,7 +38,10 @@ def update_secret(updated_token_json, SECRET_NAME, REGION_NAME):
     )
 
 def auth_google(SECRET_NAME):
-    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+    SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", 
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/bigquery"]
     REGION_NAME = 'us-east-2'    
     token_info = get_secret(SECRET_NAME, REGION_NAME)
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
@@ -61,7 +64,8 @@ def get_bigquery_client():
         credentials_json = get_secret(SECRET_NAME, REGION_NAME)
         credentials = service_account.Credentials.from_service_account_info(credentials_json)
         
-        project_id = os.environ.get('GCP_PROJECT_ID')
+        # project_id = os.environ.get('GCP_PROJECT_ID')
+        project_id = 'hazel-pillar-400222'
         client = bigquery.Client(credentials=credentials, project=project_id)
         
         print(f"✅ Cliente de BigQuery autenticado para proyecto: {project_id}")
@@ -413,9 +417,6 @@ def reproceso_historico():
                     print('subject: ', subject)
                     print('date: ', date)
 
-                    if not mail_data:
-                        return {'statusCode': 500, 'body': 'Error procesando email'}
-
                     table_name, pk = None, None
                     if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
                         table_name = 'bank_payments'
@@ -451,7 +452,8 @@ def reproceso_historico():
                     elif label['name'] == 'Avisos Compra Carrefour':
                         step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
                     else:
-                        break
+                        print(f"Label {label['name']} no reconocido - continuamos con el siguiente mail")
+                        continue
                     
                     status, desc = run_step_function_sync(
                         sfn_client,
