@@ -55,7 +55,7 @@ def auth_google(SECRET_NAME):
 def get_bigquery_client():
     """Obtener cliente de BigQuery autenticado con Service Account"""
     try:
-        SECRET_NAME = "gcp_service_account"
+        SECRET_NAME = "gcp_sa_api_credentials" #"gcp_service_account"
         REGION_NAME = "us-east-2"
         
         credentials_json = get_secret(SECRET_NAME, REGION_NAME)
@@ -88,7 +88,7 @@ def find_html_part(payload, depth=0, max_depth=10):
 def get_message_ids_loaded(bq_client, table_name, pk):
     """Obtener IDs de mensajes ya cargados en BigQuery"""
     try:
-        project_id = os.environ.get('GCP_PROJECT_ID')
+        project_id = os.environ.get('GCP_PROJECT_ID', 'hazel-pillar-400222')
         dataset = os.environ.get('BQ_DATASET_PROD', 'PRD')
         
         query = f"""

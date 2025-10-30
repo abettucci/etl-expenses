@@ -74,15 +74,34 @@ def load_to_staging(client, df, table_name):
     
     print(f"📤 Cargando {len(df)} filas a staging: {staging_table_id}")
     
-    # Configuración para truncar staging y autodetectar schema
-    job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_TRUNCATE",  # Limpia staging antes de cargar
-        autodetect=True,  # Detecta schema automáticamente
-        schema_update_options=[
-            bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
-            bigquery.SchemaUpdateOption.ALLOW_FIELD_RELAXATION
-        ]
-    )
+    # Verificar si la tabla existe
+    try:
+        client.get_table(staging_table_id)
+        table_exists = True
+        print(f"✅ Tabla staging existe: {staging_table_id}")
+    except Exception:
+        table_exists = False
+        print(f"⚠️ Tabla staging no existe, se creará: {staging_table_id}")
+    
+    if table_exists:
+        # Tabla existe: Truncar primero y luego usar WRITE_APPEND con schema_update_options
+        truncate_query = f"TRUNCATE TABLE `{staging_table_id}`"
+        client.query(truncate_query).result()
+        print(f"🧹 Tabla staging truncada")
+        
+        job_config = bigquery.LoadJobConfig(
+            write_disposition="WRITE_APPEND",
+            schema_update_options=[
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_RELAXATION
+            ]
+        )
+    else:
+        # Tabla no existe: usar WRITE_TRUNCATE con autodetect (sin schema_update_options)
+        job_config = bigquery.LoadJobConfig(
+            write_disposition="WRITE_TRUNCATE",
+            autodetect=True
+        )
     
     # Cargar desde DataFrame
     job = client.load_table_from_dataframe(
