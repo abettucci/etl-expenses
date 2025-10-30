@@ -26,7 +26,7 @@ def exec_sql_wait(redshift_data, sql, database, workgroup):
             return True
         if d["Status"] == "FAILED":
             raise RuntimeError(d.get("Error", "SQL failed"))
-        time.sleep(1)
+        time.sleep(3)
 
 def ensure_table_by_sql(redshift_data, create_sql, database, workgroup):
     return exec_sql_wait(redshift_data, create_sql, database, workgroup)
@@ -51,7 +51,7 @@ def get_existing_keys(redshift_data, table_name, key_column, database, workgroup
                 break
             elif d['Status'] == 'FAILED':
                 break
-            time.sleep(1)
+            time.sleep(3)
     except Exception:
         pass
     return keys
@@ -75,7 +75,7 @@ def copy_via_staging_and_insert(redshift_data, s3_client, df, table_name, column
     s3_key = f"tmp/{table_name}_{int(time.time())}.csv"
     s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=csv_buffer.getvalue().encode('utf-8'))
     s3_path = f"s3://{bucket_name}/{s3_key}"
-    time.sleep(1)
+    time.sleep(3)
 
     cols_clause = "(" + ", ".join(columns_in_order) + ")"
     copy_sql = f"""
@@ -122,7 +122,7 @@ def copy_via_staging_and_insert(redshift_data, s3_client, df, table_name, column
             res = redshift_data.get_statement_result(Id=cnt_resp['Id'])
             staged = res['Records'][0][0]['longValue']
             break
-        time.sleep(1)
+        time.sleep(3)
 
     # 5) Limpiar staging para futuras cargas
     exec_sql_wait(redshift_data, f"TRUNCATE TABLE public.{staging};", database, workgroup)
@@ -337,7 +337,7 @@ def lambda_handler(event,context):
                     elif desc["Status"] == "FAILED":
                         print(f"⚠️ Tabla archivos_ingestados no existe aún, se creará")
                         break
-                    time.sleep(1)
+                    time.sleep(3)
             except Exception as e:
                 print(f"⚠️ No se pudo consultar tickets existentes: {str(e)}")
             
@@ -424,7 +424,7 @@ def lambda_handler(event,context):
                                 ean = r[1].get('stringValue') if r[1].get('stringValue') else None
                                 prod.append((nombre, ean))
                         break;
-                    time.sleep(1)
+                    time.sleep(3)
                 df_dim = pd.DataFrame(prod, columns=['nombre_producto','ean']).drop_duplicates()
                 # Generar grupo y product_id incremental
                 normalizacion = generar_diccionario_normalizacion(df_dim['nombre_producto'].fillna('').unique())
