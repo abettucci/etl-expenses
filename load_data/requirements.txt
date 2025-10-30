@@ -1,2 +1,4 @@
 pandas
 rapidfuzz
+google-cloud-bigquery
+google-auth

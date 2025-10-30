@@ -59,18 +59,6 @@ variable "EMAIL" {
   sensitive   = true
 }
 
-variable "REDSHIFT_USER" {
-  description = "username redshift database"
-  type        = string
-  sensitive   = true
-}
-
-variable "REDSHIFT_PASSWORD" {
-  description = "redshift database password"
-  type        = string
-  sensitive   = true
-}
-
 variable "TELEGRAM_BOT_TOKEN" {
   description = "TELEGRAM_BOT_TOKEN"
   type        = string
@@ -115,24 +103,7 @@ resource "aws_s3_bucket" "bank_payments" {
   force_destroy = true
 }
 
-########### 2. Redshift Serverless ###########
-# Creamos el namespace
-resource "aws_redshiftserverless_namespace" "etl_namespace" {
-  namespace_name = "pdf-etl-namespace"
-  db_name        = "dev"
-  iam_roles = [aws_iam_role.lambda_exec.arn]
-}
-
-# Creamos el workgroup
-resource "aws_redshiftserverless_workgroup" "etl_workgroup" {
-  workgroup_name = "pdf-etl-workgroup"
-  namespace_name = aws_redshiftserverless_namespace.etl_namespace.namespace_name
-  base_capacity  = 8 # RPUs
-  # Configuración correcta para Data API:
-  publicly_accessible = true
-}
-
-########### 3. Repositorio ECR para las imágenes Lambda ###########
+########### 2. Repositorio ECR para las imágenes Lambda ###########
 resource "aws_ecr_repository" "lambda_images" {
   name                 = "etl-expenses"
   image_tag_mutability = "MUTABLE"
@@ -570,12 +541,6 @@ resource "aws_lambda_function" "pdf_processor" {
 
   memory_size = 1024  # Más memoria para procesar PDFs
   timeout     = 900
-
-  environment {
-    variables = {
-      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-    }
-  }
 }
 
 # 4.3 Lambda para extraer reportes de Mercado Pago
@@ -590,8 +555,7 @@ resource "aws_lambda_function" "mp_report_extractor" {
 
   environment {
     variables = {
-      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
+      BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
     }
   }
 }
@@ -608,8 +572,7 @@ resource "aws_lambda_function" "mp_report_processor" {
 
   environment {
     variables = {
-      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
+      BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
     }
   }
 }
@@ -626,9 +589,8 @@ resource "aws_lambda_function" "extract_data_gmail" {
 
   environment {
     variables = {
-      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      MARKET_BUCKET_NAME    = aws_s3_bucket.market_tickets.bucket
-      BANK_BUCKET_NAME      = aws_s3_bucket.bank_payments.bucket 
+      MARKET_BUCKET_NAME = aws_s3_bucket.market_tickets.bucket
+      BANK_BUCKET_NAME   = aws_s3_bucket.bank_payments.bucket 
     }
   }
 }
@@ -645,13 +607,12 @@ resource "aws_lambda_function" "bank_payments_processor" {
 
   environment {
     variables = {
-      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
+      BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
     }
   }
 }
 
-# 4.7 Lambda para cargar los dos ETLs a tablas productivas de Redshift (reportes de Mercado Pago y pdfs de Gmail)
+# 4.7 Lambda para cargar los dos ETLs a BigQuery (reportes de Mercado Pago y pdfs de Gmail)
 resource "aws_lambda_function" "load_report_and_pdf" {
   function_name = "load_report_and_pdf"
   role          = aws_iam_role.lambda_exec.arn
@@ -663,9 +624,11 @@ resource "aws_lambda_function" "load_report_and_pdf" {
 
   environment {
     variables = {
-      WORKGROUP_NAME = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      BUCKET_NAME    = aws_s3_bucket.mp_reports.bucket
-      IAM_ROLE_REDSHIFT = aws_iam_role.lambda_exec.arn
+      GCP_PROJECT_ID     = var.GCP_PROJECT_ID
+      BQ_DATASET_STAGING = "STG"
+      BQ_DATASET_PROD    = "PRD"
+      BQ_LOCATION        = "US"
+      BUCKET_NAME        = aws_s3_bucket.mp_reports.bucket
     }
   }
 }
@@ -707,18 +670,7 @@ resource "aws_lambda_function" "compensation_flow" {
   }
 }
 
-# 4.10 Lambda data load de redshift a big query para visualizar los datos
-resource "aws_lambda_function" "redshift_to_bq" {
-  function_name = "redshift_to_bq"
-  role          = aws_iam_role.lambda_exec.arn
-  package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:redshift_to_bq-latest"
-  
-  memory_size = 1024  # Ajustar según necesidades
-  timeout     = 900   # Máximo 15 minutos
-}
-
-# 4.11 Lambda para procesar el agente de IA y resolver las consultas sobre los datos en Redshift
+# 4.10 Lambda para procesar el agente de IA y resolver las consultas sobre los datos en BigQuery
 resource "aws_lambda_function" "ai_agent" {
   function_name = "ai_agent"
   role          = aws_iam_role.lambda_exec.arn
@@ -730,9 +682,10 @@ resource "aws_lambda_function" "ai_agent" {
 
   environment {
     variables = {
-      REDSHIFT_WORKGROUP = aws_redshiftserverless_workgroup.etl_workgroup.workgroup_name
-      REDSHIFT_DATABASE  = "dev",
-      TELEGRAM_BOT_TOKEN = var.TELEGRAM_BOT_TOKEN,
+      GCP_PROJECT_ID     = var.GCP_PROJECT_ID
+      BQ_DATASET_PROD    = "PRD"
+      BQ_LOCATION        = "US"
+      TELEGRAM_BOT_TOKEN = var.TELEGRAM_BOT_TOKEN
       OPENAI_API_KEY     = var.OPENAI_API_KEY
     }
   }
@@ -741,7 +694,7 @@ resource "aws_lambda_function" "ai_agent" {
 
 ###########  5. Permisos IAM Roles ###########
 # IAM role para Lambda execution
-resource "aws_iam_role" "lambda_exec" {  # Asumiendo que ya existe; modifícalo
+resource "aws_iam_role" "lambda_exec" {
   name = "lambda_exec_role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -749,11 +702,7 @@ resource "aws_iam_role" "lambda_exec" {  # Asumiendo que ya existe; modifícalo
       {
         Effect    = "Allow"
         Principal = {
-          Service = [
-            "lambda.amazonaws.com",              # Para Lambda
-            "redshift.amazonaws.com",            # Para Redshift general
-            "redshift-serverless.amazonaws.com"  # Para Serverless
-          ]
+          Service = "lambda.amazonaws.com"
         }
         Action = "sts:AssumeRole"
       }
@@ -859,25 +808,7 @@ resource "aws_iam_role_policy" "secrets_token_access" {
   })
 }
 
-# Separar las políticas en recursos distintos
-resource "aws_iam_policy" "lambda_redshift_access" {
-  name = "lambda_redshift_access"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action = [
-          "redshift-data:*",
-          "redshift:GetClusterCredentials",
-          "redshift:Describe*",
-          "redshift-serverless:*"
-        ],
-        Effect   = "Allow",
-        Resource = "*"
-      }
-    ]
-  })
-}
+# Políticas para Lambda
 
 resource "aws_iam_policy" "lambda_ecr_access" {
   name = "lambda_ecr_access"
@@ -998,11 +929,6 @@ resource "aws_iam_role_policy" "api_gateway_step_function_policy" {
 }
 
 # Attachments de las políticas al rol
-resource "aws_iam_role_policy_attachment" "lambda_redshift" {
-  role       = aws_iam_role.lambda_exec.name
-  policy_arn = aws_iam_policy.lambda_redshift_access.arn
-}
-
 resource "aws_iam_role_policy_attachment" "lambda_ecr" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_ecr_access.arn
@@ -1038,8 +964,7 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
             "bank_payments_processor-latest",
             "load_report_and_pdf-latest",
             "webhook_mp_report-latest",
-            "compensation_flow-latest",
-            "redshift_to_bq-latest"
+            "compensation_flow-latest"
           ]
           countType   = "imageCountMoreThan"
           countNumber = 1
@@ -1076,9 +1001,9 @@ resource "aws_iam_role_policy" "lambda_exec_copy_policy" {
   })
 }
 
-# Policy que permite a Glue poder acceder a las tablas de Redshift y S3
-resource "aws_iam_role_policy" "redshift_spectrum_glue_access" {
-  name = "redshift_spectrum_glue_access"
+# Policy que permite a Glue poder acceder a S3 y SSM
+resource "aws_iam_role_policy" "glue_s3_access" {
+  name = "glue_s3_access"
   role = aws_iam_role.lambda_exec.id
 
   policy = jsonencode({
@@ -1222,8 +1147,6 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
           aws_lambda_function.bank_payments_processor.arn,
 
           aws_lambda_function.load_report_and_pdf.arn,
-          aws_lambda_function.redshift_to_bq.arn,
-
           aws_lambda_function.ai_agent.arn
         ]
       }
@@ -1403,7 +1326,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
           }
         ]
       },
-      # Tercer step ejecuta Load data
+      # Tercer step ejecuta Load data (carga directa a BigQuery)
       "Load Gmail PDFs" = {
         Type     = "Task",
         Resource = aws_lambda_function.load_report_and_pdf.arn,
@@ -1414,7 +1337,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
           "report_id.$"   = "$.body.report_id"
           "report_date.$" = "$.body.report_date"
         },
-        Next     = "Export Redshift data to BigQuery",
+        Next     = "Run Market Tickets Crawler",
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
@@ -1422,18 +1345,6 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
             "Next": "CompensationFlow"
           }
         ]
-      },
-      "Export Redshift data to BigQuery" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.redshift_to_bq.arn,
-        Catch: [
-          {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
-          }
-        ],
-        Next     = "Run Market Tickets Crawler"
       },
       # Ultimo step ejecuta Glue Crawler
       "Run Market Tickets Crawler" = {
@@ -1514,21 +1425,6 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
           "report_id.$"   = "$.report_id"
           "report_date.$" = "$.report_date"
         },
-        Next     = "Export Redshift data to BigQuery",
-        Catch: [
-          {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
-          }
-        ]
-      },
-      "Export Redshift data to BigQuery" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.redshift_to_bq.arn,
-        Parameters = {
-          "table_name.$" = "$.table_name"
-        }
         Next     = "Run MP Reports Crawler",
         Catch: [
           {
@@ -1630,7 +1526,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
           "report_id.$"   = "$.body.report_id"
           "report_date.$" = "$.body.report_date"
         },
-        Next     = "Export Redshift data to BigQuery",
+        Next     = "Run Bank Payments Crawler",
         Catch: [
           {
             "ErrorEquals": ["States.ALL"],
@@ -1638,18 +1534,6 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
             "Next": "CompensationFlow"
           }
         ]
-      },
-      "Export Redshift data to BigQuery" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.redshift_to_bq.arn,
-        Catch: [
-          {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
-          }
-        ],
-        Next     = "Run Bank Payments Crawler"
       },
       # Ultimo step ejecuta Glue Crawler
       "Run Bank Payments Crawler" = {
@@ -1809,8 +1693,4 @@ resource "aws_cloudwatch_metric_alarm" "etl_step_function_bank_payments_failure"
     StateMachineArn = aws_sfn_state_machine.bank_payments_etl_flow.arn
   }
   alarm_actions = [aws_sns_topic.stepfunction_alerts.arn]
-}
-
-output "redshift_iam_role_arn" {
-  value = aws_iam_role.lambda_exec.arn
 }
