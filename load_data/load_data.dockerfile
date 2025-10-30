@@ -7,7 +7,13 @@ RUN pip install --upgrade pip
 # Copiar requirements
 COPY requirements.txt .
 
-# Instalar dependencias
+# Actualizar pip y setuptools
+RUN pip install --upgrade pip setuptools wheel
+
+# ⭐ CRÍTICO: Instalar numpy PRIMERO
+RUN pip install --no-cache-dir numpy==1.24.3
+
+# Luego instalar el resto
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código de la lambda
