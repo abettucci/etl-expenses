@@ -277,44 +277,28 @@ jobs:
           set -x
           echo "🔍 Obteniendo URL del webhook..."
           
-          # Ejecutar terraform output y limpiar la salida
-          RAW_OUTPUT=$(terraform output telegram_webhook_url 2>&1)
+          # Método principal: jq + JSON (limpio, sin comillas)
+          WEBHOOK_URL=$(terraform output -json telegram_webhook_url | jq -r '.telegram_webhook_url.value' 2>/dev/null)
           
-          echo "📋 Raw output completo:"
-          echo "$RAW_OUTPUT"
-          echo "---"
-          
-          # Extraer solo la URL usando múltiples métodos
-          # Método 1: Buscar línea que comienza con la URL
-          WEBHOOK_URL=$(echo "$RAW_OUTPUT" | grep -E '^https://' | head -1 | tr -d ' ' | tr -d '"')
-          
-          # Método 2: Si no funciona, buscar patrón de URL
-          if [ -z "$WEBHOOK_URL" ]; then
-            WEBHOOK_URL=$(echo "$RAW_OUTPUT" | grep -oE 'https://[^[:space:]]*' | head -1)
+          # Fallback si jq falla (raro)
+          if [ -z "$WEBHOOK_URL" ] || [[ ! "$WEBHOOK_URL" =~ ^https:// ]]; then
+            RAW_OUTPUT=$(terraform output telegram_webhook_url 2>/dev/null)
+            WEBHOOK_URL=$(echo "$RAW_OUTPUT" | grep -oE 'https://[^[:space:]]+"?' | sed 's/"$//' | head -1)
           fi
           
-          # Método 3: Usar jq si está disponible
-          if [ -z "$WEBHOOK_URL" ] && command -v jq &> /dev/null; then
-            WEBHOOK_URL=$(terraform output -json | jq -r '.telegram_webhook_url.value' 2>/dev/null || true)
-          fi
+          # Corregir slash doble (siempre)
+          WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's|//|/|g')
           
-          # Validar URL
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "❌ ERROR: No se pudo extraer la URL del webhook"
-            echo "📋 Output completo para debug:"
-            echo "$RAW_OUTPUT"
+          # Validaciones
+          if [ -z "$WEBHOOK_URL" ] || [[ ! "$WEBHOOK_URL" =~ ^https:// ]]; then
+            echo "❌ ERROR: No se pudo extraer URL válida"
+            echo "Raw: $RAW_OUTPUT"
             exit 1
           fi
           
-          if [[ ! "$WEBHOOK_URL" =~ ^https://.* ]]; then
-            echo "❌ ERROR: URL malformada - '$WEBHOOK_URL'"
-            echo "📋 Output original: $RAW_OUTPUT"
-            exit 1
-          fi
-          
-          echo "✅ Webhook URL extraída: $WEBHOOK_URL"
+          echo "✅ URL limpia: $WEBHOOK_URL"
           echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
-          
+        
       - name: Configure Telegram Webhook
         run: |
           set -x
