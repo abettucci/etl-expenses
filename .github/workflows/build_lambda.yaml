@@ -271,37 +271,71 @@ jobs:
           set -x
           terraform apply -auto-approve
 
-      - name: Get Webhook URL (Robust)
+      - name: Get Webhook URL
         id: webhook
         run: |
           set -x
-          # Extraer SOLO la URL usando grep y sed
-          RAW_OUTPUT=$(terraform output telegram_webhook_url)
-          WEBHOOK_URL=$(echo "$RAW_OUTPUT" | grep -o 'https://[^[:space:]]*' | head -n1 | sed 's/"//g')
+          echo "🔍 Obteniendo URL del webhook..."
           
-          # Validar formato
-          if [[ ! "$WEBHOOK_URL" =~ ^https://.* ]]; then
-            echo "❌ Error: URL malformada - '$WEBHOOK_URL'"
+          # Método 1: Intentar con output raw
+          WEBHOOK_URL=$(terraform output -raw telegram_webhook_url 2>/dev/null || true)
+          
+          # Método 2: Si falla, usar método alternativo
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "⚠️ Método raw falló, usando método alternativo..."
+            WEBHOOK_URL=$(terraform output telegram_webhook_url | head -1 | tr -d '"' | awk '{print $NF}')
+          fi
+          
+          # Método 3: Último intento - extraer manualmente
+          if [ -z "$WEBHOOK_URL" ] || [ "$WEBHOOK_URL" == "null" ]; then
+            echo "⚠️ Método alternativo falló, extrayendo manualmente..."
+            terraform output > outputs.txt
+            WEBHOOK_URL=$(grep "telegram_webhook_url" outputs.txt | grep -o 'https://[^"]*' | head -1)
+            rm -f outputs.txt
+          fi
+          
+          # Validar URL
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "❌ ERROR: No se pudo obtener la URL del webhook"
+            echo "📋 Output completo de terraform:"
+            terraform output
             exit 1
           fi
           
+          if [[ ! "$WEBHOOK_URL" =~ ^https://.* ]]; then
+            echo "❌ ERROR: URL malformada - '$WEBHOOK_URL'"
+            exit 1
+          fi
+          
+          echo "✅ Webhook URL obtenida: $WEBHOOK_URL"
           echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
-          echo "✅ Webhook URL limpia: $WEBHOOK_URL"
           
       - name: Configure Telegram Webhook
         run: |
           set -x
-          # Usar directamente la variable del paso anterior
-          WEBHOOK_URL="${{ steps.webhook.outputs.telegram_webhook_url }}"
+          WEBHOOK_URL="${{ steps.webhook.outputs.webhook_url }}"
           
-          echo "Configurando webhook con URL: $WEBHOOK_URL"
+          echo "🔧 Configurando webhook de Telegram..."
+          echo "📝 URL: $WEBHOOK_URL"
+          echo "🔑 Token: ${{ env.TF_VAR_TELEGRAM_BOT_TOKEN }}"
           
-          curl -X POST "https://api.telegram.org/bot${{ env.TF_VAR_TELEGRAM_BOT_TOKEN }}/setWebhook" \
-              -H "Content-Type: application/json" \
-              -d "{\"url\": \"$WEBHOOK_URL\"}"
+          # Configurar webhook
+          RESPONSE=$(curl -s -X POST \
+            "https://api.telegram.org/bot${{ env.TF_VAR_TELEGRAM_BOT_TOKEN }}/setWebhook" \
+            -H "Content-Type: application/json" \
+            -d "{\"url\": \"$WEBHOOK_URL\"}")
           
-          echo "Webhook configurado exitosamente"
-                
+          echo "📡 Respuesta de Telegram: $RESPONSE"
+          
+          # Verificar si fue exitoso
+          if echo "$RESPONSE" | grep -q "\"ok\":true"; then
+            echo "✅ Webhook configurado exitosamente"
+          else
+            echo "❌ Error configurando webhook"
+            echo "💡 Response completa: $RESPONSE"
+            exit 1
+          fi
+              
       - name: Verify Webhook
         run: |
           set -x

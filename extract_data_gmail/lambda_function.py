@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
 import pandas as pd
 import os
+import io
 from io import BytesIO
 import requests
 from google.oauth2.credentials import Credentials
@@ -374,7 +375,19 @@ def run_step_function_sync(sfn_client, step_function_arn, payload, poll_interval
             print(f"⏳ Step Function sigue en {status}... esperando {poll_interval}s")
             time.sleep(poll_interval)
 
-def reproceso_historico():
+def wait_for_crawler_to_finish(crawler_name, poll_interval=30):
+    glue = boto3.client('glue')
+    while True:
+        crawler = glue.get_crawler(Name=crawler_name)
+        state = crawler['Crawler']['State']
+        if state == 'READY':
+            print(f"✅ Crawler {crawler_name} finalizó correctamente.")
+            break
+        else:
+            print(f"⏳ Crawler {crawler_name} sigue en estado {state}... esperando {poll_interval}s")
+            time.sleep(poll_interval)
+
+def reproceso_historico(table_name):
     try:
         creds = auth_google('gcp_api_credentials')
         gmail_service = build('gmail', 'v1', credentials=creds)
@@ -389,9 +402,16 @@ def reproceso_historico():
         # market_bucket = os.environ['MARKET_BUCKET_NAME']
         folder = 'raw/'
 
+        if table_name == 'carrefour_data':
+            labels = ['Avisos Compra Carrefour']
+            crawler_name = 'market-tickets-crawler'
+        else: # bank_payments
+            labels = ['Avisos Gastos Santander']
+            crawler_name = 'bank-payments-crawler'
+
         results = gmail_service.users().labels().list(userId="me").execute()
         for label in results['labels']:
-            if label['name'] in ['Avisos Compra Carrefour']: #'Avisos Gastos Santander'
+            if label['name'] in labels: #'Avisos Gastos Santander'
       
                 results = gmail_service.users().messages().list(
                     userId="me",
@@ -455,6 +475,8 @@ def reproceso_historico():
                     else:
                         print(f"Label {label['name']} no reconocido - continuamos con el siguiente mail")
                         continue
+
+                    # wait_for_crawler_to_finish(crawler_name, poll_interval=10)
                     
                     status, desc = run_step_function_sync(
                         sfn_client,
@@ -470,6 +492,62 @@ def reproceso_historico():
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
 
+def carga_inicial_desde_s3(table_name):
+    s3_client = boto3.client('s3')
+    sfn_client = boto3.client("stepfunctions")
+    folder = 'raw/'
+
+    if table_name == 'carrefour_data':
+        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'  
+        bucket_name = 'market-tickets'
+        crawler_name = 'market-tickets-crawler'
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+        keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
+        for key in keys:
+            print(key)
+            if key.endswith(".pdf"):     
+                payload = {
+                    "statusCode": 200,
+                    "body": {
+                        "key": key,
+                        "process": True
+                    }
+                }
+                status, desc = run_step_function_sync(
+                    sfn_client,
+                    step_function_arn,
+                    payload,
+                    poll_interval=5  # cada 10 segundos chequea
+                )
+                if status != "SUCCEEDED":
+                    print(f"⚠️ Ejecución fallida para s3 file {key}: {status}")
+
+    else: #bank_payments
+        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'  
+        bucket_name = 'bank-payments'
+        crawler_name = 'bank-payments-crawler'
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+        keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
+        for key in keys:
+            # wait_for_crawler_to_finish(crawler_name, poll_interval=10)
+            print(key)
+            if key.endswith(".json"):     
+                payload = {
+                    "statusCode": 200,
+                    "body": {
+                        "key": key,
+                        "process": True
+                    }
+                }
+                status, desc = run_step_function_sync(
+                    sfn_client,
+                    step_function_arn,
+                    payload,
+                    poll_interval=5  # cada 10 segundos chequea
+                )
+                if status != "SUCCEEDED":
+                    print(f"⚠️ Ejecución fallida para s3 file {key}: {status}")
+    
 def lambda_handler(event, context):
     try:
         print(f"Mensaje Pub/Sub: {json.dumps(event)}")
@@ -591,5 +669,3 @@ def lambda_handler(event, context):
 
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
-
-reproceso_historico()
