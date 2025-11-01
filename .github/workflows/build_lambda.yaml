@@ -276,22 +276,23 @@ jobs:
         run: |
           echo "🔍 Obteniendo URL del webhook..."
           
-          # ✨ -raw = VALOR PURO (sin quotes, sin =, sin basura)
-          WEBHOOK_URL=$(terraform output -raw telegram_webhook_url)
+          # 💎 MÉTODO BULLET-PROOF: grep + sed (ignora TODO debug)
+          LINE=$(terraform output 2>/dev/null | grep '^telegram_webhook_url =')
+          WEBHOOK_URL=$(echo "$LINE" | sed 's/.*= "\(.*\)"/\1/')
+          echo "🔍 Raw: $WEBHOOK_URL"
           
-          # 🛠️ Fix // → /
-          WEBHOOK_URL="${WEBHOOK_URL//\/\//\/}"
+          # 🛠️ FIX1: Insertar /prod/ (com// → com/prod/)
+          WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's|\.amazonaws\.com//|\.amazonaws\.com/prod/|')
           
-          # ✅ Validar
-          if [[ ! "$WEBHOOK_URL" =~ ^https:// ]]; then
+          # ✅ Validate
+          if [[ ! "$WEBHOOK_URL" =~ ^https://.+prod/ ]]; then
             echo "❌ FALLO: $WEBHOOK_URL"
-            terraform output
             exit 1
           fi
           
-          echo "✅ URL: $WEBHOOK_URL"
+          echo "✅ PERFECTA: $WEBHOOK_URL"
           echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
-      
+
       - name: Configure Telegram Webhook
         run: |
           set -x
