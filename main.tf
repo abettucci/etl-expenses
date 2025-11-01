@@ -819,6 +819,11 @@ resource "aws_iam_role_policy_attachment" "lambda_kms_attach" {
   policy_arn = aws_iam_policy.lambda_kms_policy.arn
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_exec_step_function_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.step_function_start_policy.arn
+}
+
 # Policy para acceder a los secrets de Secret Manager con Lambda
 resource "aws_iam_role_policy" "secrets_token_access" {
   name = "lambda_token_google_secrets"
