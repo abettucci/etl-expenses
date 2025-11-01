@@ -5,12 +5,12 @@ import boto3
 import re
 
 def lambda_handler(event, context):
-    print('event: ', event)
-
     step_functions_client = boto3.client('stepfunctions')
     
-    # Usar la variable de entorno en lugar del valor hardcodeado
+    # Usar la variable de entorno
     CIFRADO_SECRET = os.environ.get("CIFRADO_SECRET_MP")
+    
+    print('CIFRADO_SECRET: ', CIFRADO_SECRET)
     
     # Parsear el body
     if isinstance(event.get("body"), str):
@@ -25,36 +25,28 @@ def lambda_handler(event, context):
         body_json = event.get("body", {})
 
     try:
-        # Obtener datos del body
+        # Obtener datos del body - CORREGIDO: la firma está en el body, no en headers
         transaction_id = body_json.get("transaction_id", "")
         generation_date = body_json.get("generation_date", "")
-        
-        # IMPORTANTE: La firma viene en los headers, no en el body
-        headers = event.get('headers', {})
+        firma_enviada = body_json.get("signature", "")  # ¡Esto es lo importante!
 
-        print('headers: ', headers)
-        
-        # Buscar la firma en diferentes formatos de header (case-insensitive)
-        firma_enviada = None
-        for header_name, header_value in headers.items():
-            if header_name.lower() == 'x-signature':
-                firma_enviada = header_value
-                break
-        
-        print('firma_enviada: ', firma_enviada)
-
-        if not firma_enviada:
-            print("Header x-signature no encontrado")
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "Falta el header x-signature"})
-            }
-
-        if not transaction_id or not generation_date:
+        if not transaction_id or not generation_date or not firma_enviada:
+            print(f"Faltan campos: transaction_id={transaction_id}, generation_date={generation_date}, signature={firma_enviada}")
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "Faltan campos requeridos en el body"})
             }
+
+        # Agrega esto al inicio de tu lambda_handler después de parsear el body
+        print("=== DEBUG INFO ===")
+        print(f"Transaction ID: {body_json.get('transaction_id')}")
+        print(f"Generation Date: {body_json.get('generation_date')}")
+        print(f"Signature: {body_json.get('signature')}")
+        print(f"All body keys: {list(body_json.keys())}")
+
+        # Construye y muestra la cadena exacta que se está verificando
+        cadena_para_firma = f"{body_json.get('transaction_id')}-{CIFRADO_SECRET}-{body_json.get('generation_date')}"
+        print(f"Cadena construida para verificación: '{cadena_para_firma}'")
 
         # Construir la cadena para verificación
         cadena_para_firma = f"{transaction_id}-{CIFRADO_SECRET}-{generation_date}"
@@ -62,15 +54,15 @@ def lambda_handler(event, context):
         
         print(f"Cadena para verificación: {cadena_para_firma}")
         print(f"Firma recibida: {firma_enviada}")
+        print(f"Secret usado: {CIFRADO_SECRET}")
 
         # Verificar la firma con bcrypt
-        # La firma de Mercado Pago ya está en formato bcrypt
         try:
             # bcrypt.checkpw espera que ambos parámetros estén en bytes
             if bcrypt.checkpw(cadena_para_firma_bytes, firma_enviada.encode("utf-8")):
-                print("Firma válida")
+                print("✅ Firma válida - Coincide")
                 
-                # Extraer información de files si existe
+                # Extraer información de files
                 files = body_json.get("files", [])
                 if files:
                     file = files[0]
@@ -100,7 +92,8 @@ def lambda_handler(event, context):
                     })
                 }
             else:
-                print("Firma inválida - no coincide")
+                print("❌ Firma inválida - no coincide")
+                print(f"Se esperaba: {cadena_para_firma}")
                 return {
                     "statusCode": 403,
                     "body": json.dumps({"message": "Firma inválida"})

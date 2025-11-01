@@ -139,8 +139,9 @@ def query_bigquery(client, sql: str) -> str:
         query_job = client.query(sql)
         results = query_job.result()  # Espera a que termine
         
-        # Verificar si hay resultados
-        if query_job.total_rows == 0:
+        # Verificar si hay resultados - CORREGIDO
+        # El total_rows está en el RowIterator (results), no en el QueryJob
+        if results.total_rows == 0:
             return "ℹ️ No se encontraron resultados."
         
         return format_bigquery_results(results)
