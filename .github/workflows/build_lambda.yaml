@@ -186,6 +186,8 @@ jobs:
             echo "⚠️ API Gateway 'main-api' not found"
           fi
           
+          terraform import aws_dynamodb_table.schema_cache schema_cache
+
           terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_lambda_policy || true
           terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_start_policy || true
           terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_glue_policy || true
