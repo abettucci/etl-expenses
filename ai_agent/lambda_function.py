@@ -11,20 +11,22 @@ from google.oauth2 import service_account
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-# Configuración de BigQuery
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 
-# Cliente de Glue para obtener esquemas (mantener compatibilidad con S3)
-glue_client = boto3.client('glue', region_name='us-east-2')
-
-# Configuración de OpenAI
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY environment variable is required")
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+REGION = os.environ.get("AWS_REGION", "us-east-2")
+DDB_TABLE = os.environ.get("DDB_TABLE", "schema_cache")
+CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))  # 7 días
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+# --- Clientes AWS/GCP ---
+dynamo = boto3.resource("dynamodb", region_name=REGION)
+ddb_table = dynamo.Table(DDB_TABLE)
+glue_client = boto3.client("glue", region_name=REGION)
+secrets_client = boto3.client("secretsmanager", region_name=REGION)
 
 def get_bigquery_client():
     """Inicializa cliente de BigQuery con credenciales de Secrets Manager"""
@@ -50,6 +52,54 @@ def get_bigquery_table_columns(client, table_name):
         print(f"⚠️ No se pudo obtener esquema de {table_name}: {e}")
         return []
 
+def get_table_columns_glue(database, table_prefix):
+    try:
+        paginator = glue_client.get_paginator("get_tables")
+        for page in paginator.paginate(DatabaseName=database):
+            for t in page["TableList"]:
+                if t["Name"].startswith(table_prefix):
+                    return [c["Name"] for c in t["StorageDescriptor"]["Columns"]]
+        return []
+    except Exception as e:
+        print(f"Error Glue {table_prefix}: {e}")
+        return []
+
+def get_cached_schema(table_name):
+    try:
+        resp = ddb_table.get_item(Key={"table_name": table_name})
+        item = resp.get("Item")
+        if not item:
+            return None
+        if time.time() - item["timestamp"] > CACHE_TTL_SECONDS:
+            return None
+        return json.loads(item["columns_json"])
+    except Exception as e:
+        print(f"Cache miss por error: {e}")
+        return None
+
+def put_schema_cache(table_name, columns):
+    try:
+        ddb_table.put_item(
+            Item={
+                "table_name": table_name,
+                "columns_json": json.dumps(columns),
+                "timestamp": int(time.time()),
+            }
+        )
+    except Exception as e:
+        print(f"Error guardando cache: {e}")
+
+def get_columns_for_table(table_name, bq_client, glue_db="default"):
+    cols = get_cached_schema(table_name)
+    if cols:
+        return cols
+    cols = get_bigquery_table_columns(bq_client, table_name)
+    if not cols:
+        cols = get_table_columns_glue(glue_db, table_name)
+    if cols:
+        put_schema_cache(table_name, cols)
+    return cols
+
 def get_table_columns_by_prefix(database: str, table_prefix: str) -> list:
     """Busca una tabla por prefijo en Glue y devuelve sus columnas (para compatibilidad)"""
     try:
@@ -65,6 +115,49 @@ def get_table_columns_by_prefix(database: str, table_prefix: str) -> list:
         print(f"❌ Error al buscar tablas con prefijo '{table_prefix}': {e}")
         return []
 
+def generate_sql_with_openai2(question, bq_client):
+    try:
+        schemas = {
+            "bank_payments": get_columns_for_table("bank_payments", bq_client),
+            "mp_data": get_columns_for_table("mp_data", bq_client),
+            "carrefour_data": get_columns_for_table("carrefour_data", bq_client),
+            "dim_producto": get_columns_for_table("dim_producto", bq_client),
+        }
+        schema_text = "\n".join(
+            [f"- {t}: {', '.join(cols) if cols else 'tabla no disponible'}" for t, cols in schemas.items()]
+        )
+
+        prompt = f"""
+            Eres un experto en SQL para BigQuery. Genera una consulta para: "{question}"
+
+            Esquema disponible:
+            {schema_text}
+
+            Reglas:
+            1. Usa solo estas tablas/columnas.
+            2. SQL válido en BigQuery Standard SQL.
+            3. Referencia tablas como `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.nombre_tabla`
+            4. Limita resultados a 20 filas.
+            5. Usa fechas relativas (CURRENT_DATE()).
+            6. Solo devuelve SQL, sin explicaciones.
+        """
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Eres un experto en SQL para BigQuery."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=500,
+            temperature=0.1,
+        )
+        sql = (res.choices[0].message.content or "").strip()
+        if sql.startswith("```"):
+            sql = sql.replace("```sql", "").replace("```", "").strip()
+        return sql
+    except Exception as e:
+        print(f"Error generando SQL: {e}")
+        return ""
+
 def generate_sql_with_openai(question: str, bq_client) -> str:
     """Genera SQL usando OpenAI GPT para BigQuery"""
     
@@ -77,30 +170,30 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
 
         # Prompt para generar SQL de BigQuery
         prompt = f"""
-Eres un experto en SQL y análisis de datos. Necesito que generes una consulta SQL para responder a esta pregunta: "{question}"
+            Eres un experto en SQL y análisis de datos. Necesito que generes una consulta SQL para responder a esta pregunta: "{question}"
 
-Esquema actual en BigQuery (dataset: {BQ_DATASET_PROD}):
-- bank_payments: {', '.join(bank_columns) if bank_columns else 'tabla no disponible'}
-- mp_data: {', '.join(mp_columns) if mp_columns else 'tabla no disponible'}
-- carrefour_data: {', '.join(carrefour_columns) if carrefour_columns else 'tabla no disponible'}
-- dim_producto: {', '.join(dim_producto_columns) if dim_producto_columns else 'tabla no disponible'}
+            Esquema actual en BigQuery (dataset: {BQ_DATASET_PROD}):
+            - bank_payments: {', '.join(bank_columns) if bank_columns else 'tabla no disponible'}
+            - mp_data: {', '.join(mp_columns) if mp_columns else 'tabla no disponible'}
+            - carrefour_data: {', '.join(carrefour_columns) if carrefour_columns else 'tabla no disponible'}
+            - dim_producto: {', '.join(dim_producto_columns) if dim_producto_columns else 'tabla no disponible'}
 
-Reglas de oro:
-0. Utilizar valores para filtrar en las queries solo de valores existentes en las tablas.
-1. Usa solo estas columnas y las tablas mencionadas.
-2. Genera SQL válido para BigQuery (Standard SQL).
-3. Las tablas deben referenciarse como: `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.nombre_tabla`
-4. Si la pregunta es sobre gastos del banco/santander, usa la tabla bank_payments.
-5. Si la pregunta es sobre transacciones/pagos a través de mercado pago, usa la tabla mp_data.
-6. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data.
-7. Para información de productos, usa dim_producto y haz JOIN con carrefour_data si es necesario.
-8. Limita los resultados a máximo 20 filas con LIMIT 20.
-9. Para filtros de fecha, usa funciones de BigQuery como DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH).
-10. No uses fechas hardcodeadas, usa funciones relativas (CURRENT_DATE(), DATE_SUB, etc).
-11. Para formatear números usa FORMAT() o CAST().
+            Reglas de oro:
+            0. Utilizar valores para filtrar en las queries solo de valores existentes en las tablas.
+            1. Usa solo estas columnas y las tablas mencionadas.
+            2. Genera SQL válido para BigQuery (Standard SQL).
+            3. Las tablas deben referenciarse como: `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.nombre_tabla`
+            4. Si la pregunta es sobre gastos del banco/santander, usa la tabla bank_payments.
+            5. Si la pregunta es sobre transacciones/pagos a través de mercado pago, usa la tabla mp_data.
+            6. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data.
+            7. Para información de productos, usa dim_producto y haz JOIN con carrefour_data si es necesario.
+            8. Limita los resultados a máximo 20 filas con LIMIT 20.
+            9. Para filtros de fecha, usa funciones de BigQuery como DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH).
+            10. No uses fechas hardcodeadas, usa funciones relativas (CURRENT_DATE(), DATE_SUB, etc).
+            11. Para formatear números usa FORMAT() o CAST().
 
-Genera solo el SQL, sin explicaciones adicionales:
-"""
+            Genera solo el SQL, sin explicaciones adicionales:
+        """
                 
         # Llamar a OpenAI
         response = openai_client.chat.completions.create(
@@ -185,7 +278,8 @@ def format_bigquery_results(results) -> str:
 def handle_message(text: str, bq_client) -> tuple:
     """Maneja el mensaje del usuario y retorna SQL y respuesta"""
     question = text
-    sql = generate_sql_with_openai(question, bq_client)
+    # sql = generate_sql_with_openai(question, bq_client)
+    sql = generate_sql_with_openai2(question, bq_client)
     
     if not sql:
         return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
@@ -227,27 +321,27 @@ def lambda_handler(event, context):
         # Manejar comando /start
         if text == "/start":
             welcome_message = """
-🤖 *Bot de Consultas de Datos con IA*
+                🤖 *Bot de Consultas de Datos con IA*
 
-¡Hola! Soy tu asistente inteligente para consultar datos de transacciones y gastos.
+                ¡Hola! Soy tu asistente inteligente para consultar datos de transacciones y gastos.
 
-🎯 *Características:*
-• IA real con OpenAI GPT
-• Datos en BigQuery
-• Generación dinámica de SQL
-• Respuestas inteligentes y precisas
+                🎯 *Características:*
+                • IA real con OpenAI GPT
+                • Datos en BigQuery
+                • Generación dinámica de SQL
+                • Respuestas inteligentes y precisas
 
-💡 *Puedes preguntarme:*
-• "¿Cuánto gasté este mes?"
-• "Mostrame las transacciones de ayer"
-• "¿Cuál fue el gasto más alto?"
-• "Gastos por categoría"
-• "Transacciones pendientes"
-• "Resumen de gastos de la semana"
-• "¿Cuánto gasté en comida este año?"
-• "Productos más comprados en Carrefour"
+                💡 *Puedes preguntarme:*
+                • "¿Cuánto gasté este mes?"
+                • "Mostrame las transacciones de ayer"
+                • "¿Cuál fue el gasto más alto?"
+                • "Gastos por categoría"
+                • "Transacciones pendientes"
+                • "Resumen de gastos de la semana"
+                • "¿Cuánto gasté en comida este año?"
+                • "Productos más comprados en Carrefour"
 
-¡Escribí tu pregunta y la IA generará la consulta SQL automáticamente!
+                ¡Escribí tu pregunta y la IA generará la consulta SQL automáticamente!
             """
             send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}

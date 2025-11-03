@@ -83,6 +83,30 @@ variable "SNS_TOPIC" {
   sensitive   = true
 }
 
+variable "glue_database_name" {
+  type    = string
+  default = "etl_database"
+}
+
+variable "glue_crawler_name_market_tickets" {
+  type    = string
+  default = "market-tickets-crawler"
+}
+
+variable "glue_crawler_name_mp_reports" {
+  type    = string
+  default = "mp-reports-crawler"
+}
+
+variable "gluw_crawler_name_bank_payments" {
+  type    = string
+  default = "bank-payments-crawler"
+}
+
+variable "dynamodb_table_name" {
+  type    = string
+  default = "schema_cache"
+}
 
 ########### 1. Buckets de S3 ###########
 # 1.1 Bucket para PDF de Gmail
@@ -543,6 +567,21 @@ resource "aws_dynamodb_table" "gmail_history" {
   }
 }
 
+resource "aws_dynamodb_table" "schema_cache" {
+  name           = var.dynamodb_table_name
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "table_name"
+  attribute {
+    name = "table_name"
+    type = "S"
+  }
+  tags = {
+    Name = "schema_cache"
+    Env  = "prod"
+  }
+}
+
+
 # 4. EventBridge rule (cada domingo 00:00 UTC)
 resource "aws_cloudwatch_event_rule" "weekly" {
   name                = "gmail-watcher-renew-weekly"
@@ -721,6 +760,9 @@ resource "aws_lambda_function" "ai_agent" {
       BQ_LOCATION        = "US"
       TELEGRAM_BOT_TOKEN = var.TELEGRAM_BOT_TOKEN
       OPENAI_API_KEY     = var.OPENAI_API_KEY
+      AWS_REGION         = var.AWS_REGION
+      DDB_TABLE          = var.dynamodb_table_name
+      CACHE_TTL_SECONDS  = "604800"  # 7 días
     }
   }
 }
@@ -817,11 +859,6 @@ resource "aws_iam_policy" "lambda_kms_policy" {
 resource "aws_iam_role_policy_attachment" "lambda_kms_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_kms_policy.arn
-}
-
-resource "aws_iam_role_policy_attachment" "lambda_exec_step_function_attach" {
-  role       = aws_iam_role.lambda_exec.name
-  policy_arn = aws_iam_policy.step_function_start_policy.arn
 }
 
 # Policy para acceder a los secrets de Secret Manager con Lambda
@@ -925,7 +962,9 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
         Action = [
           "dynamodb:GetItem",
           "dynamodb:PutItem",
-          "dynamodb:UpdateItem"
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
         ]
         Resource = "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker"
       }
@@ -1331,80 +1370,73 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
     log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
   }
 
-  # Steps secuenciales
   definition = jsonencode({
-      StartAt = "Check If Should Process",
-      States = {
+    StartAt = "Check If Should Process",
+    States = {
       "Check If Should Process" = {
         Type = "Choice",
         Choices = [
           {
-            "Variable": "$.body.process",
-            "BooleanEquals": true,
-            "Next": "Transform Gmail PDFs"
+            Variable      = "$.body.process",
+            BooleanEquals = true,
+            Next          = "Transform Gmail PDFs"
           }
         ],
         Default = "SkipProcessing"
       },
+
       "SkipProcessing" = {
         Type = "Succeed"
       },
-      # Segundo step ejecuta Transform data
+
+      # Step 1: Transform
       "Transform Gmail PDFs" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.pdf_processor.arn,
+        Type       = "Task",
+        Resource   = aws_lambda_function.pdf_processor.arn,
         Parameters = {
-          "key.$": "$.body.key"
+          "key.$" = "$.body.key"
         },
-        Next     = "Load Gmail PDFs",
-        Catch: [
+        Next  = "Load Gmail PDFs",
+        Catch = [
           {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
           }
         ]
       },
-      # Tercer step ejecuta Load data (carga directa a BigQuery)
+
+      # Step 2: Load
       "Load Gmail PDFs" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Type       = "Task",
+        Resource   = aws_lambda_function.load_report_and_pdf.arn,
         Parameters = {
-          "etl_flow.$"    = "$.body.etl_flow"
-          "bucket.$"      = "$.body.bucket"
-          "key.$"         = "$.body.key"
-          "report_id.$"   = "$.body.report_id"
+          "etl_flow.$"    = "$.body.etl_flow",
+          "bucket.$"      = "$.body.bucket",
+          "key.$"         = "$.body.key",
+          "report_id.$"   = "$.body.report_id",
           "report_date.$" = "$.body.report_date"
         },
-        Next     = "Run Market Tickets Crawler",
-        Catch: [
+        End = true,
+        Catch = [
           {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
           }
         ]
       },
-      # Ultimo step ejecuta Glue Crawler
-      "Run Market Tickets Crawler" = {
+
+      # Step 3: Compensation Flow (en caso de error)
+      "CompensationFlow" = {
         Type     = "Task",
-        Resource = "arn:aws:states:::aws-sdk:glue:startCrawler",
-        Parameters = {
-          Name = aws_glue_crawler.market_tickets_crawler.name
-        },
-        End = true
-      },
-      # Step compensatorio por si falla algun step del job
-      CompensationFlow: {
-        "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
-        "End": true
+        Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        End      = true
       }
     }
   })
 }
 
-# 8.2 Creacion del job de Reportes MP en Step Function
 resource "aws_sfn_state_machine" "mp_report_etl_flow" {
   name     = "mp-report-etl-flow"
   role_arn = aws_iam_role.step_function_role.arn
@@ -1415,101 +1447,77 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
     log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
   }
 
-  # Steps secuenciales
   definition = jsonencode({
     StartAt = "Extract MP Reports",
     States = {
-      # Primer step ejecuta Extract data
+      # Step 1: Extract
       "Extract MP Reports" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.mp_report_extractor.arn,
-        Parameters: {
-          "file_name.$": "$.file_name",
-          "file_url.$": "$.file_url",
-          "file_type.$": "$.file_type"
+        Type       = "Task",
+        Resource   = aws_lambda_function.mp_report_extractor.arn,
+        Parameters = {
+          "file_name.$" = "$.file_name",
+          "file_url.$"  = "$.file_url",
+          "file_type.$" = "$.file_type"
         },
-        Next     = "Transform MP Reports",
-        Catch: [
+        Next  = "Transform MP Reports",
+        Catch = [
           {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
           }
         ]
       },
-      # Segundo step ejecuta Transform data
+
+      # Step 2: Transform
       "Transform MP Reports" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.mp_report_processor.arn,
+        Type       = "Task",
+        Resource   = aws_lambda_function.mp_report_processor.arn,
         Parameters = {
-          "key.$": "$.key"
+          "key.$" = "$.key"
         },
-        Next     = "Load MP Reports",
-        Catch: [
+        Next  = "Load MP Reports",
+        Catch = [
           {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
           }
         ]
       },
-      # Tercer step ejecuta Load data
+
+      # Step 3: Load
       "Load MP Reports" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Type       = "Task",
+        Resource   = aws_lambda_function.load_report_and_pdf.arn,
         Parameters = {
-          "etl_flow.$"    = "$.etl_flow"
-          "bucket.$"      = "$.bucket"
-          "key.$"         = "$.key"
-          "report_id.$"   = "$.report_id"
+          "etl_flow.$"    = "$.etl_flow",
+          "bucket.$"      = "$.bucket",
+          "key.$"         = "$.key",
+          "report_id.$"   = "$.report_id",
           "report_date.$" = "$.report_date"
         },
-        Next     = "Run MP Reports Crawler",
-        Catch: [
+        End = true,
+        Catch = [
           {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
           }
         ]
       },
-      # Ultimo step ejecuta Glue Crawler
-      "Run MP Reports Crawler" = {
+
+      # Step compensatorio
+      "CompensationFlow" = {
         Type     = "Task",
-        Resource = "arn:aws:states:::aws-sdk:glue:startCrawler",
-        Parameters = {
-          Name = aws_glue_crawler.mp_reports_crawler.name
-        },
-        End = true
-      },
-      # Step compensatorio por si falla algun step del job
-      CompensationFlow: {
-        "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
-        "End": true
+        Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        End      = true
       }
     }
   })
 }
 
 
-# StartAt = "Extract Bank Payments Gmail",
-#     # Primer step ejecuta Extract data
-#     States = {
-#       "Extract Bank Payments Gmail" = {
-#         Type     = "Task",
-#         Resource = aws_lambda_function.extract_data_gmail.arn,
-#         Catch: [
-#           {
-#             "ErrorEquals": ["States.ALL"],
-#             "ResultPath": "$.error-info",
-#             "Next": "CompensationFlow"
-#           }
-#         ],
-#         Next     = "Check If Should Process"
-#       },
-
-# 8.1 Creacion del job de PDFs en Step Function
 resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
   name     = "bank-payments-etl-flow"
   role_arn = aws_iam_role.step_function_role.arn
@@ -1520,106 +1528,114 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
     log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
   }
 
-  # Steps secuenciales
   definition = jsonencode({
-      StartAt = "Check If Should Process",
-      States = {
+    StartAt = "Check If Should Process",
+    States = {
+      # Step 1: Choice
       "Check If Should Process" = {
         Type = "Choice",
         Choices = [
           {
-            "Variable": "$.body.process",
-            "BooleanEquals": true,
-            "Next": "Transform Gmail Bank Payments"
+            Variable      = "$.body.process",
+            BooleanEquals = true,
+            Next          = "Transform Gmail Bank Payments"
           }
         ],
         Default = "SkipProcessing"
       },
+
       "SkipProcessing" = {
         Type = "Succeed"
       },
-      # Segundo step ejecuta Transform data
+
+      # Step 2: Transform
       "Transform Gmail Bank Payments" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.bank_payments_processor.arn,
+        Type       = "Task",
+        Resource   = aws_lambda_function.bank_payments_processor.arn,
         Parameters = {
-          "key.$": "$.body.key"
+          "key.$" = "$.body.key"
         },
-        Next     = "Load Gmail Bank Payments",
-        Catch: [
+        Next  = "Load Gmail Bank Payments",
+        Catch = [
           {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
           }
         ]
       },
-      # Tercer step ejecuta Load data
+
+      # Step 3: Load
       "Load Gmail Bank Payments" = {
-        Type     = "Task",
-        Resource = aws_lambda_function.load_report_and_pdf.arn,
+        Type       = "Task",
+        Resource   = aws_lambda_function.load_report_and_pdf.arn,
         Parameters = {
-          "etl_flow.$"    = "$.body.etl_flow"
-          "bucket.$"      = "$.body.bucket"
-          "key.$"         = "$.body.key"
-          "report_id.$"   = "$.body.report_id"
+          "etl_flow.$"    = "$.body.etl_flow",
+          "bucket.$"      = "$.body.bucket",
+          "key.$"         = "$.body.key",
+          "report_id.$"   = "$.body.report_id",
           "report_date.$" = "$.body.report_date"
         },
-        Next     = "Run Bank Payments Crawler",
-        Catch: [
+        End = true,
+        Catch = [
           {
-            "ErrorEquals": ["States.ALL"],
-            "ResultPath": "$.error-info",
-            "Next": "CompensationFlow"
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
           }
         ]
       },
-      # Ultimo step ejecuta Glue Crawler
-      "Run Bank Payments Crawler" = {
+
+      # Step compensatorio
+      "CompensationFlow" = {
         Type     = "Task",
-        Resource = "arn:aws:states:::aws-sdk:glue:startCrawler",
-        Parameters = {
-          Name = aws_glue_crawler.bank_payments_crawler.name
-        },
-        End = true
-      },
-      # Step compensatorio por si falla algun step del job
-      CompensationFlow: {
-        "Type": "Task",
-        "Resource": "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
-        "End": true
+        Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        End      = true
       }
     }
   })
 }
 
+
 ########### 9. Glue Data Catalog ###########
 
 resource "aws_glue_catalog_database" "etl_database" {
-  name = "etl_database"
+  name = var.glue_database_name
 }
 
 ########### 10. Glue Crawlers ###########
 
 resource "aws_glue_crawler" "market_tickets_crawler" {
-  name          = "market-tickets-crawler"
+  name          = var.glue_crawler_name_market_tickets
   role          = aws_iam_role.glue_service_role.arn
   database_name = aws_glue_catalog_database.etl_database.name
-
+  description  = "Crawler semanal que analiza la carpeta processed/ en S3"
   table_prefix  = "market_tickets_"
 
   s3_target {
     path = "s3://${aws_s3_bucket.market_tickets.bucket}/processed/"
   }
 
-  schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
+  configuration = jsonencode({
+    Version = 1.0,
+    CrawlerOutput = {
+      Partitions = {
+        AddOrUpdateBehavior = "InheritFromTable"
+      }
+    },
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
+  })
+
+  schedule = "cron(0 11 ? * MON *)" # Corre todos los lunes a las 8:00 UTC-3
 }
 
 resource "aws_glue_crawler" "mp_reports_crawler" {
-  name          = "mp-reports-crawler"
+  name          = var.glue_crawler_name_mp_reports
   role          = aws_iam_role.glue_service_role.arn
   database_name = aws_glue_catalog_database.etl_database.name
-
+  description   = "Crawler semanal que analiza la carpeta processed/ en S3"
   table_prefix  = "mp_reports_"
 
   s3_target {
@@ -1641,7 +1657,7 @@ resource "aws_glue_crawler" "mp_reports_crawler" {
 
   classifiers = [aws_glue_classifier.csv_classifier.name]
 
-  schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
+  schedule = "cron(0 11 ? * MON *)" # Corre todos los lunes a las 8:00 UTC-3
 }
 
 resource "aws_glue_classifier" "csv_classifier" {
@@ -1656,18 +1672,33 @@ resource "aws_glue_classifier" "csv_classifier" {
 }
 
 resource "aws_glue_crawler" "bank_payments_crawler" {
-  name          = "bank-payments-crawler"
+  name          = var.gluw_crawler_name_bank_payments
   role          = aws_iam_role.glue_service_role.arn
   database_name = aws_glue_catalog_database.etl_database.name
-
+  description   = "Crawler semanal que analiza la carpeta processed/ en S3"
   table_prefix  = "bank_payments_"
 
   s3_target {
     path = "s3://${aws_s3_bucket.bank_payments.bucket}/processed/"
   }
 
-  schedule = "cron(0 8 * * ? *)" # Corre todos los días a las 8:00 UTC
+  configuration = jsonencode({
+    Version = 1.0,
+    CrawlerOutput = {
+      Partitions = {
+        AddOrUpdateBehavior = "InheritFromTable"
+      }
+    },
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
+  })
+
+  schedule = "cron(0 11 ? * MON *)" # Corre todos los lunes a las 8:00 UTC-3
 }
+
+
+
 
 ########### 11. CloudWatch Alarm ###########
 
