@@ -42,7 +42,6 @@ def move_to_processed(s3_client, file_key, bucket_name):
             obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
             content = obj['Body'].read()
             report_df = pd.read_csv(io.BytesIO(content), encoding='utf-8', delimiter=',')
-
         elif file_key.endswith('.xlsx'):
             obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
             content = obj['Body'].read()
@@ -73,22 +72,20 @@ def transform_mp_report_data(event):
 
     print(f"📄 Procesando archivo: {key}")
     s3_filename = key.split('/')[-1]
-    s3_report_file_name, report_id, report_date = format_report_file_name(s3_filename)
+    s3_report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
     move_to_processed(s3_client, key, bucket_name)
 
-    print(report_id)
     print(report_date)
 
-    return s3_filename, report_id, report_date
+    return s3_filename, report_date
 
 def lambda_handler(event,context):
     try:
-        new_key, report_id, report_date = transform_mp_report_data(event)        
+        new_key, report_date = transform_mp_report_data(event)        
         return {
             "etl_flow": 'MP',
             "bucket": 'mercadopago-reports',
             "key": new_key,
-            "report_id" : report_id,
             "report_date": report_date
         }
     except Exception as e:
