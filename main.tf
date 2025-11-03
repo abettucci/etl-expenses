@@ -760,7 +760,6 @@ resource "aws_lambda_function" "ai_agent" {
       BQ_LOCATION        = "US"
       TELEGRAM_BOT_TOKEN = var.TELEGRAM_BOT_TOKEN
       OPENAI_API_KEY     = var.OPENAI_API_KEY
-      AWS_REGION         = var.AWS_REGION
       DDB_TABLE          = var.dynamodb_table_name
       CACHE_TTL_SECONDS  = "604800"  # 7 días
     }
