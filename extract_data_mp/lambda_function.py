@@ -232,5 +232,5 @@ def lambda_handler(event, context):
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
 
-access_token = auth_mp()
-carga_inicial_de_s3(access_token)
+# access_token = auth_mp()
+# carga_inicial_de_s3(access_token)
