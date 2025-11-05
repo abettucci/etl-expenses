@@ -139,7 +139,6 @@ def transform_mp_report_data(event):
     print(f"🗓️ Fecha del reporte: {report_date}")
     return new_key, report_date, report_id
 
-
 def lambda_handler(event, context):
     try:
         new_key, report_date, report_id = transform_mp_report_data(event)
@@ -153,8 +152,3 @@ def lambda_handler(event, context):
     except Exception as e:
         print("⚠️ Error en lambda_handler:", str(e))
         raise Exception(str(e))
-
-event = {
-  "key": "raw/settlement-279729559-2024-03-04-011706.xlsx"
-}
-transform_mp_report_data(event)
