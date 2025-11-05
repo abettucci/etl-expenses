@@ -1342,22 +1342,6 @@ resource "aws_cloudwatch_log_group" "etl_logs" {
 
 ########### 8. Step Function para orquestar Lambdas ###########
 
-# StartAt = "Extract Gmail PDFs",
-#     # Primer step ejecuta Extract data
-#     States = {
-#       "Extract Gmail PDFs" = {
-#         Type     = "Task",
-#         Resource = aws_lambda_function.extract_data_gmail.arn,
-#         Catch: [
-#           {
-#             "ErrorEquals": ["States.ALL"],
-#             "ResultPath": "$.error-info",
-#             "Next": "CompensationFlow"
-#           }
-#         ],
-#         Next     = "Check If Should Process"
-#       },
-
 # 8.1 Creacion del job de PDFs en Step Function
 resource "aws_sfn_state_machine" "pdf_etl_flow" {
   name     = "pdf-etl-flow"
@@ -1412,9 +1396,7 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
         Parameters = {
           "etl_flow.$"    = "$.body.etl_flow",
           "bucket.$"      = "$.body.bucket",
-          "key.$"         = "$.body.key",
-          "report_id.$"   = "$.body.report_id",
-          "report_date.$" = "$.body.report_date"
+          "key.$"         = "$.body.key"
         },
         End = true,
         Catch = [
@@ -1493,7 +1475,8 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
           "etl_flow.$"    = "$.etl_flow",
           "bucket.$"      = "$.bucket",
           "key.$"         = "$.key",
-          "report_date.$" = "$.report_date"
+          "report_date.$" = "$.report_date",
+          "report_id.$"   = "$.report_id"
         },
         End = true,
         Catch = [
@@ -1570,9 +1553,7 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
         Parameters = {
           "etl_flow.$"    = "$.body.etl_flow",
           "bucket.$"      = "$.body.bucket",
-          "key.$"         = "$.body.key",
-          "report_id.$"   = "$.body.report_id",
-          "report_date.$" = "$.body.report_date"
+          "key.$"         = "$.body.key"
         },
         End = true,
         Catch = [

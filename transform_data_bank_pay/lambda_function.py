@@ -102,9 +102,7 @@ def lambda_handler(event,context):
             "body": {
                 "etl_flow": 'BANK',
                 "bucket": 'bank-payments',
-                "key": key,
-                "report_id" : "",
-                "report_date" : ""
+                "key": key
             }
         }
     except Exception as e:

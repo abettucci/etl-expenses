@@ -3,6 +3,20 @@ import io
 import pandas as pd
 import unicodedata
 import re
+import requests
+
+def auth_mp():
+    # Cliente AWS SSM para Parameter Store
+    ssm_client = boto3.client("ssm", region_name="us-east-2")
+    PARAMETER_NAME = "/mercado_pago/token"
+
+    # Obtener el parámetro desde AWS Parameter Store
+    try:
+        response = ssm_client.get_parameter(Name=PARAMETER_NAME, WithDecryption=True)
+        access_token = response["Parameter"]["Value"]
+        return access_token
+    except ssm_client.exceptions.ParameterNotFound:
+        raise Exception(f"El parámetro {PARAMETER_NAME} no existe en AWS Parameter Store.")
 
 def normalize_columns_auto(column_name):
     # Elimina tildes y convierte a ASCII
@@ -32,7 +46,6 @@ def format_report_file_name(s3_filename):
 
     report_file_name = f"{base}.{extension}"
     return report_file_name, report_id, report_date
-
 
 def move_to_processed(s3_client, file_key, bucket_name):
     destination_folder = 'processed/'
@@ -85,6 +98,25 @@ def move_to_processed(s3_client, file_key, bucket_name):
         print(f"❌ Error al mover {file_key}: {str(e)}")
         raise
 
+def get_report_id(my_file_name, access_token):
+    url = "https://api.mercadopago.com/v1/account/settlement_report/list"
+    headers = {"Authorization": "Bearer " + access_token}
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        return None
+    else:
+        data = response.json()  # Convertimos la respuesta a JSON
+        match = next((item for item in data if item.get("file_name") == my_file_name), None)
+        if match:
+            return str(match.get('id',None)), 'csv'
+        else:
+            # Probamos con file format '.xlsx' para los casos en los que archivo original era xlsx y lo convertimos a csv para guardarlo en s3
+            my_file_name = my_file_name.replace('.csv','.xlsx')
+            match = next((item for item in data if item.get("file_name") == my_file_name), None)
+            if match:
+                return str(match.get('id',None)), 'xlsx'
+            else:
+                return None, None
 
 def transform_mp_report_data(event):
     key = event['key']  # ya incluye carpeta (raw/)
@@ -93,24 +125,36 @@ def transform_mp_report_data(event):
 
     print(f"📄 Procesando archivo: {key}")
     s3_filename = key.split('/')[-1]
-    s3_report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
 
+    access_token = auth_mp()
+    report_id, file_type = get_report_id(s3_filename, access_token)
+
+    print('report_id: ', report_id)
+
+    s3_report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
+    
     # Mover y convertir archivo
     new_key = move_to_processed(s3_client, key, bucket_name)
 
     print(f"🗓️ Fecha del reporte: {report_date}")
-    return new_key, report_date
+    return new_key, report_date, report_id
 
 
 def lambda_handler(event, context):
     try:
-        new_key, report_date = transform_mp_report_data(event)
+        new_key, report_date, report_id = transform_mp_report_data(event)
         return {
             "etl_flow": 'MP',
             "bucket": 'mercadopago-reports',
             "key": new_key,
-            "report_date": report_date
+            "report_date": report_date,
+            "report_id": report_id
         }
     except Exception as e:
         print("⚠️ Error en lambda_handler:", str(e))
         raise Exception(str(e))
+
+event = {
+  "key": "raw/settlement-279729559-2024-03-04-011706.xlsx"
+}
+transform_mp_report_data(event)

@@ -3,6 +3,7 @@ import requests
 import boto3
 import re
 import time
+import os
 from datetime import datetime, timedelta
 import pandas as pd
 pd.set_option('display.max_columns', None)
@@ -161,6 +162,8 @@ def carga_inicial_de_s3(access_token):
     folder = 'raw/'
     bucket_name = 'mercadopago-reports'
 
+    CIFRADO_SECRET = os.environ.get("CIFRADO_SECRET_MP")
+
     sfn_client = boto3.client("stepfunctions")
     step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-report-etl-flow'  
 
@@ -183,7 +186,7 @@ def carga_inicial_de_s3(access_token):
             report_file_name_sin_extension = report_file_name[:-4]
             report_file_name_final = report_file_name_sin_extension + '.' + file_type
             file_url_base = "https://www.mercadopago.com.ar/balance/reports/settlement/settlement"
-            file_url = file_url_base + '-' + '279729559' + '-' + report_id + '/download?format=' + file_type
+            file_url = file_url_base + '-' + CIFRADO_SECRET + '-' + report_id + '/download?format=' + file_type
             payload = {
                 "file_name" : report_file_name_final,
                 "file_url": file_url,

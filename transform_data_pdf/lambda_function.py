@@ -206,9 +206,7 @@ def lambda_handler(event, context):
             "body": {
                 "etl_flow": 'TICKET',
                 "bucket": bucket,
-                "key": key,
-                "report_id" : "",
-                "report_date" : ""
+                "key": key
             }
         }
     except Exception as e:
