@@ -532,9 +532,10 @@ def carga_inicial_desde_s3(table_name):
     
 def lambda_handler(event, context):
     try:
-        print(f"Mensaje Pub/Sub: {json.dumps(event)}")
+        pushed_message_pubsub = json.dumps(event)
+        print(f"Mensaje Pub/Sub: {pushed_message_pubsub}")
 
-        creds = auth_google('gcp_api_credentials')
+        creds = auth_google('gcp_sa_api_credentials')
         dynamodb = boto3.resource('dynamodb')
         dynamo_table_name = "gmail-history-tracker"
         gmail_service = build('gmail', 'v1', credentials=creds)
