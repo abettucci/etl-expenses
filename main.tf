@@ -187,59 +187,10 @@ resource "aws_api_gateway_integration" "market_pdf_integration" {
   rest_api_id             = aws_api_gateway_rest_api.main_api.id
   resource_id             = aws_api_gateway_resource.market_pdf_resource.id
   http_method             = aws_api_gateway_method.market_pdf_method.http_method
-  type                    = "AWS"
   integration_http_method = "POST"
-  
-  # URI para Step Functions - FORMATO ESPECIAL
-  uri = "arn:aws:apigateway:${var.AWS_REGION}:states:action/StartExecution"
-  
-  # Credenciales del rol de API Gateway
-  credentials = aws_iam_role.api_gateway_role.arn
-  
-  # Transformación del request
-  request_templates = {
-    "application/json" = <<EOF
-{
-  "input": "$util.escapeJavaScript($input.json('$'))",
-  "stateMachineArn": "${aws_sfn_state_machine.pdf_etl_flow.arn}"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.extract_data_gmail.invoke_arn
 }
-EOF
-  }
-}
-
-resource "aws_api_gateway_method_response" "market_pdf_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.market_pdf_resource.id
-  http_method = aws_api_gateway_method.market_pdf_method.http_method
-  status_code = "200"
-  
-  response_models = {
-    "application/json" = "Empty"
-  }
-}
-
-resource "aws_api_gateway_integration_response" "market_pdf_integration_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.market_pdf_resource.id
-  http_method = aws_api_gateway_method.market_pdf_method.http_method
-  status_code = aws_api_gateway_method_response.market_pdf_response.status_code
-  
-  response_templates = {
-    "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
-  }
-
-  depends_on = [aws_api_gateway_integration.market_pdf_integration]
-}
-
-# resource "aws_api_gateway_integration" "market_pdf_integration" {
-#   rest_api_id             = aws_api_gateway_rest_api.main_api.id
-#   resource_id             = aws_api_gateway_resource.market_pdf_resource.id
-#   http_method             = aws_api_gateway_method.market_pdf_method.http_method
-#   integration_http_method = "POST"
-#   type                    = "AWS_PROXY"
-#   uri                     = aws_lambda_function.extract_data_gmail.invoke_arn
-# }
-
 
 # Recurso /pdf_extractor
 resource "aws_api_gateway_resource" "bank_pdf_extractor_resource" {
@@ -256,61 +207,13 @@ resource "aws_api_gateway_method" "bank_pdf_extractor_method" {
   authorization = "NONE"
 }
 
-# resource "aws_api_gateway_integration" "bank_pdf_extractor_integration" {
-#   rest_api_id             = aws_api_gateway_rest_api.main_api.id
-#   resource_id             = aws_api_gateway_resource.bank_pdf_extractor_resource.id
-#   http_method             = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-#   integration_http_method = "POST"
-#   type                    = "AWS_PROXY"
-#   uri                     = aws_lambda_function.extract_data_gmail.invoke_arn
-# }
-
 resource "aws_api_gateway_integration" "bank_pdf_extractor_integration" {
   rest_api_id             = aws_api_gateway_rest_api.main_api.id
   resource_id             = aws_api_gateway_resource.bank_pdf_extractor_resource.id
   http_method             = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-  type                    = "AWS"  # ← Tipo AWS (no AWS_PROXY)
   integration_http_method = "POST"
-  
-  # URI para Step Functions - FORMATO ESPECIAL
-  uri = "arn:aws:apigateway:${var.AWS_REGION}:states:action/StartExecution"
-  
-  # Credenciales del rol de API Gateway
-  credentials = aws_iam_role.api_gateway_role.arn
-  
-  # Transformación del request
-  request_templates = {
-    "application/json" = <<EOF
-{
-  "input": "$util.escapeJavaScript($input.json('$'))",
-  "stateMachineArn": "${aws_sfn_state_machine.bank_payments_etl_flow.arn}"
-}
-EOF
-  }
-}
-
-resource "aws_api_gateway_method_response" "bank_pdf_extractor_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
-  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-  status_code = "200"
-  
-  response_models = {
-    "application/json" = "Empty"
-  }
-}
-
-resource "aws_api_gateway_integration_response" "bank_pdf_extractor_integration_response" {
-  rest_api_id = aws_api_gateway_rest_api.main_api.id
-  resource_id = aws_api_gateway_resource.bank_pdf_extractor_resource.id
-  http_method = aws_api_gateway_method.bank_pdf_extractor_method.http_method
-  status_code = aws_api_gateway_method_response.bank_pdf_extractor_response.status_code
-  
-  response_templates = {
-    "application/json" = "{\"status\": \"Step Function execution started\", \"executionArn\": \"$input.path('$.executionArn')\"}"
-  }
-
-  depends_on = [aws_api_gateway_integration.bank_pdf_extractor_integration]
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.extract_data_gmail.invoke_arn
 }
 
 # Recurso /mp_webhook
@@ -345,8 +248,6 @@ resource "aws_api_gateway_deployment" "main_api_deployment" {
     aws_api_gateway_integration.telegram_bot_integration,
     aws_api_gateway_integration.market_pdf_integration,
     aws_api_gateway_integration.bank_pdf_extractor_integration,
-    aws_api_gateway_integration_response.market_pdf_integration_response,
-    aws_api_gateway_integration_response.bank_pdf_extractor_integration_response,
     aws_api_gateway_integration.mp_webhook_integration
   ]
 }
@@ -383,7 +284,8 @@ resource "aws_lambda_permission" "allow_api_gateway_market_mail_data_extractor" 
   function_name = aws_lambda_function.extract_data_gmail.function_name
   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/bank_pdf"
+  # source_arn: API -> POST /market_pdf
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/market_pdf"
 
   depends_on = [
     aws_api_gateway_rest_api.main_api,
@@ -402,7 +304,8 @@ resource "aws_lambda_permission" "allow_api_gateway_bank_mail_data_extractor" {
   function_name = aws_lambda_function.extract_data_gmail.function_name
   principal     = "apigateway.amazonaws.com"
 
-  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/market_pdf"
+  # source_arn: API -> POST /bank_pdf
+  source_arn = "${aws_api_gateway_rest_api.main_api.execution_arn}/*/POST/bank_pdf"
 
   depends_on = [
     aws_api_gateway_rest_api.main_api,

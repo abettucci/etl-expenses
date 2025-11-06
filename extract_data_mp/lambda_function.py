@@ -186,7 +186,8 @@ def carga_inicial_de_s3(access_token):
             report_file_name_sin_extension = report_file_name[:-4]
             report_file_name_final = report_file_name_sin_extension + '.' + file_type
             file_url_base = "https://www.mercadopago.com.ar/balance/reports/settlement/settlement"
-            file_url = file_url_base + '-' + CIFRADO_SECRET + '-' + report_id + '/download?format=' + file_type
+            # file_url = file_url_base + '-' + CIFRADO_SECRET + '-' + report_id + '/download?format=' + file_type
+            file_url = file_url_base + '-' + '279729559' + '-' + report_id + '/download?format=' + file_type
             payload = {
                 "file_name" : report_file_name_final,
                 "file_url": file_url,
@@ -201,8 +202,6 @@ def carga_inicial_de_s3(access_token):
             )
             if status != "SUCCEEDED":
                 print(f"⚠️ Ejecución fallida para s3 file {key}: {status}")
-
-            exit()
 
 # Funcion que extrae los reportes de la lista de reportes y analiza cual es el ultimo a ingestar en Redshift
 def extract_mercado_pago_reports(event, access_token): 
@@ -234,6 +233,3 @@ def lambda_handler(event, context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
-
-# access_token = auth_mp()
-# carga_inicial_de_s3(access_token)

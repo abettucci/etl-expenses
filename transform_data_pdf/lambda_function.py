@@ -212,5 +212,3 @@ def lambda_handler(event, context):
     except Exception as e:
         print("⚠️ Error:", str(e))
         raise Exception(str(e))
-
-# print(lambda_handler('',''))

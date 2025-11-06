@@ -375,18 +375,6 @@ def run_step_function_sync(sfn_client, step_function_arn, payload, poll_interval
             print(f"⏳ Step Function sigue en {status}... esperando {poll_interval}s")
             time.sleep(poll_interval)
 
-def wait_for_crawler_to_finish(crawler_name, poll_interval=30):
-    glue = boto3.client('glue')
-    while True:
-        crawler = glue.get_crawler(Name=crawler_name)
-        state = crawler['Crawler']['State']
-        if state == 'READY':
-            print(f"✅ Crawler {crawler_name} finalizó correctamente.")
-            break
-        else:
-            print(f"⏳ Crawler {crawler_name} sigue en estado {state}... esperando {poll_interval}s")
-            time.sleep(poll_interval)
-
 def reproceso_historico(table_name):
     try:
         creds = auth_google('gcp_api_credentials')
@@ -475,8 +463,6 @@ def reproceso_historico(table_name):
                     else:
                         print(f"Label {label['name']} no reconocido - continuamos con el siguiente mail")
                         continue
-
-                    # wait_for_crawler_to_finish(crawler_name, poll_interval=10)
                     
                     status, desc = run_step_function_sync(
                         sfn_client,
@@ -500,7 +486,6 @@ def carga_inicial_desde_s3(table_name):
     if table_name == 'carrefour_data':
         step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'  
         bucket_name = 'market-tickets'
-        crawler_name = 'market-tickets-crawler'
         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
         keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
         for key in keys:
@@ -521,15 +506,12 @@ def carga_inicial_desde_s3(table_name):
                 )
                 if status != "SUCCEEDED":
                     print(f"⚠️ Ejecución fallida para s3 file {key}: {status}")
-
     else: #bank_payments
         step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'  
         bucket_name = 'bank-payments'
-        crawler_name = 'bank-payments-crawler'
         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
         keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
         for key in keys:
-            # wait_for_crawler_to_finish(crawler_name, poll_interval=10)
             print(key)
             if key.endswith(".json"):     
                 payload = {

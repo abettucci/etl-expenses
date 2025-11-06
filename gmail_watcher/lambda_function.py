@@ -34,7 +34,7 @@ def auth_google(SECRET_NAME):
 
 def lambda_handler(event, context):
     # creds = auth_google('gcp_sa_api_credentials')
-    creds = auth_google('gcp_api_credentials')
+    creds = auth_google('gcp_sa_api_credentials')
     gmail_service = build('gmail', 'v1', credentials=creds)
     results = gmail_service.users().labels().list(userId="me").execute()
     label_ids = []
