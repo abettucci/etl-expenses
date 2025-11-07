@@ -532,8 +532,10 @@ def carga_inicial_desde_s3(table_name):
     
 def lambda_handler(event, context):
     try:
-        pushed_message_pubsub = json.dumps(event)
-        print(f"Mensaje Pub/Sub: {pushed_message_pubsub}")
+        webhook_pushed_message = json.dumps(event)
+        body_message_pubsub = webhook_pushed_message.get("body", "{}")
+        message_pubsub = json.loads(body_message_pubsub)
+        print(f"Mensaje Pub/Sub: {message_pubsub}")
 
         creds = auth_google('gcp_api_credentials')
         dynamodb = boto3.resource('dynamodb')
@@ -555,8 +557,8 @@ def lambda_handler(event, context):
 
         if label_ids:
             for label_id in label_ids:
-                if 'message' in event:
-                    message = event['message']       
+                if 'message' in message_pubsub:
+                    message = message_pubsub['message']       
 
                     print("\n Message: ", message)     
                     message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
