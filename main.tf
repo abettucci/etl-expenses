@@ -379,6 +379,11 @@ resource "google_pubsub_subscription" "gmail_subscription_bank_payments" {
   
   push_config {
     push_endpoint = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+
+    oidc_token {
+      service_account_email = google_service_account.pubsub_sa.email
+      audience              = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+    }
   }
 }
 
@@ -398,6 +403,11 @@ resource "google_pubsub_subscription" "gmail_subscription_market_tickets" {
 
   push_config {
     push_endpoint = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
+
+    oidc_token {
+      service_account_email = google_service_account.pubsub_sa.email
+      audience              = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
+    }
   }
 }
 

@@ -14,6 +14,8 @@ from io import BytesIO
 import requests
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+import google.auth.transport.requests
+import google.oauth2.id_token
 from google.cloud import bigquery
 from google.oauth2 import service_account
 pd.set_option('display.max_columns', None)
@@ -531,11 +533,29 @@ def carga_inicial_desde_s3(table_name):
                     print(f"⚠️ Ejecución fallida para s3 file {key}: {status}")
     
 def lambda_handler(event, context):
+    # 🔍 1. Validar OIDC
+    headers = event.get("headers", {}) or {}
+    auth_header = headers.get("authorization")
+    if not auth_header:
+        return {"statusCode": 401, "body": "Missing Authorization header"}
+
+    token = auth_header.split(" ")[1]
+    request_adapter = google.auth.transport.requests.Request()
+
     try:
-        webhook_pushed_message = json.dumps(event)
-        body_message_pubsub = webhook_pushed_message.get("body", "{}")
-        message_pubsub = json.loads(body_message_pubsub)
-        print(f"Mensaje Pub/Sub: {message_pubsub}")
+        id_info = google.oauth2.id_token.verify_oauth2_token(
+            token,
+            request_adapter,
+            audience="https://gyu5e47m41.execute-api.us-east-2.amazonaws.com/prod/market_pdf"
+        )
+        print(f"✅ Token válido emitido por {id_info['email']}")
+    except Exception as e:
+        print(f"❌ Token inválido: {e}")
+        return {"statusCode": 403, "body": "Forbidden"}
+
+    try:
+        body_message_pubsub = json.loads(event.get("body", "{}"))
+        print(f"Body del mensaje Pub/Sub: {body_message_pubsub}")
 
         creds = auth_google('gcp_api_credentials')
         dynamodb = boto3.resource('dynamodb')
@@ -557,8 +577,8 @@ def lambda_handler(event, context):
 
         if label_ids:
             for label_id in label_ids:
-                if 'message' in message_pubsub:
-                    message = message_pubsub['message']       
+                if 'message' in body_message_pubsub:
+                    message = body_message_pubsub['message']       
 
                     print("\n Message: ", message)     
                     message_data = json.loads(base64.b64decode(message['data']).decode('utf-8'))
@@ -641,6 +661,7 @@ def lambda_handler(event, context):
 
                 else:
                     print('Error al extraer los datos')
+                    raise ValueError("Mensaje vacío")
 
         else:
             print("❌ No hay etiquetas configuradas")
