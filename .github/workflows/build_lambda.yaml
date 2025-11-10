@@ -16,6 +16,11 @@ env:
   TF_VAR_CIFRADO_SECRET_MP: ${{ secrets.CIFRADO_SECRET_MP }}
   TF_VAR_SNS_TOPIC: ${{ secrets.SNS_TOPIC }}
   TF_VAR_GCP_PROJECT_ID : ${{ secrets.GCP_PROJECT_ID }}
+
+permissions:
+  id-token: write
+  contents: read
+  
 jobs:
   build-lambda-images:
     runs-on: ubuntu-latest
