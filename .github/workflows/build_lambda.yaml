@@ -110,6 +110,13 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: "projects/364424801820/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com"
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
         with:
@@ -267,6 +274,9 @@ jobs:
           # Importar IAM Binding del topic
           terraform import google_pubsub_topic_iam_member.sa_publisher \
           "projects/hazel-pillar-400222/topics/gmail-events roles/pubsub.publisher serviceAccount:terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com"
+      
+      - name: Check GCP identity
+        run: gcloud auth list
 
       - name: Terraform Apply
         run: |
