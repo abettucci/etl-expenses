@@ -20,9 +20,6 @@ env:
 jobs:
   build-lambda-images:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
     strategy:
       matrix:
         image: ["pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "extract_data_gmail-latest|extract_data_gmail/extract_data_gmail.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile", "ai_agent-latest|ai_agent/ai_agent.dockerfile", "gmail_watcher-latest|gmail_watcher/gmail_watcher.dockerfile"]
@@ -103,6 +100,9 @@ jobs:
   terraform-deploy:
     needs: [build-lambda-images]
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
