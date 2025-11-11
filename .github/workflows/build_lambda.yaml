@@ -122,11 +122,12 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          token_format: "access_token"
+          token_format: "id_token"
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_MAIL }}
-          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
-          # audience: ${{ secrets.GCP_AUDIENCE }}
+          audience: ${{ secrets.GCP_AUDIENCE }}
+          create_credentials_file: true
+          export_environment_variables: true
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
