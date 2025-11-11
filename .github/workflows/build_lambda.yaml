@@ -122,10 +122,11 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          token_format: id_token
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_MAIL }}
-          id_token_audience: ${{ secrets.GCP_AUDIENCE }}
+          token_format: 'access_token' # id_token
+          workload_identity_provider: projects/364424801820/locations/global/workloadIdentityPools/github-pool-v2/providers/github-provider # ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }} 
+          service_account: terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com # ${{ secrets.GCP_SERVICE_ACCOUNT_MAIL }}
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          # id_token_audience: ${{ secrets.GCP_AUDIENCE }}
           create_credentials_file: true
           export_environment_variables: true
           cleanup_credentials: true
