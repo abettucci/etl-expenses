@@ -125,9 +125,10 @@ jobs:
           token_format: "id_token"
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_MAIL }}
-          audience: ${{ secrets.GCP_AUDIENCE }}
+          id_token_audience: ${{ secrets.GCP_AUDIENCE }}
           create_credentials_file: true
           export_environment_variables: true
+          cleanup_credentials: true
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
