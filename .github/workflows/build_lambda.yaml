@@ -16,6 +16,7 @@ env:
   TF_VAR_CIFRADO_SECRET_MP: ${{ secrets.CIFRADO_SECRET_MP }}
   TF_VAR_SNS_TOPIC: ${{ secrets.SNS_TOPIC }}
   TF_VAR_GCP_PROJECT_ID : ${{ secrets.GCP_PROJECT_ID }}
+  TF_VAR_GCP_PROJECT_NUMBER : ${{ secrets.GCP_PROJECT_NUMBER }}
 
 permissions:
   id-token: write
@@ -115,12 +116,13 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   
-      - name: Authenticate to GCP
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          token_format: access_token
-          workload_identity_provider: "projects/364424801820/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
-          service_account: "terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com"
+          token_format: 'access_token'
+          workload_identity_provider: 'projects/$TF_VAR_GCP_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool-v2/providers/github-provider'
+          service_account: 'terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com'
+          audience: 'https://iam.googleapis.com/projects/$TF_VAR_GCP_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool-v2/providers/github-provider'
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
@@ -267,18 +269,18 @@ jobs:
           fi
           
           # Importar Service Account existente
-          terraform import google_service_account.pubsub_sa projects/hazel-pillar-400222/serviceAccounts/terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com
+          terraform import google_service_account.pubsub_sa projects/$TF_VAR_GCP_PROJECT_ID/serviceAccounts/terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com
 
           # Importar Topic existente
-          terraform import google_pubsub_topic.gmail_events projects/hazel-pillar-400222/topics/gmail-events
+          terraform import google_pubsub_topic.gmail_events projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events
 
           # Importar Subscription existente
-          terraform import google_pubsub_subscription.gmail_subscription_market_tickets projects/hazel-pillar-400222/subscriptions/market-tickets-sub-to-api-gateway
-          terraform import google_pubsub_subscription.gmail_subscription_bank_payments projects/hazel-pillar-400222/subscriptions/bank-payments-sub-to-api-gateway
+          terraform import google_pubsub_subscription.gmail_subscription_market_tickets projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/market-tickets-sub-to-api-gateway
+          terraform import google_pubsub_subscription.gmail_subscription_bank_payments projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/bank-payments-sub-to-api-gateway
 
           # Importar IAM Binding del topic
           terraform import google_pubsub_topic_iam_member.sa_publisher \
-          "projects/hazel-pillar-400222/topics/gmail-events roles/pubsub.publisher serviceAccount:terraform-sa@hazel-pillar-400222.iam.gserviceaccount.com"
+          "projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events roles/pubsub.publisher serviceAccount:terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com"
       
       - name: Check GCP identity
         run: gcloud auth list
