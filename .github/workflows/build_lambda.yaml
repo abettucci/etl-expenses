@@ -16,7 +16,6 @@ env:
   TF_VAR_CIFRADO_SECRET_MP: ${{ secrets.CIFRADO_SECRET_MP }}
   TF_VAR_SNS_TOPIC: ${{ secrets.SNS_TOPIC }}
   TF_VAR_GCP_PROJECT_ID : ${{ secrets.GCP_PROJECT_ID }}
-  TF_VAR_GCP_PROJECT_NUMBER : ${{ secrets.GCP_PROJECT_NUMBER }}
 
 permissions:
   id-token: write
@@ -120,9 +119,9 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           token_format: 'access_token'
-          workload_identity_provider: 'projects/$TF_VAR_GCP_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool-v2/providers/github-provider'
-          service_account: 'terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com'
-          audience: 'https://iam.googleapis.com/projects/$TF_VAR_GCP_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool-v2/providers/github-provider'
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_MAIL }}
+          audience: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
