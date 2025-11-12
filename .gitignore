@@ -14,6 +14,7 @@
 /extract_data_gmail/validate_oidc.py
 /extract_data_gmail/test_message.py
 /extract_data_gmail/validate_setup.py
+/extract_data_gmail/reset_history_id.py
 /gmail_watcher/test.py
 /pdfs_carrefour/
 resumen_tarjeta_bna.pdf

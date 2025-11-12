@@ -625,11 +625,30 @@ def lambda_handler(event, context):
                     last_history_id = load_last_history_id(dynamo_table_name) or history_id
                     print(f"📩 Procesando desde historyId={last_history_id} hasta {history_id}")
             
-                    history = gmail_service.users().history().list(
-                        userId='me',
-                        startHistoryId=last_history_id,
-                        labelId = label_id
-                    ).execute()
+                    try:
+                        history = gmail_service.users().history().list(
+                            userId='me',
+                            startHistoryId=last_history_id,
+                            labelId = label_id
+                        ).execute()
+                    except Exception as e:
+                        error_str = str(e)
+                        if '404' in error_str or 'notFound' in error_str or 'not found' in error_str.lower():
+                            print(f"⚠️ HistoryId {last_history_id} no encontrado (muy antiguo o inválido)")
+                            print(f"⚠️ No se procesará este mensaje. Terminando ejecución.")
+                            print(f"💡 Tip: Usa reset_history_id.py para limpiar el historyId en DynamoDB")
+                            
+                            # Retornar 200 para que Pub/Sub no reintente
+                            return {
+                                'statusCode': 200,
+                                'body': json.dumps({
+                                    'message': 'HistoryId no encontrado, mensaje descartado',
+                                    'historyId': last_history_id,
+                                    'error': 'History not found (404)'
+                                })
+                            }
+                        else:
+                            raise
 
                     for record in history.get('history', []):
                         record_history_id = str(record.get('id'))  # HistoryId de este record
