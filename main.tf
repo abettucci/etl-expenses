@@ -33,7 +33,7 @@ variable "GCP_PROJECT_ID" {
 }
 
 provider "google" {
-  # credentials = data.aws_secretsmanager_secret_version.gcp_sa_creds.secret_string
+  credentials = data.aws_secretsmanager_secret_version.gcp_sa_creds.secret_string
   project = "${var.GCP_PROJECT_ID}"
   region  = "us-central1"
 }
