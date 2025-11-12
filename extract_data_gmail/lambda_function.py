@@ -92,7 +92,7 @@ def find_html_part(payload, depth=0, max_depth=10):
                 return result
     return None
 
-def get_message_ids_loaded(bq_client, table_name, pk):
+def get_message_ids_loaded_in_bigquery(bq_client, table_name, pk):
     """Obtener IDs de mensajes ya cargados en BigQuery"""
     try:
         project_id = os.environ.get('GCP_PROJECT_ID', 'hazel-pillar-400222')
@@ -351,7 +351,7 @@ def load_last_history_id(dynamo_table_name):
         print(f"❌ Error inesperado: {e}")
         return None
 
-def save_last_history_id(table, history_id):
+def save_last_history_id_in_dynamo(table, history_id):
     table.put_item(Item={
         "PK": "gmail_last_history_id",
         "historyId": str(history_id)
@@ -443,7 +443,7 @@ def reproceso_historico(table_name):
                     print('table_name: ', table_name)
                     print('pk : ', pk)
 
-                    ids_existentes = get_message_ids_loaded(bq_client, table_name, pk)
+                    ids_existentes = get_message_ids_loaded_in_bigquery(bq_client, table_name, pk)
 
                     print('mail_msg_id: ', msg_id)
                     print('ids_existentes en BigQuery: ', ids_existentes)
@@ -452,7 +452,7 @@ def reproceso_historico(table_name):
                         print('Intentamos extraer los datos del mail y cargarlos a S3')
                         response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
 
-                    save_last_history_id(dynamodb.Table("gmail-history-tracker"), '') #el history_id lo dejamos vacio porque no tenemos ese dato
+                    save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), '') #el history_id lo dejamos vacio porque no tenemos ese dato
 
                     # Parámetros para la Step Function: el bloque de Transform espera un "key" y "process=true"
                     payload = response
@@ -632,67 +632,68 @@ def lambda_handler(event, context):
                     ).execute()
 
                     for record in history.get('history', []):
-                        if 'messagesAdded' in record:
-                            for m in record['messagesAdded']:
-                                mail_msg_id = m['message']['id']
-                                
-                                msg = gmail_service.users().messages().get(
-                                    userId="me", id=mail_msg_id, format="metadata"
-                                ).execute()
+                        record_history_id = str(record.get('id'))  # HistoryId de este record
+                        # 3. Verificar si es el record que activó la notificación
+                        if record_history_id == str(history_id):
+                            if 'messagesAdded' in record:
+                                for m in record['messagesAdded']:
+                                    mail_msg_id = m['message']['id']
+                                    
+                                    msg = gmail_service.users().messages().get(
+                                        userId="me", id=mail_msg_id, format="metadata"
+                                    ).execute()
 
-                                labels = msg.get("labelIds", [])
-                                if label_id not in labels:
-                                    print(f"⚠️ Mensaje {mail_msg_id} ignorado porque no tiene el label {label_id}")
-                                    continue
+                                    labels = msg.get("labelIds", [])
+                                    if label_id not in labels:
+                                        print(f"⚠️ Mensaje {mail_msg_id} ignorado porque no tiene el label {label_id}")
+                                        continue
 
-                                print(f" Procesando mensaje {mail_msg_id} porque tiene el label {label_id}")
-                                
-                                mail_data = process_email(mail_msg_id, gmail_service)
-                                match = re.search(r"<([^>]+)>", mail_data['sender'])
-                                if match:
-                                    sender = match.group(1)
-                                subject = mail_data['subject']
-                                date = mail_data['date']
+                                    print(f" Procesando mensaje {mail_msg_id} porque tiene el label {label_id}")
+                                    
+                                    mail_data = process_email(mail_msg_id, gmail_service)
+                                    match = re.search(r"<([^>]+)>", mail_data['sender'])
+                                    if match:
+                                        sender = match.group(1)
+                                    subject = mail_data['subject']
+                                    date = mail_data['date']
 
-                                print('sender: ', sender)
-                                print('subject: ', subject)
-                                print('date: ', date)
+                                    print('sender: ', sender)
+                                    print('subject: ', subject)
+                                    print('date: ', date)
 
-                                if not mail_data:
-                                    return {'statusCode': 500, 'body': 'Error procesando email'}
+                                    if not mail_data:
+                                        return {'statusCode': 500, 'body': 'Error procesando email'}
 
-                                table_name, pk = None, None
-                                if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
-                                    table_name = 'bank_payments'
-                                    pk = 'id'
+                                    table_name, pk = None, None
+                                    if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
+                                        table_name = 'bank_payments'
+                                        pk = 'id'
 
-                                elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
-                                    table_name = 'carrefour_data'
-                                    pk = 'nro_ticket'
+                                    elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
+                                        table_name = 'carrefour_data'
+                                        pk = 'nro_ticket'
 
-                                else:
-                                    print(f'Email ignorado (no cumple filtros): {sender} - {subject}')
-                                    continue
-                                    # return {"process": False, "reason": "Evento descartado por filtros"}
-                                                                
-                                print('table_name: ', table_name)
-                                print('pk : ', pk)
+                                    else:
+                                        print(f'Email ignorado (no cumple filtros): {sender} - {subject}')
+                                        continue
+                                        # return {"process": False, "reason": "Evento descartado por filtros"}
+                                                                    
+                                    print('table_name: ', table_name)
+                                    print('pk : ', pk)
 
-                                ids_existentes = get_message_ids_loaded(bq_client, table_name, pk)
+                                    ids_existentes = get_message_ids_loaded_in_bigquery(bq_client, table_name, pk)
 
-                                print('mail_msg_id: ', mail_msg_id)
-                                print('ids_existentes en BigQuery: ', ids_existentes)
-                                
-                                if mail_msg_id not in ids_existentes:
-                                    print('Intentamos extraer los datos del mail y cargarlos a S3')
-                                    response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
-
-                    save_last_history_id(dynamodb.Table("gmail-history-tracker"), history_id)
-
-                    return response
-
+                                    print('mail_msg_id: ', mail_msg_id)
+                                    print('ids_existentes en BigQuery: ', ids_existentes)
+                                    
+                                    # Solo cargamos a S3 y guardamos el history_id en dynamo DB los mails que no esten cargados ya en bigquery
+                                    if mail_msg_id not in ids_existentes:
+                                        print('Intentamos extraer los datos del mail y cargarlos a S3')
+                                        response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)    
+                                        save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), history_id)
+                                        return response                                
                 else:
-                    print('Error al extraer los datos')
+                    print('Error al extraer los datos, no viene el campo message en el body')
                     raise ValueError("Mensaje vacío")
 
         else:
