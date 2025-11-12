@@ -533,25 +533,57 @@ def carga_inicial_desde_s3(table_name):
                     print(f"⚠️ Ejecución fallida para s3 file {key}: {status}")
     
 def lambda_handler(event, context):
-    # 🔍 1. Validar OIDC
-    headers = event.get("headers", {}) or {}
-    auth_header = headers.get("authorization")
+    print("📨 Event received:", json.dumps(event))
+    
+    headers = event.get("headers", {})
+    auth_header = headers.get("authorization") or headers.get("Authorization")
+    
     if not auth_header:
+        print("❌ No authorization header")
         return {"statusCode": 401, "body": "Missing Authorization header"}
 
-    token = auth_header.split(" ")[1]
+    # Extraer token
+    token_parts = auth_header.split(" ")
+    if len(token_parts) != 2 or token_parts[0].lower() != "bearer":
+        print("❌ Invalid authorization format")
+        return {"statusCode": 401, "body": "Invalid Authorization format"}
+    
+    token = token_parts[1]
+    
+    # Verificar token - IMPORTANTE: usar la URL correcta
     request_adapter = google.auth.transport.requests.Request()
-
+    
     try:
+        # Obtener el dominio y path completo del evento
+        domain = event.get("requestContext", {}).get("domainName", "")
+        stage = event.get("requestContext", {}).get("stage", "")
+        path = event.get("requestContext", {}).get("path", "")
+        
+        # Construir audience dinámicamente
+        if domain:
+            # Si tenemos dominio, construir URL completa
+            audience = f"https://{domain}{path}"
+            print(f"🔍 Audience construido dinámicamente: {audience}")
+        else:
+            # Fallback al valor por defecto (sin stage)
+            audience = "https://gyu5e47m41.execute-api.us-east-2.amazonaws.com/prod/market_pdf"
+            print(f"⚠️ Usando audience por defecto: {audience}")
+        
         id_info = google.oauth2.id_token.verify_oauth2_token(
             token,
             request_adapter,
-            audience="https://gyu5e47m41.execute-api.us-east-2.amazonaws.com/prod/market_pdf"
+            audience=audience
         )
-        print(f"✅ Token válido emitido por {id_info['email']}")
+        print(f"✅ Valid token from: {id_info.get('email', 'Unknown')}")
+        print(f"✅ Token audience validated: {id_info.get('aud')}")
+        
+    except ValueError as e:
+        print(f"❌ Token validation failed: {e}")
+        print(f"   Expected audience: {audience if 'audience' in locals() else 'N/A'}")
+        return {"statusCode": 403, "body": json.dumps({"error": "Forbidden - Invalid token", "details": str(e)})}
     except Exception as e:
-        print(f"❌ Token inválido: {e}")
-        return {"statusCode": 403, "body": "Forbidden"}
+        print(f"❌ Unexpected error during token validation: {e}")
+        return {"statusCode": 403, "body": json.dumps({"error": "Forbidden", "details": str(e)})}
 
     try:
         body_message_pubsub = json.loads(event.get("body", "{}"))

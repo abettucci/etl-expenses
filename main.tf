@@ -339,25 +339,25 @@ resource "aws_lambda_permission" "allow_api_gateway_mp_webhook" {
 
 # Output para obtener la URL del webhook de Telegram
 output "telegram_webhook_url" {
-  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/telegram_bot"
+  value       = "${aws_api_gateway_stage.main_api_stage.invoke_url}/telegram_bot"
   description = "URL del webhook para configurar en Telegram"
 }
 
 # Output para obtener la URL del webhook de Gmail
 output "market_pdf_webhook_url" {
-  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
+  value       = "${aws_api_gateway_stage.main_api_stage.invoke_url}/market_pdf"
   description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del supermercado"
 }
 
 # Output para obtener la URL del webhook de Gmail
 output "bank_pdf_webhook_url" {
-  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+  value       = "${aws_api_gateway_stage.main_api_stage.invoke_url}/bank_pdf"
   description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del banco"
 }
 
 # Output para obtener la URL del webhook de Gmail
 output "mp_webhook_url" {
-  value       = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/mp_webhook"
+  value       = "${aws_api_gateway_stage.main_api_stage.invoke_url}/mp_webhook"
   description = "URL del webhook para configurar en Gmail para escuchar mails recibidos de pagos del banco"
 }
 
@@ -378,11 +378,11 @@ resource "google_pubsub_subscription" "gmail_subscription_bank_payments" {
   topic = google_pubsub_topic.gmail_events.id
   
   push_config {
-    push_endpoint = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+    push_endpoint = "${aws_api_gateway_stage.main_api_stage.invoke_url}/bank_pdf"
 
     oidc_token {
       service_account_email = google_service_account.pubsub_sa.email
-      audience              = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/bank_pdf"
+      audience              = "${aws_api_gateway_stage.main_api_stage.invoke_url}/bank_pdf"
     }
   }
 }
@@ -402,11 +402,11 @@ resource "google_pubsub_subscription" "gmail_subscription_market_tickets" {
   message_retention_duration = "604800s"  # 7 días
 
   push_config {
-    push_endpoint = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
+    push_endpoint = "${aws_api_gateway_stage.main_api_stage.invoke_url}/market_pdf"
 
     oidc_token {
       service_account_email = google_service_account.pubsub_sa.email
-      audience              = "${aws_api_gateway_deployment.main_api_deployment.invoke_url}/market_pdf"
+      audience              = "${aws_api_gateway_stage.main_api_stage.invoke_url}/market_pdf"
     }
   }
 }

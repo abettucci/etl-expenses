@@ -6,4 +6,6 @@ google-auth
 oauth2client
 openpyxl
 pandas
+pyjwt
+google-cloud-pubsub
 google-cloud-bigquery
