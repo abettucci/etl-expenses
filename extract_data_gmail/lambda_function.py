@@ -710,15 +710,30 @@ def lambda_handler(event, context):
                                         print('Intentamos extraer los datos del mail y cargarlos a S3')
                                         response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)    
                                         save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), history_id)
-                                        return response                                
+                                        print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
+                                    else:
+                                        print(f"⚠️ Mensaje {mail_msg_id} ya existe en BigQuery, se omite procesamiento")
+                                    
+                                    # Siempre guardar el historyId para evitar reprocesar
+                                    save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), history_id)
                 else:
                     print('Error al extraer los datos, no viene el campo message en el body')
-                    raise ValueError("Mensaje vacío")
+                    # Devolver 200 para que Pub/Sub no reintente mensajes malformados
+                    return {
+                        'statusCode': 200,
+                        'body': json.dumps({'message': 'Mensaje malformado descartado', 'error': 'No message field'})
+                    }
 
         else:
             print("❌ No hay etiquetas configuradas")
 
         print("\n Event: ", event)
+        
+        # IMPORTANTE: Siempre devolver 200 al final para que Pub/Sub marque el mensaje como procesado
+        return {
+            'statusCode': 200,
+            'body': json.dumps({'message': 'Procesamiento completado exitosamente'})
+        }
         
             
     except Exception as e:
@@ -726,4 +741,15 @@ def lambda_handler(event, context):
         # extract_by_date_payments_from_gmail(bq_client, ids_existentes, gmail_service, s3_client, bucket_name, folder)
 
         print("⚠️ Error:", str(e))
-        raise Exception(str(e))
+        import traceback
+        traceback.print_exc()
+        
+        # Devolver 200 para evitar reintentos infinitos de Pub/Sub
+        # Solo fallar con 500 si es un error que realmente puede resolverse con un reintento
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'Error procesando mensaje, marcado como procesado para evitar loop infinito',
+                'error': str(e)
+            })
+        }

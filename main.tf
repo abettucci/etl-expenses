@@ -376,6 +376,16 @@ resource "google_pubsub_topic" "gmail_events" {
 resource "google_pubsub_subscription" "gmail_subscription_bank_payments" {
   name  = "bank-payments-sub-to-api-gateway"
   topic = google_pubsub_topic.gmail_events.id
+
+  # Configuración del expiration policy
+  expiration_policy {
+    ttl = "864000s"  # 10 días en segundos (máximo permitido)
+  }
+
+  # Otras configuraciones recomendadas
+  ack_deadline_seconds = 10
+  retain_acked_messages = false
+  message_retention_duration = "604800s"  # 7 días
   
   push_config {
     push_endpoint = "${aws_api_gateway_stage.main_api_stage.invoke_url}/bank_pdf"
@@ -397,8 +407,8 @@ resource "google_pubsub_subscription" "gmail_subscription_market_tickets" {
   }
 
   # Otras configuraciones recomendadas
-  ack_deadline_seconds = 300
-  retain_acked_messages = true
+  ack_deadline_seconds = 10
+  retain_acked_messages = false
   message_retention_duration = "604800s"  # 7 días
 
   push_config {
