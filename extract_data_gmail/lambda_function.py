@@ -605,8 +605,8 @@ def lambda_handler(event, context):
         for label in results['labels']:
             if label['name'] in ['Avisos Gastos Santander', 'Avisos Compra Carrefour']:
                 label_ids.append(label['id'])
-
-        print('label_ids: ', label_ids)
+                label_map = { label["id"]: label["name"] }
+        print('label_map: ', label_map)
 
         if label_ids:
             for label_id in label_ids:
@@ -682,6 +682,8 @@ def lambda_handler(event, context):
                                 ).execute()
 
                                 labels = msg.get("labelIds", [])
+                                labels_names = [label_map[label_id] for label_id in labels if label_id in label_map]
+                                print('labels_names: ', labels_names)
                                 if label_id not in labels:
                                     print(f"⚠️ Mensaje {mail_msg_id} ignorado porque no tiene el label {label_id}")
                                     continue
@@ -737,9 +739,11 @@ def lambda_handler(event, context):
                                 payload = response
                                 print(payload)
 
-                                if label['name'] == 'Avisos Gastos Santander':
+                                print(label['name'])
+
+                                if 'Avisos Gastos Santander' in labels_names:
                                     step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
-                                elif label['name'] == 'Avisos Compra Carrefour':
+                                elif 'Avisos Compra Carrefour' in labels_names:
                                     step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
                                 else:
                                     print(f"Label {label['name']} no reconocido - continuamos con el siguiente mail")
