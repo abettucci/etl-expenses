@@ -83,14 +83,14 @@ def move_to_processed(s3_client, file_key, bucket_name):
             ContentType='text/csv'
         )
 
-        # Eliminar archivo original (opcional)
-        try:
-            s3_client.delete_object(Bucket=bucket_name, Key=file_key)
-            print(f"🧹 Archivo original eliminado: {file_key}")
-        except Exception as e:
-            print(f"⚠️ No se pudo eliminar el archivo original: {str(e)}")
+        # # Eliminar archivo original (opcional)
+        # try:
+        #     s3_client.delete_object(Bucket=bucket_name, Key=file_key)
+        #     print(f"🧹 Archivo original eliminado: {file_key}")
+        # except Exception as e:
+        #     print(f"⚠️ No se pudo eliminar el archivo original: {str(e)}")
 
-        print(f"✅ Archivo convertido a CSV y movido: {file_key} -> {new_key}")
+        print(f"✅ Archivo convertido a CSV y cargado en {destination_folder}: {new_key}")
 
         return new_key
 

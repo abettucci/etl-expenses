@@ -59,7 +59,7 @@ def format_string_io_to_df(reader):
     return report_df
 
 # Funcion para guardar el reporte de Mercado Pago en un bucket de S3
-def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, key, file_format, report_id=None, report_date=None):
+def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, key, file_format, report_id, report_date):
     url = f"https://api.mercadopago.com/v1/account/settlement_report/{report_file_name}"
     payload = {}
     headers = {'Authorization': 'Bearer ' + access_token}
@@ -218,7 +218,12 @@ def extract_mercado_pago_reports(event, access_token):
     folder = 'raw/'
     key = f'{folder}{file_name}'
     print(key)
-    save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, '', '')
+
+    report_file_name, report_date_hour, report_date = format_report_file_name(key)
+    report_file_name = report_file_name[4:]
+    report_id, file_type = get_report_id(report_file_name, access_token)
+
+    save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, report_id, report_date)
 
     return key
 
