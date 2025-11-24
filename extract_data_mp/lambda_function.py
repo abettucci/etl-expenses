@@ -90,10 +90,16 @@ def format_report_file_name(s3_filename):
     extension = s3_filename.split('.')[-1]
     report_file_name = f"{base}.{extension}"
 
+    print('report_file_name de la funcion: ', report_file_name)
+
     report_date_hour = s3_filename.rsplit('_', 1)[-1].rsplit('.', 1)[0]
+
+    print('report_date_hour de la funcion: ', report_date_hour)
 
     parts = s3_filename.rsplit('_', 2)
     report_date = parts[-2]
+
+    print('report_date de la funcion: ', report_date)
 
     return report_file_name, report_date_hour, report_date
 
@@ -217,10 +223,17 @@ def extract_mercado_pago_reports(event, access_token):
     bucket_name = 'mercadopago-reports'
     folder = 'raw/'
     key = f'{folder}{file_name}'
-    print(key)
+    print('key: ', key)
 
-    report_file_name, report_date_hour, report_date = format_report_file_name(key.split('/')[-1])
+    s3_filename = key.split('/')[-1]
+    print('s3_filename: ', s3_filename)
+
+    report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
+    print('report_file_name: ', report_file_name)
+
     report_file_name = report_file_name[4:]
+    print('report_file_name: ', report_file_name)
+
     report_id, file_type = get_report_id(report_file_name, access_token)
 
     save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, report_id, report_date)
