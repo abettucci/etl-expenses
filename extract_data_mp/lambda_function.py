@@ -219,7 +219,7 @@ def extract_mercado_pago_reports(event, access_token):
     key = f'{folder}{file_name}'
     print(key)
 
-    report_file_name, report_date_hour, report_date = format_report_file_name(key)
+    report_file_name, report_date_hour, report_date = format_report_file_name(key.split('/')[-1])
     report_file_name = report_file_name[4:]
     report_id, file_type = get_report_id(report_file_name, access_token)
 
