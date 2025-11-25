@@ -125,19 +125,12 @@ def get_report_id(my_file_name, access_token):
         return None
     else:
         data = response.json()  # Convertimos la respuesta a JSON
-        print('data: ', data)
-
-        for item in data:
-            print(item.get("file_name"))
-
         match = next((item for item in data if item.get("file_name") == my_file_name), None)
         if match:
             return str(match.get('id',None)), 'csv'
         else:
             # Probamos con file format '.xlsx' para los casos en los que archivo original era xlsx y lo convertimos a csv para guardarlo en s3
             my_file_name = my_file_name.replace('.csv','.xlsx')
-            print('my_file_name: ', my_file_name)
-
             match = next((item for item in data if item.get("file_name") == my_file_name), None)
             if match:
                 return str(match.get('id',None)), 'xlsx'
@@ -199,7 +192,6 @@ def carga_inicial_de_s3(access_token):
     response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
     keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
     for key in keys:
-        print(key)
         file_type = 'csv'
         if key.endswith(".csv"):     
             report_file_name, report_date_hour, report_date = format_report_file_name(key)
@@ -213,7 +205,6 @@ def carga_inicial_de_s3(access_token):
             report_file_name_sin_extension = report_file_name[:-4]
             report_file_name_final = report_file_name_sin_extension + '.' + file_type
             file_url_base = "https://www.mercadopago.com.ar/balance/reports/settlement/settlement"
-            # file_url = file_url_base + '-' + CIFRADO_SECRET + '-' + report_id + '/download?format=' + file_type
             file_url = file_url_base + '-' + '279729559' + '-' + report_id + '/download?format=' + file_type
             payload = {
                 "file_name" : report_file_name_final,
@@ -235,25 +226,13 @@ def extract_mercado_pago_reports(event, access_token):
     file_name = event['file_name']
     file_url = event['file_url']
     file_type = event['file_type']
-
-    print('file_name: ', file_name)
-    print('file_url: ', file_url)
-    print('file_type: ', file_type)
-    
     s3_client = boto3.client('s3')
     bucket_name = 'mercadopago-reports'
     folder = 'raw/'
     key = f'{folder}{file_name}'
-    print('key: ', key)
-
     s3_filename = key.split('/')[-1]
     report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
-
-    print('report_file_name: ', report_file_name)
     report_id, file_type = get_report_id(report_file_name, access_token)
-    print('report_id: ', report_id)
-    print('file_type: ', file_type)
-
     save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, report_id, report_date)
 
     return key

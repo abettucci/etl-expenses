@@ -602,11 +602,11 @@ def lambda_handler(event, context):
 
         results = gmail_service.users().labels().list(userId="me").execute()
         label_ids = []
+        label_map = {}
         for label in results['labels']:
+            label_map[label['id']] = label['name']
             if label['name'] in ['Avisos Gastos Santander', 'Avisos Compra Carrefour']:
                 label_ids.append(label['id'])
-                label_map = { label["id"]: label["name"] }
-        print('label_map: ', label_map)
 
         if label_ids:
             for label_id in label_ids:
