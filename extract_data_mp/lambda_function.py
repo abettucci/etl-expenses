@@ -86,20 +86,34 @@ def save_report_to_s3(report_file_name, access_token, s3_client, bucket_name, ke
         raise ValueError("Reporte no subido")
     
 def format_report_file_name(s3_filename):
-    base = s3_filename.rsplit('_', 1)[0]
-    extension = s3_filename.split('.')[-1]
-    report_file_name = f"{base}.{extension}"
+    # Extraer solo el nombre del archivo sin carpetas
+    filename = s3_filename.split('/')[-1]
 
-    print('report_file_name de la funcion: ', report_file_name)
+    # Separar nombre y extensión
+    name_part, extension = filename.rsplit('.', 1)
+    parts = name_part.split('-')
 
-    report_date_hour = s3_filename.rsplit('_', 1)[-1].rsplit('.', 1)[0]
+    # Patrones esperados:
+    # A → settlement, id, manual, YYYY, MM, DD, HHMMSS  → len = 7
+    # B/C → settlement, id, YYYY, MM, DD, HHMMSS        → len = 6
 
-    print('report_date_hour de la funcion: ', report_date_hour)
+    if len(parts) == 7:
+        # Formato con "manual"
+        _, account_id, manual_flag, year, month, day, hour = parts
 
-    parts = s3_filename.rsplit('_', 2)
-    report_date = parts[-2]
+    elif len(parts) == 6:
+        # Formato sin "manual"
+        _, account_id, year, month, day, hour = parts
 
-    print('report_date de la funcion: ', report_date)
+    else:
+        raise ValueError(f"Formato inesperado en archivo: {filename}")
+
+    # Fecha final
+    report_date = f"{year}-{month}-{day}"
+    report_date_hour = hour
+
+    # Reconstruir nombre+ext original
+    report_file_name = f"{name_part}.{extension}"
 
     return report_file_name, report_date_hour, report_date
 
@@ -226,14 +240,8 @@ def extract_mercado_pago_reports(event, access_token):
     print('key: ', key)
 
     s3_filename = key.split('/')[-1]
-    print('s3_filename: ', s3_filename)
-
     report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
-    print('report_file_name: ', report_file_name)
-
     report_file_name = report_file_name[4:]
-    print('report_file_name: ', report_file_name)
-
     report_id, file_type = get_report_id(report_file_name, access_token)
 
     save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, report_id, report_date)
