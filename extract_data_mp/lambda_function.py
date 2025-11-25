@@ -248,7 +248,6 @@ def extract_mercado_pago_reports(event, access_token):
 
     s3_filename = key.split('/')[-1]
     report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
-    report_file_name = report_file_name[4:]
 
     print('report_file_name: ', report_file_name)
     report_id, file_type = get_report_id(report_file_name, access_token)
