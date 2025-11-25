@@ -125,12 +125,19 @@ def get_report_id(my_file_name, access_token):
         return None
     else:
         data = response.json()  # Convertimos la respuesta a JSON
+        print('data: ', data)
+
+        for item in data:
+            print(item.get("file_name"))
+
         match = next((item for item in data if item.get("file_name") == my_file_name), None)
         if match:
             return str(match.get('id',None)), 'csv'
         else:
             # Probamos con file format '.xlsx' para los casos en los que archivo original era xlsx y lo convertimos a csv para guardarlo en s3
             my_file_name = my_file_name.replace('.csv','.xlsx')
+            print('my_file_name: ', my_file_name)
+
             match = next((item for item in data if item.get("file_name") == my_file_name), None)
             if match:
                 return str(match.get('id',None)), 'xlsx'
@@ -242,7 +249,11 @@ def extract_mercado_pago_reports(event, access_token):
     s3_filename = key.split('/')[-1]
     report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
     report_file_name = report_file_name[4:]
+
+    print('report_file_name: ', report_file_name)
     report_id, file_type = get_report_id(report_file_name, access_token)
+    print('report_id: ', report_id)
+    print('file_type: ', file_type)
 
     save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, report_id, report_date)
 
