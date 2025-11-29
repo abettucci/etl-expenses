@@ -639,7 +639,7 @@ def lambda_handler(event, context):
                         history = gmail_service.users().history().list(
                             userId='me',
                             startHistoryId=last_history_id,
-                            labelId = label_id
+                            # labelId = label_id
                         ).execute()
 
                         # DEBUG: Log del historial completo
@@ -651,8 +651,8 @@ def lambda_handler(event, context):
                             print(f"💡 Esto es normal si el mensaje ya fue procesado o si no hay mensajes nuevos con los labels configurados")
                             continue  # Pasar al siguiente label_id
                         
-                        for idx, rec in enumerate(history_records):
-                            print(f"  Record {idx}: ID={rec.get('id')}, messagesAdded={len(rec.get('messagesAdded', []))}, messagesDeleted={len(rec.get('messagesDeleted', []))}")
+                        # for idx, rec in enumerate(history_records):
+                        #     print(f"  Record {idx}: ID={rec.get('id')}, messagesAdded={len(rec.get('messagesAdded', []))}, messagesDeleted={len(rec.get('messagesDeleted', []))}")
 
                     except Exception as e:
                         error_str = str(e)
@@ -673,7 +673,10 @@ def lambda_handler(event, context):
                         else:
                             raise
 
-                    for record in history.get('history', []):
+                    for record in history_records:
+                        
+                        print('record: ', record)
+
                         record_history_id = str(record.get('id'))  # HistoryId de este record
                         print(f"🔄 Procesando record con historyId={record_history_id}")
                         
