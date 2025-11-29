@@ -625,7 +625,14 @@ def lambda_handler(event, context):
                         print("⚠️ No se encontró historyId en el evento")
                         return
 
-                    last_history_id = load_last_history_id(dynamo_table_name) or history_id
+                    print('History id del mensaje siendo analizado: ', history_id)
+
+                    saved_history_id = load_last_history_id(dynamo_table_name)
+                    if saved_history_id:
+                        last_history_id = saved_history_id
+                    else:
+                        last_history_id = history_id - 1
+
                     print(f"📩 Procesando desde historyId={last_history_id} hasta {history_id}")
             
                     try:
@@ -642,9 +649,6 @@ def lambda_handler(event, context):
                         if len(history_records) == 0:
                             print(f"⚠️ No hay cambios nuevos desde historyId={last_history_id}")
                             print(f"💡 Esto es normal si el mensaje ya fue procesado o si no hay mensajes nuevos con los labels configurados")
-                            
-                            # Guardar el historyId actual para la próxima ejecución
-                            # save_last_history_id_in_dynamo(dynamodb.Table(dynamo_table_name), history_id)
                             continue  # Pasar al siguiente label_id
                         
                         for idx, rec in enumerate(history_records):
