@@ -610,7 +610,7 @@ def lambda_handler(event, context):
 
         if label_ids:
             for label_id in label_ids:
-                print(f'Analizando la etiqueta: {label_map[label['id']]}')
+                print(f"Analizando la etiqueta: {label_map[label_id]}")
 
                 if 'message' in body_message_pubsub:
                     message = body_message_pubsub['message']       
