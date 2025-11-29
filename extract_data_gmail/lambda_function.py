@@ -610,6 +610,8 @@ def lambda_handler(event, context):
 
         if label_ids:
             for label_id in label_ids:
+                print(f'Analizando la etiqueta: {label_map[label['id']]}')
+
                 if 'message' in body_message_pubsub:
                     message = body_message_pubsub['message']       
 
@@ -640,8 +642,9 @@ def lambda_handler(event, context):
                         if len(history_records) == 0:
                             print(f"⚠️ No hay cambios nuevos desde historyId={last_history_id}")
                             print(f"💡 Esto es normal si el mensaje ya fue procesado o si no hay mensajes nuevos con los labels configurados")
+                            
                             # Guardar el historyId actual para la próxima ejecución
-                            save_last_history_id_in_dynamo(dynamodb.Table(dynamo_table_name), history_id)
+                            # save_last_history_id_in_dynamo(dynamodb.Table(dynamo_table_name), history_id)
                             continue  # Pasar al siguiente label_id
                         
                         for idx, rec in enumerate(history_records):
@@ -730,16 +733,13 @@ def lambda_handler(event, context):
                                 if mail_msg_id not in ids_existentes:
                                     print('Intentamos extraer los datos del mail y cargarlos a S3')
                                     response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)    
-                                    save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), history_id)
                                     print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
                                 else:
                                     print(f"⚠️ Mensaje {mail_msg_id} ya existe en BigQuery, se omite procesamiento")
                                 
                                 # Parámetros para la Step Function: el bloque de Transform espera un "key" y "process=true"
                                 payload = response
-                                print(payload)
-
-                                print(label['name'])
+                                print('Payload: ', payload)
 
                                 if 'Avisos Gastos Santander' in labels_names:
                                     step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
