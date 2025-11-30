@@ -631,7 +631,7 @@ def lambda_handler(event, context):
                     if saved_history_id:
                         last_history_id = saved_history_id
                     else:
-                        last_history_id = history_id - 1
+                        last_history_id = history_id - 5
 
                     print(f"📩 Procesando desde historyId={last_history_id} hasta {history_id}")
             
@@ -644,6 +644,8 @@ def lambda_handler(event, context):
 
                         # DEBUG: Log del historial completo
                         history_records = history.get('history', [])
+
+                        print('history_records: ', history_records)
                         print(f"📊 Se obtuvieron {len(history_records)} records del historial")
                         
                         if len(history_records) == 0:
