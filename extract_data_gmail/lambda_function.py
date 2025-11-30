@@ -771,7 +771,7 @@ def lambda_handler(event, context):
                         elif 'messages' in record:
                             print(f"📧 Record {record_history_id} tiene {len(record['messages'])} mensajes agregados")
                             for m in record['messages']:
-                                mail_msg_id = m['message']['id']
+                                mail_msg_id = m['id']
                                 
                                 msg = gmail_service.users().messages().get(
                                     userId="me", id=mail_msg_id, format="metadata"
