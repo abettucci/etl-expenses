@@ -615,6 +615,8 @@ def lambda_handler(event, context):
         print(f"🔍 Label IDs objetivo: {target_label_ids}")
         print(f"🔍 Total de labels en Gmail: {len(label_map)}")
 
+        print('Labels: ', list(label_map.values()))
+
         if 'message' in body_message_pubsub:
             message = body_message_pubsub['message']       
 

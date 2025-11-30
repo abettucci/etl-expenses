@@ -42,13 +42,13 @@ def lambda_handler(event, context):
     inbox_label_id = None
 
     for label in results['labels']:
-        if label['name'] == 'INBOX':
-            inbox_label_id = label['id']
+        # if label['name'] == 'INBOX':
+        #     inbox_label_id = label['id']
         if label['name'] in ['Avisos Gastos Santander', 'Avisos Compra Carrefour']:
             custom_labels.append(label['id'])
 
-    if inbox_label_id is None:
-        raise Exception("❌ No encontré el label INBOX (esto no debería pasar).")
+    # if inbox_label_id is None:
+    #     raise Exception("❌ No encontré el label INBOX (esto no debería pasar).")
 
     # NOTA IMPORTANTE sobre labelIds:
     # Gmail enviará una notificación al topic de Pub/Sub cuando haya CUALQUIER cambio
@@ -60,12 +60,13 @@ def lambda_handler(event, context):
     # 
     # Si incluyes múltiples labels (INBOX + custom), puedes recibir múltiples notificaciones
     # para el mismo email (una cuando llega a INBOX, otra cuando se le agrega el label custom)
-    #
+    
     # El código en extract_data_gmail debe manejar esto consultando el historial completo
     # y filtrando por los labels/senders/subjects que nos interesan
     
     body = {
-        "labelIds": [inbox_label_id] + custom_labels,
+        # "labelIds": [inbox_label_id] + custom_labels,
+        "labelIds": custom_labels,
         # "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
         "topicName": f"projects/hazel-pillar-400222/topics/gmail-events"
     }
