@@ -50,13 +50,29 @@ def lambda_handler(event, context):
     if inbox_label_id is None:
         raise Exception("❌ No encontré el label INBOX (esto no debería pasar).")
 
+    # NOTA IMPORTANTE sobre labelIds:
+    # Gmail enviará una notificación al topic de Pub/Sub cuando haya CUALQUIER cambio
+    # relacionado con los labels especificados aquí. Esto incluye:
+    # - Mensajes nuevos que llegan con estos labels
+    # - Labels agregados/removidos de mensajes existentes  
+    # - Mensajes eliminados que tenían estos labels
+    # - Mensajes marcados como leídos/no leídos
+    # 
+    # Si incluyes múltiples labels (INBOX + custom), puedes recibir múltiples notificaciones
+    # para el mismo email (una cuando llega a INBOX, otra cuando se le agrega el label custom)
+    #
+    # El código en extract_data_gmail debe manejar esto consultando el historial completo
+    # y filtrando por los labels/senders/subjects que nos interesan
+    
     body = {
         "labelIds": [inbox_label_id] + custom_labels,
         # "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
         "topicName": f"projects/hazel-pillar-400222/topics/gmail-events"
     }
+    
+    print(f"📋 Configurando watcher con labels: {[inbox_label_id] + custom_labels}")
 
     resp = gmail_service.users().watch(userId="me", body=body).execute()
 
-    print("Watcher renewed:", resp)
+    print("✅ Watcher renewed:", resp)
     return {"status": "ok", "response": resp}
