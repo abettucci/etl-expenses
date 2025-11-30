@@ -33,7 +33,7 @@ def auth_google(SECRET_NAME):
     return creds
 
 def lambda_handler(event, context):
-    creds = auth_google('gcp_sa_api_credentials')
+    creds = auth_google('gcp_api_credentials')
     gmail_service = build('gmail', 'v1', credentials=creds)
     
     results = gmail_service.users().labels().list(userId="me").execute()
@@ -52,7 +52,8 @@ def lambda_handler(event, context):
 
     body = {
         "labelIds": [inbox_label_id] + custom_labels,
-        "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
+        # "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
+        "topicName": f"projects/hazel-pillar-400222/topics/gmail-events"
     }
 
     resp = gmail_service.users().watch(userId="me", body=body).execute()
