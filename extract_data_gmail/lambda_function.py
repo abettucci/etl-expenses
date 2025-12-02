@@ -643,9 +643,7 @@ def lambda_handler(event, context):
 
             print(f"📍 History ID guardado en DynamoDB: {last_history_id}")
             print(f"📍 Diferencia: {int(history_id) - int(last_history_id)} cambios")
-            print(f"\n{'='*100}")
             print(f"🔍 CONSULTANDO HISTORIAL DESDE {last_history_id} HASTA {history_id}")
-            print(f"{'='*100}\n")
     
             try:
                 # CAMBIO IMPORTANTE: Consultar historial UNA SOLA VEZ sin filtro de label
@@ -664,17 +662,6 @@ def lambda_handler(event, context):
                 
                 if len(history_records) == 0:
                     print(f"\n⚠️ ⚠️ ⚠️  NO HAY CAMBIOS NUEVOS DESDE historyId={last_history_id} ⚠️ ⚠️ ⚠️")
-                    print(f"📍 historyId guardado en DynamoDB: {last_history_id}")
-                    print(f"📍 historyId recibido de Pub/Sub: {history_id}")
-                    print(f"📍 Diferencia: {int(history_id) - int(last_history_id)}")
-                    print(f"\n💡 Posibles causas:")
-                    print(f"   1. El cambio detectado NO es un mensaje nuevo (puede ser: lectura, archivo, etiqueta cambiada)")
-                    print(f"   2. El mensaje ya fue procesado anteriormente")
-                    print(f"   3. El cambio fue en un label/carpeta que no estamos monitoreando")
-                    print(f"   4. El historyId está desactualizado o fue reseteado por Gmail")
-                    print(f"\n💡 Solución: Revisa los logs de Gmail directamente para ver qué cambió")
-                    print(f"   - Ve a Gmail y revisa los emails recientes sin filtros")
-                    print(f"   - Usa el script reset_history_id.py si necesitas reiniciar el tracking")
                     
                     # Guardar el historyId para evitar reprocesar
                     save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), history_id)
@@ -711,9 +698,7 @@ def lambda_handler(event, context):
                             processed_in_this_record.add(mail_msg_id)
                             
                             # DEBUGGING: Obtener información completa del mensaje para logging
-                            print(f"\n{'='*80}")
                             print(f"🔍 DEBUG - Analizando mensaje {mail_msg_id}")
-                            print(f"{'='*80}")
                             
                             msg = gmail_service.users().messages().get(
                                 userId="me", id=mail_msg_id, format="metadata"
@@ -738,7 +723,6 @@ def lambda_handler(event, context):
                                 # Loggear preview del body (primeros 500 caracteres)
                                 body_preview = mail_data_debug.get('raw_text', '')[:500]
                                 print(f"📧 BODY PREVIEW (primeros 500 chars):\n{body_preview}")
-                                print(f"{'='*80}\n")
                             
                             # CAMBIO: Verificar si el mensaje tiene ALGUNO de los labels objetivo
                             has_target_label = any(lid in target_label_ids for lid in labels)
@@ -841,10 +825,8 @@ def lambda_handler(event, context):
                             
                             processed_in_this_record.add(mail_msg_id)
                             
-                            print(f"\n{'='*80}")
                             print(f"🏷️  DEBUG - Mensaje {mail_msg_id} recibió labels objetivo: {added_target_labels}")
                             print(f"💡 Este mensaje probablemente llegó en un historyId anterior")
-                            print(f"{'='*80}")
                             
                             # Obtener el mensaje completo
                             msg = gmail_service.users().messages().get(
@@ -876,7 +858,6 @@ def lambda_handler(event, context):
                             
                             body_preview = mail_data.get('raw_text', '')[:500]
                             print(f"📧 BODY PREVIEW:\n{body_preview}")
-                            print(f"{'='*80}\n")
 
                             # Determinar tabla y PK
                             table_name, pk = None, None
@@ -941,9 +922,7 @@ def lambda_handler(event, context):
                             processed_in_this_record.add(mail_msg_id)
                             
                             # DEBUGGING: Obtener información completa del mensaje para logging
-                            print(f"\n{'='*80}")
                             print(f"🔍 DEBUG - Analizando mensaje {mail_msg_id} (campo 'messages')")
-                            print(f"{'='*80}")
                             
                             msg = gmail_service.users().messages().get(
                                 userId="me", id=mail_msg_id, format="metadata"

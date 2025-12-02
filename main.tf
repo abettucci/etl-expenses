@@ -888,7 +888,10 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           "dynamodb:Query",
           "dynamodb:Scan"
         ]
-        Resource = "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker"
+        Resource = [
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker",
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache"
+        ]
       }
     ]
   })
@@ -898,6 +901,8 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamo_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_dynamo_policy.arn
 }
+
+
 
 # Policy para permitir ejecutar Step Functions
 resource "aws_iam_role_policy" "api_gateway_step_function_policy" {

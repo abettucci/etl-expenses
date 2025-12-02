@@ -4,6 +4,7 @@ import boto3
 from telegram import Bot, Update
 import requests
 import openai
+import time
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -290,14 +291,17 @@ def handle_message(text: str, bq_client) -> tuple:
 
 def send_telegram_message(chat_id, text, token):
     """Envía mensaje a Telegram"""
+    print('Largo del mensaje: ', len(text))
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
+        print("TELEGRAM RESPONSE:", response.text)
         response.raise_for_status()
         return response.json()
     except Exception as e:
