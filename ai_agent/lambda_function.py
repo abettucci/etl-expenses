@@ -5,6 +5,7 @@ from telegram import Bot, Update
 import requests
 import openai
 import time
+from decimal import Decimal
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -22,6 +23,151 @@ DDB_TABLE = os.environ.get("DDB_TABLE", "schema_cache")
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))  # 7 días
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+# =============================================================================
+# METADATA ENRIQUECIDA DEL ESQUEMA - LA CLAVE PARA UN AGENTE INTELIGENTE
+# =============================================================================
+# Esta metadata le da al LLM todo el contexto que necesita para generar
+# queries correctas sin que el usuario tenga que especificar detalles técnicos.
+
+TABLE_METADATA = {
+    "bank_payments": {
+        "description": "Gastos y transacciones del banco Santander. TODOS los registros son del Banco Santander, NO filtrar por banco/santander.",
+        "semantic_hints": [
+            "Esta tabla contiene TODOS los gastos bancarios",
+            "Si el usuario pregunta por 'gastos del banco' o 'banco santander', usar esta tabla SIN filtros adicionales de banco",
+            "El total de gastos es la suma de MONTO"
+        ],
+        "columns": {
+            "FECHA_PAGO": {
+                "type": "STRING",
+                "format": "dd/mm/yyyy",
+                "description": "Fecha del pago en formato texto. IMPORTANTE: Para filtrar por fecha usar PARSE_DATE('%d/%m/%Y', FECHA_PAGO)",
+                "example": "15/11/2024"
+            },
+            "MONTO": {
+                "type": "STRING", 
+                "format": "número con decimales",
+                "description": "Monto del gasto. Castear a FLOAT64 para operaciones: CAST(MONTO AS FLOAT64)",
+                "example": "1500.50"
+            },
+            "COMERCIO": {
+                "type": "STRING",
+                "description": "Nombre del comercio donde se realizó el gasto",
+                "example": "SUPERMERCADO COTO"
+            },
+            "TARJETA": {
+                "type": "STRING",
+                "description": "Tipo o número de tarjeta utilizada",
+                "example": "VISA DÉBITO"
+            },
+            "DIVISA": {
+                "type": "STRING",
+                "description": "Moneda de la transacción",
+                "example": "ARS"
+            }
+        }
+    },
+    "mp_data": {
+        "description": "Transacciones realizadas a través de Mercado Pago (transferencias, pagos QR, etc.)",
+        "semantic_hints": [
+            "Usar cuando pregunten por 'mercado pago', 'MP', 'transferencias', 'QR'",
+            "Incluye tanto pagos enviados como recibidos"
+        ],
+        "columns": {
+            "fecha": {
+                "type": "DATE",
+                "description": "Fecha de la transacción",
+                "example": "2024-11-15"
+            },
+            "monto": {
+                "type": "FLOAT64",
+                "description": "Monto de la transacción",
+                "example": "2500.00"
+            },
+            "descripcion": {
+                "type": "STRING",
+                "description": "Descripción o concepto del pago",
+                "example": "Pago a comercio"
+            }
+        }
+    },
+    "carrefour_data": {
+        "description": "Compras en supermercado Carrefour con detalle de productos",
+        "semantic_hints": [
+            "Usar cuando pregunten por 'carrefour', 'supermercado', 'compras de comida'",
+            "Tiene detalle a nivel de producto individual"
+        ],
+        "columns": {
+            "fecha_compra": {
+                "type": "DATE",
+                "description": "Fecha de la compra",
+                "example": "2024-11-15"
+            },
+            "producto": {
+                "type": "STRING",
+                "description": "Nombre del producto comprado",
+                "example": "LECHE ENTERA 1L"
+            },
+            "precio": {
+                "type": "FLOAT64",
+                "description": "Precio del producto",
+                "example": "850.00"
+            },
+            "cantidad": {
+                "type": "INT64",
+                "description": "Cantidad comprada",
+                "example": "2"
+            }
+        }
+    },
+    "dim_producto": {
+        "description": "Dimensión de productos para categorización",
+        "semantic_hints": [
+            "Tabla auxiliar para JOINs con carrefour_data",
+            "Contiene categorías y clasificaciones de productos"
+        ],
+        "columns": {
+            "producto_id": {
+                "type": "STRING",
+                "description": "ID único del producto"
+            },
+            "categoria": {
+                "type": "STRING",
+                "description": "Categoría del producto",
+                "example": "LÁCTEOS"
+            }
+        }
+    }
+}
+
+# Ejemplos de queries correctas para few-shot learning
+SQL_EXAMPLES = """
+    EJEMPLOS DE QUERIES CORRECTAS:
+
+    1. Pregunta: "¿Cuánto gasté en los últimos 3 meses?"
+    SQL:
+    SELECT SUM(CAST(MONTO AS FLOAT64)) AS total_gasto
+    FROM `{project}.{dataset}.bank_payments`
+    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
+
+    2. Pregunta: "¿Cuáles fueron mis mayores gastos del mes?"
+    SQL:
+    SELECT COMERCIO, CAST(MONTO AS FLOAT64) AS monto, FECHA_PAGO
+    FROM `{project}.{dataset}.bank_payments`
+    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+    ORDER BY CAST(MONTO AS FLOAT64) DESC
+    LIMIT 10
+
+    3. Pregunta: "Gastos por comercio este mes"
+    SQL:
+    SELECT COMERCIO, SUM(CAST(MONTO AS FLOAT64)) AS total, COUNT(*) AS cantidad_transacciones
+    FROM `{project}.{dataset}.bank_payments`
+    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+    GROUP BY COMERCIO
+    ORDER BY total DESC
+    LIMIT 20
+"""
 
 # --- Clientes AWS/GCP ---
 dynamo = boto3.resource("dynamodb", region_name=REGION)
@@ -71,7 +217,9 @@ def get_cached_schema(table_name):
         item = resp.get("Item")
         if not item:
             return None
-        if time.time() - item["timestamp"] > CACHE_TTL_SECONDS:
+        # FIX: DynamoDB devuelve Decimal, convertir a float para comparar
+        timestamp = float(item["timestamp"]) if isinstance(item["timestamp"], Decimal) else item["timestamp"]
+        if time.time() - timestamp > CACHE_TTL_SECONDS:
             return None
         return json.loads(item["columns_json"])
     except Exception as e:
@@ -116,47 +264,95 @@ def get_table_columns_by_prefix(database: str, table_prefix: str) -> list:
         print(f"❌ Error al buscar tablas con prefijo '{table_prefix}': {e}")
         return []
 
+def build_enriched_schema_prompt():
+    """Construye un prompt detallado con toda la metadata del esquema"""
+    schema_parts = []
+    
+    for table_name, meta in TABLE_METADATA.items():
+        table_desc = f"\n### Tabla: `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{table_name}`"
+        table_desc += f"\n**Descripción:** {meta['description']}"
+        
+        # Agregar hints semánticos
+        if meta.get('semantic_hints'):
+            table_desc += "\n**Notas importantes:**"
+            for hint in meta['semantic_hints']:
+                table_desc += f"\n  - {hint}"
+        
+        # Agregar columnas con detalle
+        table_desc += "\n**Columnas:**"
+        for col_name, col_info in meta.get('columns', {}).items():
+            col_desc = f"\n  - `{col_name}` ({col_info['type']})"
+            if col_info.get('format'):
+                col_desc += f" - Formato: {col_info['format']}"
+            if col_info.get('description'):
+                col_desc += f" - {col_info['description']}"
+            if col_info.get('example'):
+                col_desc += f" - Ej: '{col_info['example']}'"
+            table_desc += col_desc
+        
+        schema_parts.append(table_desc)
+    
+    return "\n".join(schema_parts)
+
 def generate_sql_with_openai2(question, bq_client):
+    """Genera SQL usando OpenAI con metadata enriquecida y few-shot learning"""
     try:
-        schemas = {
-            "bank_payments": get_columns_for_table("bank_payments", bq_client),
-            "mp_data": get_columns_for_table("mp_data", bq_client),
-            "carrefour_data": get_columns_for_table("carrefour_data", bq_client),
-            "dim_producto": get_columns_for_table("dim_producto", bq_client),
-        }
-        schema_text = "\n".join(
-            [f"- {t}: {', '.join(cols) if cols else 'tabla no disponible'}" for t, cols in schemas.items()]
+        # Construir schema enriquecido
+        enriched_schema = build_enriched_schema_prompt()
+        
+        # Formatear ejemplos con el proyecto actual
+        formatted_examples = SQL_EXAMPLES.format(
+            project=GCP_PROJECT_ID, 
+            dataset=BQ_DATASET_PROD
         )
 
-        prompt = f"""
-            Eres un experto en SQL para BigQuery. Genera una consulta para: "{question}"
+        system_prompt = """Eres un experto en SQL para Google BigQuery (Standard SQL).
+            Tu trabajo es convertir preguntas en lenguaje natural a consultas SQL precisas.
 
-            Esquema disponible:
-            {schema_text}
-
-            Reglas:
-            1. Usa solo estas tablas/columnas.
-            2. SQL válido en BigQuery Standard SQL.
-            3. Referencia tablas como `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.nombre_tabla`
-            4. Limita resultados a 20 filas.
-            5. Usa fechas relativas (CURRENT_DATE()).
-            6. Solo devuelve SQL, sin explicaciones.
+            REGLAS CRÍTICAS:
+            1. NUNCA agregues filtros que el usuario no pidió explícitamente
+            2. Si el usuario pregunta por "gastos del banco" o "banco santander", usa bank_payments SIN filtros de banco (toda la tabla ES del banco santander)
+            3. Para campos de fecha tipo STRING con formato dd/mm/yyyy, SIEMPRE usar: PARSE_DATE('%d/%m/%Y', campo_fecha)
+            4. Para campos MONTO tipo STRING, SIEMPRE usar: CAST(MONTO AS FLOAT64)
+            5. Usa fechas relativas (CURRENT_DATE(), DATE_SUB, DATE_TRUNC)
+            6. LIMIT 20 siempre
+            7. Devuelve SOLO el SQL, sin explicaciones ni markdown
         """
+
+        user_prompt = f"""
+            ESQUEMA DETALLADO DE LAS TABLAS:
+            {enriched_schema}
+
+            {formatted_examples}
+
+            PREGUNTA DEL USUARIO: "{question}"
+
+            Genera la consulta SQL:
+        """
+
+        print(f"🤖 Generando SQL para: {question}")
+        
         res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Eres un experto en SQL para BigQuery."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=500,
-            temperature=0.1,
+            max_tokens=600,
+            temperature=0.0,  # Más determinístico
         )
+        
         sql = (res.choices[0].message.content or "").strip()
+        
+        # Limpiar markdown si existe
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
+        
+        print(f"📝 SQL generado:\n{sql}")
         return sql
+        
     except Exception as e:
-        print(f"Error generando SQL: {e}")
+        print(f"❌ Error generando SQL: {e}")
         return ""
 
 def generate_sql_with_openai(question: str, bq_client) -> str:
@@ -225,23 +421,44 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
         print(f"❌ Error generando SQL con OpenAI: {e}")
         return ""
 
+def validate_sql_dry_run(client, sql: str) -> tuple:
+    """
+    Ejecuta un dry-run de la query para validar sintaxis sin ejecutar.
+    Retorna (is_valid: bool, error_message: str or None)
+    """
+    try:
+        job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+        query_job = client.query(sql, job_config=job_config)
+        # Si llegamos aquí, la query es válida
+        bytes_processed = query_job.total_bytes_processed
+        print(f"✅ Dry-run exitoso. Bytes a procesar: {bytes_processed}")
+        return True, None
+    except Exception as e:
+        error_msg = str(e)
+        print(f"❌ Dry-run falló: {error_msg}")
+        return False, error_msg
+
 def query_bigquery(client, sql: str) -> str:
     """Ejecuta query en BigQuery y retorna resultados formateados"""
     try:
         print(f"🔍 Ejecutando query en BigQuery:\n{sql}")
         
+        # Primero validar con dry-run
+        is_valid, validation_error = validate_sql_dry_run(client, sql)
+        if not is_valid:
+            return f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}"
+        
         query_job = client.query(sql)
         results = query_job.result()  # Espera a que termine
         
-        # Verificar si hay resultados - CORREGIDO
-        # El total_rows está en el RowIterator (results), no en el QueryJob
+        # Verificar si hay resultados
         if results.total_rows == 0:
-            return "ℹ️ No se encontraron resultados."
+            return "ℹ️ No se encontraron resultados para tu consulta."
         
         return format_bigquery_results(results)
         
     except Exception as e:
-        error_msg = f"❌ Error en BigQuery:\n```\n{str(e)}\n```\n\nSQL ejecutado:\n```sql\n{sql}\n```"
+        error_msg = f"❌ Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
         print(error_msg)  # Debug en CloudWatch
         return error_msg
 
@@ -279,29 +496,85 @@ def format_bigquery_results(results) -> str:
 def handle_message(text: str, bq_client) -> tuple:
     """Maneja el mensaje del usuario y retorna SQL y respuesta"""
     question = text
-    # sql = generate_sql_with_openai(question, bq_client)
+    
+    # Generar SQL con el nuevo sistema mejorado
     sql = generate_sql_with_openai2(question, bq_client)
     
     if not sql:
         return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
     
+    # Validar primero con dry-run
+    is_valid, validation_error = validate_sql_dry_run(bq_client, sql)
+    
+    if not is_valid:
+        print(f"⚠️ Primera query inválida, intentando regenerar...")
+        # Intentar regenerar con el error como contexto
+        retry_sql = retry_sql_generation(question, sql, validation_error, bq_client)
+        if retry_sql:
+            sql = retry_sql
+            is_valid, _ = validate_sql_dry_run(bq_client, sql)
+    
+    if not is_valid:
+        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}"
+    
     response = query_bigquery(bq_client, sql)
     
     return sql, response
 
+def retry_sql_generation(question: str, failed_sql: str, error: str, bq_client) -> str:
+    """Intenta regenerar la SQL corrigiendo el error"""
+    try:
+        enriched_schema = build_enriched_schema_prompt()
+        
+        prompt = f"""
+            La siguiente consulta SQL falló con un error.
+
+            PREGUNTA ORIGINAL: "{question}"
+
+            SQL QUE FALLÓ:
+            {failed_sql}
+
+            ERROR:
+            {error}
+
+            ESQUEMA DE TABLAS:
+            {enriched_schema}
+
+            Por favor, genera una nueva consulta SQL corrigiendo el error. 
+            Devuelve SOLO el SQL corregido, sin explicaciones.
+        """
+
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Eres un experto en SQL para BigQuery. Corrige errores de SQL."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=600,
+            temperature=0.0,
+        )
+        
+        sql = (res.choices[0].message.content or "").strip()
+        if sql.startswith("```"):
+            sql = sql.replace("```sql", "").replace("```", "").strip()
+        
+        print(f"🔄 SQL regenerado:\n{sql}")
+        return sql
+        
+    except Exception as e:
+        print(f"❌ Error en retry: {e}")
+        return ""
+
 def send_telegram_message(chat_id, text, token):
     """Envía mensaje a Telegram"""
-    print('Largo del mensaje: ', len(text))
-
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "HTML"
+        "parse_mode": "Markdown"
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
-        print("TELEGRAM RESPONSE:", response.text)
         response.raise_for_status()
         return response.json()
     except Exception as e:
