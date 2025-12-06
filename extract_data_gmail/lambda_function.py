@@ -25,6 +25,9 @@ BANK_EMAIL_SENDER = "mensajesyavisos@mails.santander.com.ar"
 BANK_SUBJECTS = ["Pagaste","Aviso de débito automático"]
 MARKET_EMAIL_SENDERS = ["atencion_clientes@m.contactocarrefour.com.ar", "contacto@m.tarjetacarrefour.com.ar"]
 MARKET_SUBJECT = "Hola, te enviamos el ticket digital de tu compra."
+MP_EMAIL_SENDERS = ['info@mercadopago.com']
+MP_SUBJECT = 'Tu transferencia fue enviada' # Pago aprobado en, Pagaste tu tarjeta de crédito
+
 # bank_body_contains = ["Te acercamos el detalle de tu consumo con la Tarjeta Santander", "Te acercamos el detalle del débito con tu Tarjeta Santander"]
 
 # Funcion para obtener la API Key de Google Cloud y consumir la API de Gmail
@@ -994,6 +997,10 @@ def lambda_handler(event, context):
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                                table_name = 'mp_data'
+                                pk = 'REPORT_ID'
+
                             else:
                                 print(f'⚠️  Email ignorado (no cumple filtros de sender/subject): {sender} - {subject}')
                                 continue

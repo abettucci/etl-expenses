@@ -1,24 +1,16 @@
-# Dockerfile optimizado para ai_agent
-# Usa imagen base con dependencias compartidas
-
-# Solo los ARG que se usan en FROM pueden ir antes
-
-# Imagen base optimizada
+# Imagen base de Lambda con Python 3.9
 FROM public.ecr.aws/lambda/python:3.9
 
-# Ahora sí, el resto de los ARG y ENV
-ARG TELEGRAM_BOT_TOKEN
-ENV TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
-
-# Agregamos dependencias específicas de esta función (solo las que no están en base)
+# Instalar dependencias
 COPY requirements.txt .
 RUN pip install -r requirements.txt --no-cache-dir
 
-# Copiar código de la función
-COPY lambda_function.py ${LAMBDA_TASK_ROOT}/
+# Copiar el código de la lambda
+COPY lambda_function.py ${LAMBDA_TASK_ROOT}
 
-# Limpiar cache y archivos temporales para reducir tamaño
+# Limpieza opcional
 RUN rm -rf /var/cache/pip/* /tmp/* /var/tmp/*
 RUN find /var/lang -name "*.pyc" -delete 2>/dev/null || true
 
+# Handler
 CMD ["lambda_function.lambda_handler"]
