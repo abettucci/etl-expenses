@@ -83,6 +83,14 @@ variable "SNS_TOPIC" {
   sensitive   = true
 }
 
+variable "TABSCANNER_API_KEY" {
+  description = "TabScanner API Key for receipt OCR fallback"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+
 variable "glue_database_name" {
   type    = string
   default = "etl_database"
@@ -124,6 +132,12 @@ resource "aws_s3_bucket" "mp_reports" {
 # 1.3 Bucket para Gastos con tarjetas del banco
 resource "aws_s3_bucket" "bank_payments" {
   bucket        = "bank-payments"
+  force_destroy = true
+}
+
+# 1.4 Bucket para Tickets de Telegram (fotos de recibos)
+resource "aws_s3_bucket" "telegram_receipts" {
+  bucket        = "telegram-receipts"
   force_destroy = true
 }
 
@@ -678,17 +692,55 @@ resource "aws_lambda_function" "ai_agent" {
 
   environment {
     variables = {
-      GCP_PROJECT_ID     = var.GCP_PROJECT_ID
-      BQ_DATASET_PROD    = "PRD"
-      BQ_LOCATION        = "US"
-      TELEGRAM_BOT_TOKEN = var.TELEGRAM_BOT_TOKEN
-      OPENAI_API_KEY     = var.OPENAI_API_KEY
-      DDB_TABLE          = var.dynamodb_table_name
-      CACHE_TTL_SECONDS  = "604800"  # 7 días
+      GCP_PROJECT_ID              = var.GCP_PROJECT_ID
+      BQ_DATASET_PROD             = "PRD"
+      BQ_LOCATION                 = "US"
+      TELEGRAM_BOT_TOKEN          = var.TELEGRAM_BOT_TOKEN
+      OPENAI_API_KEY              = var.OPENAI_API_KEY
+      DDB_TABLE                   = var.dynamodb_table_name
+      CACHE_TTL_SECONDS           = "604800"  # 7 días
+      S3_BUCKET_TICKETS           = aws_s3_bucket.telegram_receipts.bucket
+      S3_PREFIX_TICKETS           = "receipts/"
+      RECEIPT_ETL_STATE_MACHINE   = aws_sfn_state_machine.telegram_receipt_etl_flow.arn
     }
   }
 }
 
+# 4.11 Lambda para extraer datos de tickets con OCR (OpenAI Vision + TabScanner fallback)
+resource "aws_lambda_function" "process_telegram_img" {
+  function_name = "process_telegram_img"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:process_telegram_img-latest"
+  
+  memory_size = 1024
+  timeout     = 300
+
+  environment {
+    variables = {
+      OPENAI_API_KEY     = var.OPENAI_API_KEY
+      TABSCANNER_API_KEY = var.TABSCANNER_API_KEY
+      S3_BUCKET_TICKETS  = aws_s3_bucket.telegram_receipts.bucket,
+      OPENAI_API_KEY = var.OPENAI_API_KEY
+    }
+  }
+}
+
+resource "aws_lambda_function" "load_receipt_to_bq" {
+  function_name = "load_receipt_to_bq"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:load_receipt_to_bq-latest"
+  
+  memory_size = 1024
+  timeout     = 300
+
+  environment {
+    variables = {
+      GCP_PROJECT_ID = var.GCP_PROJECT_ID
+    }
+  }
+}
 
 ###########  5. Permisos IAM Roles ###########
 # IAM role para Lambda execution
@@ -866,7 +918,9 @@ resource "aws_iam_policy" "lambda_s3_access" {
           aws_s3_bucket.mp_reports.arn,
           "${aws_s3_bucket.mp_reports.arn}/*",
           "${aws_s3_bucket.bank_payments.arn}/*",
-          aws_s3_bucket.bank_payments.arn
+          aws_s3_bucket.bank_payments.arn,
+          "${aws_s3_bucket.telegram_receipts.arn}/*",
+          aws_s3_bucket.telegram_receipts.arn
         ]
       }
     ]
@@ -901,7 +955,6 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamo_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_dynamo_policy.arn
 }
-
 
 
 # Policy para permitir ejecutar Step Functions
@@ -969,7 +1022,9 @@ resource "aws_ecr_lifecycle_policy" "delete_unwanted_images" {
             "bank_payments_processor-latest",
             "load_report_and_pdf-latest",
             "webhook_mp_report-latest",
-            "compensation_flow-latest"
+            "compensation_flow-latest",
+            "process_telegram_img-latest",
+            "load_receipt_to_bq-latest"
           ]
           countType   = "imageCountMoreThan"
           countNumber = 1
@@ -999,7 +1054,9 @@ resource "aws_iam_role_policy" "lambda_exec_copy_policy" {
           "${aws_s3_bucket.mp_reports.arn}/*",
           aws_s3_bucket.mp_reports.arn,
           "${aws_s3_bucket.bank_payments.arn}/*",
-          aws_s3_bucket.bank_payments.arn
+          aws_s3_bucket.bank_payments.arn,
+          "${aws_s3_bucket.telegram_receipts.arn}/*",
+          aws_s3_bucket.telegram_receipts.arn
         ]
       }
     ]
@@ -1047,7 +1104,9 @@ resource "aws_iam_role_policy" "glue_s3_access" {
           aws_s3_bucket.mp_reports.arn,
           "${aws_s3_bucket.mp_reports.arn}/*",
           aws_s3_bucket.bank_payments.arn,
-          "${aws_s3_bucket.bank_payments.arn}/*"
+          "${aws_s3_bucket.bank_payments.arn}/*",
+          aws_s3_bucket.telegram_receipts.arn,
+          "${aws_s3_bucket.telegram_receipts.arn}/*"
         ]
       }
     ]
@@ -1126,6 +1185,30 @@ resource "aws_s3_bucket_policy" "bank_payments_policy" {
   })
 }
 
+# Policy para bloquear cualquier acceso al bucket de S3 de tickets de Telegram que no sea por HTTPS.
+resource "aws_s3_bucket_policy" "telegram_receipts_policy" {
+  bucket = aws_s3_bucket.telegram_receipts.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Deny",
+        Principal = "*",
+        Action    = "s3:*",
+        Resource = [
+          aws_s3_bucket.telegram_receipts.arn,
+          "${aws_s3_bucket.telegram_receipts.arn}/*"
+        ],
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   role       = aws_iam_role.step_function_role.name
   policy_arn = "arn:aws:iam::aws:policy/AWSLambda_FullAccess"
@@ -1152,7 +1235,11 @@ resource "aws_iam_policy" "step_function_lambda_policy" {
           aws_lambda_function.bank_payments_processor.arn,
 
           aws_lambda_function.load_report_and_pdf.arn,
-          aws_lambda_function.ai_agent.arn
+          aws_lambda_function.ai_agent.arn,
+
+          # Lambdas para ETL de tickets de Telegram
+          aws_lambda_function.process_telegram_img.arn,
+          aws_lambda_function.load_receipt_to_bq.arn
         ]
       }
     ]
@@ -1173,6 +1260,28 @@ resource "aws_iam_policy" "step_function_start_policy" {
         aws_sfn_state_machine.bank_payments_etl_flow.arn
       ]
     }]
+  })
+}
+
+# Policy para que Lambda pueda invocar Step Functions EXPRESS sincrónicamente
+resource "aws_iam_policy" "lambda_step_function_sync_policy" {
+  name = "lambda_step_function_sync_policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "states:StartSyncExecution",
+          "states:StartExecution",
+          "states:DescribeExecution"
+        ],
+        Resource = [
+          aws_sfn_state_machine.telegram_receipt_etl_flow.arn
+        ]
+      }
+    ]
   })
 }
 
@@ -1498,6 +1607,87 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
         End      = true
+      }
+    }
+  })
+}
+
+# 8.4 Step Function EXPRESS para ETL de tickets de Telegram (síncrona)
+resource "aws_sfn_state_machine" "telegram_receipt_etl_flow" {
+  name     = "telegram-receipt-etl-flow"
+  role_arn = aws_iam_role.step_function_role.arn
+  type     = "EXPRESS"  # Express para ejecución síncrona
+
+  logging_configuration {
+    level                  = "ALL"
+    include_execution_data = true
+    log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
+  }
+
+  definition = jsonencode({
+    Comment = "ETL para procesar tickets de supermercado enviados por Telegram"
+    StartAt = "Extract Receipt with OCR"
+    States = {
+      # Step 1: Extraer datos del ticket con OCR (OpenAI Vision + TabScanner fallback)
+      "Extract Receipt with OCR" = {
+        Type     = "Task"
+        Resource = aws_lambda_function.process_telegram_img.arn
+        Parameters = {
+          "s3_key.$"       = "$.s3_key"
+          "s3_bucket.$"    = "$.s3_bucket"
+          "use_fallback.$" = "$.use_fallback"
+        }
+        ResultPath = "$.extraction_result"
+        Next       = "Load Receipt to BigQuery"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            ResultPath  = "$.error"
+            Next        = "Handle Error"
+          }
+        ]
+      }
+
+      # Step 2: Cargar datos en BigQuery
+      "Load Receipt to BigQuery" = {
+        Type     = "Task"
+        Resource = aws_lambda_function.load_receipt_to_bq.arn
+        Parameters = {
+          "extracted_data.$" = "$.extraction_result"
+          "s3_key.$"         = "$.s3_key"
+        }
+        ResultPath = "$.load_result"
+        Next       = "Format Success Response"
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            ResultPath  = "$.error"
+            Next        = "Handle Error"
+          }
+        ]
+      }
+
+      # Step 3: Formatear respuesta exitosa
+      "Format Success Response" = {
+        Type = "Pass"
+        Parameters = {
+          "success"           = true
+          "extracted_data.$"  = "$.extraction_result"
+          "rows_inserted.$"   = "$.load_result.rows_inserted"
+          "message"           = "Ticket procesado exitosamente"
+        }
+        End = true
+      }
+
+      # Manejo de errores
+      "Handle Error" = {
+        Type = "Pass"
+        Parameters = {
+          "success"       = false
+          "error_message.$" = "$.error.Cause"
+          "message"       = "Error procesando el ticket"
+        }
+        End = true
       }
     }
   })

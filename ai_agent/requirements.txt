@@ -3,3 +3,6 @@ openai
 requests
 google-cloud-bigquery
 google-auth
+pandas
+pyarrow
+db-dtypes

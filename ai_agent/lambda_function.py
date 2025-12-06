@@ -1,26 +1,41 @@
 import os
 import json
 import boto3
-from telegram import Bot, Update
+import base64
 import requests
+import pandas as pd
 import openai
 import time
+import uuid
+from datetime import datetime
 from decimal import Decimal
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
 # Configuración inicial
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 
+# S3 Configuration para imágenes de tickets
+S3_BUCKET_TICKETS = os.environ.get("S3_BUCKET_TICKETS", "etl-expenses-tickets")
+S3_PREFIX_TICKETS = os.environ.get("S3_PREFIX_TICKETS", "receipts/")
+
+# TabScanner API (fallback)
+TABSCANNER_API_KEY = os.environ.get("TABSCANNER_API_KEY", "")
+
+# BigQuery table para tickets de supermercado
+BQ_TABLE_SUPERMARKET = os.environ.get("BQ_TABLE_SUPERMARKET", "supermarket_receipts")
+
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 REGION = os.environ.get("AWS_REGION", "us-east-2")
 DDB_TABLE = os.environ.get("DDB_TABLE", "schema_cache")
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))  # 7 días
+
+# Step Function para ETL de tickets (Express - síncrona)
+RECEIPT_ETL_STATE_MACHINE = os.environ.get("RECEIPT_ETL_STATE_MACHINE", "")
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
@@ -45,6 +60,12 @@ TABLE_METADATA = {
                 "description": "Fecha del pago en formato texto. IMPORTANTE: Para filtrar por fecha usar PARSE_DATE('%d/%m/%Y', FECHA_PAGO)",
                 "example": "15/11/2024"
             },
+            "HORA_PAGO": {
+                "type": "STRING",
+                "format": "HH/mm",
+                "description": "Hora del pago en formato texto.",
+                "example": "12:02"
+            },
             "MONTO": {
                 "type": "STRING", 
                 "format": "número con decimales",
@@ -65,7 +86,13 @@ TABLE_METADATA = {
                 "type": "STRING",
                 "description": "Moneda de la transacción",
                 "example": "ARS"
+            },
+            "CUOTAS": {
+                "type": "INTEGER",
+                "description": "Cantidad de cuotas de la transacción",
+                "example": "3"
             }
+
         }
     },
     "mp_data": {
@@ -75,20 +102,40 @@ TABLE_METADATA = {
             "Incluye tanto pagos enviados como recibidos"
         ],
         "columns": {
-            "fecha": {
-                "type": "DATE",
+            "TRANSACTION_DATE": {
+                "type": "STRING",
                 "description": "Fecha de la transacción",
-                "example": "2024-11-15"
+                "example": "2025-02-12T17:55:15.000-03:00"
             },
-            "monto": {
-                "type": "FLOAT64",
+            "PAYMENT_METHOD_TYPE" : {
+                "type": "STRING",
+                "description": "Metodo de pago",
+                "example": "Tarjeta de crédito"
+            },
+            "PAYMENT_METHOD" : {
+                "type" : "string",
+                "descripcion" : "Emisor de tarjeta",
+                "example" : "American Express"
+            },
+            "TRANSACTION_TYPE" : {
+                "type" : "string",
+                "descripcion" : "Tipo de transaccion realizada",
+                "example" : "Devolución de dinero"
+            },
+            "TRANSACTION_AMOUNT": {
+                "type": "STRING",
                 "description": "Monto de la transacción",
                 "example": "2500.00"
             },
-            "descripcion": {
+            "STORE_NAME": {
                 "type": "STRING",
-                "description": "Descripción o concepto del pago",
-                "example": "Pago a comercio"
+                "description": "Nombre del destinatario de transferencia o comercio vendedor",
+                "example": "DIA_TIENDA_478"
+            },
+            "REPORT_DATE" : {
+                "type" : "string",
+                "descripcion" : "Fecha en la que se emitio el reporte semanal de movimientos de mercado pago",
+                "example" : "2024-10-14"
             }
         }
     },
@@ -99,25 +146,40 @@ TABLE_METADATA = {
             "Tiene detalle a nivel de producto individual"
         ],
         "columns": {
-            "fecha_compra": {
-                "type": "DATE",
+            "fecha": {
+                "type": "STRING",
                 "description": "Fecha de la compra",
-                "example": "2024-11-15"
+                "example": "22/01/25"
             },
             "producto": {
                 "type": "STRING",
                 "description": "Nombre del producto comprado",
                 "example": "LECHE ENTERA 1L"
             },
-            "precio": {
-                "type": "FLOAT64",
-                "description": "Precio del producto",
+            "precio_unit": {
+                "type": "STRING",
+                "description": "Precio por unidad de producto",
                 "example": "850.00"
             },
+            "monto_total" : {
+                "type" : "STRING",
+                "descripcion" : "Monto total gastado en el producto. Resultado de multiplicar cantidad * precio_unit",
+                "example" : "850.00"
+            },
             "cantidad": {
-                "type": "INT64",
-                "description": "Cantidad comprada",
-                "example": "2"
+                "type": "STRING",
+                "description": "Cantidad comprada del producto",
+                "example": "2.0"
+            },
+            "peso" : {
+                "type" : "STRING",
+                "descripcion" : "Cantidad comprada en peso (kg) del producto",
+                "example" : "0.68"
+            },
+            "categoria" : {
+                "type" : "STRING",
+                "descripcion" : "Categoria de producto",
+                "example" : "Frutas Y Verduras"
             }
         }
     },
@@ -130,12 +192,23 @@ TABLE_METADATA = {
         "columns": {
             "producto_id": {
                 "type": "STRING",
-                "description": "ID único del producto"
+                "description": "ID único del producto",
+                "example" : "11414"
             },
-            "categoria": {
+            "ean": {
                 "type": "STRING",
-                "description": "Categoría del producto",
-                "example": "LÁCTEOS"
+                "description": "Codigo del producto",
+                "example": "2505740010640"
+            },
+            "nombre_producto": {
+                "type" : "STRING",
+                "descripcion" : "Nombre del producto",
+                "example" : "PICADA ESPECIAL NOVILLITO"
+            },
+            "grupo_producto" : {
+                "type" : "STRING",
+                "descripcion" : "Agrupador de productos",
+                "example" : "picadaespecialnovillitoxkg"
             }
         }
     }
@@ -174,6 +247,490 @@ dynamo = boto3.resource("dynamodb", region_name=REGION)
 ddb_table = dynamo.Table(DDB_TABLE)
 glue_client = boto3.client("glue", region_name=REGION)
 secrets_client = boto3.client("secretsmanager", region_name=REGION)
+s3_client = boto3.client("s3", region_name=REGION)
+sfn_client = boto3.client("stepfunctions", region_name=REGION)
+
+# =============================================================================
+# PROCESAMIENTO DE IMÁGENES DE TICKETS
+# =============================================================================
+
+def download_telegram_photo(file_id: str) -> bytes:
+    """Descarga una foto de Telegram usando el file_id"""
+    try:
+        # Obtener información del archivo
+        file_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+        response = requests.get(file_info_url, timeout=10)
+        file_info = response.json()
+        
+        if not file_info.get("ok"):
+            raise Exception(f"Error obteniendo info del archivo: {file_info}")
+        
+        file_path = file_info["result"]["file_path"]
+        
+        # Descargar el archivo
+        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+        response = requests.get(download_url, timeout=30)
+        response.raise_for_status()
+        
+        print(f"✅ Foto descargada de Telegram: {len(response.content)} bytes")
+        return response.content
+        
+    except Exception as e:
+        print(f"❌ Error descargando foto de Telegram: {e}")
+        raise
+
+def upload_image_to_s3(image_bytes: bytes, original_filename: str = None) -> str:
+    """Sube una imagen a S3 y retorna la key"""
+    try:
+        # Generar nombre único
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        extension = ".jpg"  # Telegram envía JPG por defecto
+        
+        if original_filename and "." in original_filename:
+            extension = "." + original_filename.split(".")[-1]
+        
+        s3_key = f"{S3_PREFIX_TICKETS}{timestamp}_{unique_id}{extension}"
+        
+        # Subir a S3
+        s3_client.put_object(
+            Bucket=S3_BUCKET_TICKETS,
+            Key=s3_key,
+            Body=image_bytes,
+            ContentType="image/jpeg"
+        )
+        
+        print(f"✅ Imagen subida a S3: s3://{S3_BUCKET_TICKETS}/{s3_key}")
+        return s3_key
+        
+    except Exception as e:
+        print(f"❌ Error subiendo imagen a S3: {e}")
+        raise
+
+def get_image_from_s3(s3_key: str) -> bytes:
+    """Descarga una imagen de S3"""
+    try:
+        response = s3_client.get_object(Bucket=S3_BUCKET_TICKETS, Key=s3_key)
+        image_bytes = response["Body"].read()
+        print(f"✅ Imagen leída de S3: {len(image_bytes)} bytes")
+        return image_bytes
+    except Exception as e:
+        print(f"❌ Error leyendo imagen de S3: {e}")
+        raise
+
+def get_image_base64_from_s3(s3_key: str) -> str:
+    """Obtiene una imagen de S3 y la convierte a base64"""
+    image_bytes = get_image_from_s3(s3_key)
+    return base64.b64encode(image_bytes).decode("utf-8")
+
+def extract_receipt_with_openai(s3_key: str) -> dict:
+    """
+    Extrae datos de un ticket/recibo usando OpenAI Vision.
+    Retorna un diccionario con los datos extraídos.
+    """
+    try:
+        print(f"🤖 Extrayendo datos del ticket con OpenAI Vision...")
+        
+        # Obtener imagen en base64
+        image_base64 = get_image_base64_from_s3(s3_key)
+        
+        # Schema de extracción
+        extraction_prompt = """
+            Analiza esta imagen de un ticket/recibo de supermercado y extrae la siguiente información en formato JSON:
+
+            {
+                "merchant_name": "nombre del comercio/supermercado",
+                "merchant_address": "dirección del comercio (si está visible)",
+                "transaction_date": "fecha de la compra en formato YYYY-MM-DD",
+                "transaction_time": "hora de la compra en formato HH:MM",
+                "total_amount": número con el total de la compra,
+                "currency": "moneda (ARS, USD, etc.)",
+                "payment_method": "método de pago si está visible",
+                "line_items": [
+                    {
+                        "item_name": "nombre del producto",
+                        "item_quantity": número de unidades,
+                        "item_unit_price": precio unitario,
+                        "item_total_price": precio total del item
+                    }
+                ]
+            }
+
+            IMPORTANTE:
+            - Si algún campo no está visible o no se puede leer, usar null
+            - Los precios deben ser números (sin símbolos de moneda)
+            - La fecha debe estar en formato YYYY-MM-DD
+            - Incluir TODOS los items que puedas leer del ticket
+            - Responde SOLO con el JSON, sin explicaciones adicionales
+        """
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",  # gpt-4o-mini soporta vision
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": extraction_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=2000,
+            temperature=0.0
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Limpiar markdown si existe
+        if result_text.startswith("```"):
+            result_text = result_text.replace("```json", "").replace("```", "").strip()
+        
+        # Parsear JSON
+        extracted_data = json.loads(result_text)
+        extracted_data["extraction_method"] = "openai_vision"
+        extracted_data["s3_key"] = s3_key
+        
+        print(f"✅ Datos extraídos con OpenAI: {len(extracted_data.get('line_items', []))} items")
+        return extracted_data
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Error parseando JSON de OpenAI: {e}")
+        print(f"Respuesta raw: {result_text[:500]}")
+        raise
+    except Exception as e:
+        print(f"❌ Error en extracción con OpenAI: {e}")
+        raise
+
+def extract_receipt_with_tabscanner(s3_key: str) -> dict:
+    """
+    Extrae datos de un ticket usando TabScanner API (fallback).
+    """
+    if not TABSCANNER_API_KEY:
+        raise Exception("TABSCANNER_API_KEY no configurada")
+    
+    try:
+        print(f"🔄 Extrayendo datos del ticket con TabScanner (fallback)...")
+        
+        # Obtener imagen de S3
+        image_bytes = get_image_from_s3(s3_key)
+        
+        # Subir a TabScanner
+        process_endpoint = "https://api.tabscanner.com/api/2/process"
+        headers = {"apikey": TABSCANNER_API_KEY}
+        files = {"file": ("receipt.jpg", image_bytes, "image/jpeg")}
+        payload = {"documentType": "receipt"}
+        
+        response = requests.post(
+            process_endpoint, 
+            files=files, 
+            data=payload, 
+            headers=headers,
+            timeout=30
+        )
+        result = response.json()
+        
+        if result.get("status") != "pending" and result.get("status") != "done":
+            raise Exception(f"Error en TabScanner process: {result}")
+        
+        token = result.get("token")
+        print(f"📝 TabScanner token: {token}")
+        
+        # Esperar y obtener resultado (con retry)
+        result_endpoint = f"https://api.tabscanner.com/api/result/{token}"
+        max_retries = 10
+        
+        for i in range(max_retries):
+            time.sleep(2)  # Esperar 2 segundos entre intentos
+            response = requests.get(result_endpoint, headers=headers, timeout=30)
+            result = response.json()
+            
+            if result.get("status") == "done":
+                break
+            elif result.get("status") == "failed":
+                raise Exception(f"TabScanner falló: {result}")
+        
+        if result.get("status") != "done":
+            raise Exception("TabScanner timeout")
+        
+        # Convertir resultado de TabScanner a nuestro formato
+        ts_result = result.get("result", {})
+        
+        extracted_data = {
+            "merchant_name": ts_result.get("establishment"),
+            "merchant_address": ts_result.get("address"),
+            "transaction_date": ts_result.get("date"),
+            "transaction_time": ts_result.get("time"),
+            "total_amount": ts_result.get("total"),
+            "currency": ts_result.get("currency", "ARS"),
+            "payment_method": ts_result.get("paymentMethod"),
+            "line_items": [],
+            "extraction_method": "tabscanner",
+            "s3_key": s3_key
+        }
+        
+        # Convertir line items
+        for item in ts_result.get("lineItems", []):
+            extracted_data["line_items"].append({
+                "item_name": item.get("descClean") or item.get("desc"),
+                "item_quantity": item.get("qty", 1),
+                "item_unit_price": item.get("price"),
+                "item_total_price": item.get("lineTotal")
+            })
+        
+        print(f"✅ Datos extraídos con TabScanner: {len(extracted_data['line_items'])} items")
+        return extracted_data
+        
+    except Exception as e:
+        print(f"❌ Error en extracción con TabScanner: {e}")
+        raise
+
+def extract_receipt_data(s3_key: str, use_fallback: bool = True) -> dict:
+    """
+    Extrae datos de un ticket usando OpenAI Vision, con fallback a TabScanner.
+    """
+    try:
+        # Intentar con OpenAI primero
+        return extract_receipt_with_openai(s3_key)
+    except Exception as openai_error:
+        print(f"⚠️ OpenAI falló: {openai_error}")
+        
+        if use_fallback and TABSCANNER_API_KEY:
+            print("🔄 Intentando con TabScanner...")
+            return extract_receipt_with_tabscanner(s3_key)
+        else:
+            raise openai_error
+
+def receipt_data_to_dataframe(extracted_data: dict) -> pd.DataFrame:
+    """
+    Convierte los datos extraídos del ticket a un DataFrame.
+    """
+    rows = []
+    
+    # Datos comunes del ticket
+    common_data = {
+        "merchant_name": extracted_data.get("merchant_name"),
+        "merchant_address": extracted_data.get("merchant_address"),
+        "transaction_date": extracted_data.get("transaction_date"),
+        "transaction_time": extracted_data.get("transaction_time"),
+        "total_amount": extracted_data.get("total_amount"),
+        "currency": extracted_data.get("currency", "ARS"),
+        "payment_method": extracted_data.get("payment_method"),
+        "extraction_method": extracted_data.get("extraction_method"),
+        "s3_key": extracted_data.get("s3_key"),
+        "processed_at": datetime.now().isoformat()
+    }
+    
+    # Crear una fila por cada item
+    line_items = extracted_data.get("line_items", [])
+    
+    if line_items:
+        for item in line_items:
+            row = common_data.copy()
+            row["item_name"] = item.get("item_name")
+            row["item_quantity"] = item.get("item_quantity")
+            row["item_unit_price"] = item.get("item_unit_price")
+            row["item_total_price"] = item.get("item_total_price")
+            rows.append(row)
+    else:
+        # Si no hay items, crear una fila con los datos generales
+        rows.append(common_data)
+    
+    df = pd.DataFrame(rows)
+    print(f"📊 DataFrame creado: {len(df)} filas, {len(df.columns)} columnas")
+    return df
+
+def load_receipt_to_bigquery(df: pd.DataFrame, bq_client) -> int:
+    """
+    Carga el DataFrame del ticket en BigQuery.
+    Retorna el número de filas insertadas.
+    """
+    try:
+        table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{BQ_TABLE_SUPERMARKET}"
+        
+        # Configurar el job
+        job_config = bigquery.LoadJobConfig(
+            write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            schema_update_options=[
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+            ]
+        )
+        
+        # Cargar datos
+        job = bq_client.load_table_from_dataframe(
+            df, 
+            table_id, 
+            job_config=job_config
+        )
+        job.result()  # Esperar a que termine
+        
+        print(f"✅ Datos cargados en BigQuery: {table_id} ({len(df)} filas)")
+        return len(df)
+        
+    except Exception as e:
+        print(f"❌ Error cargando datos en BigQuery: {e}")
+        raise
+
+def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
+    """
+    Formatea la respuesta para enviar al usuario por Telegram.
+    """
+    merchant = extracted_data.get("merchant_name", "Comercio desconocido")
+    date = extracted_data.get("transaction_date", "Fecha desconocida")
+    total = extracted_data.get("total_amount")
+    items = extracted_data.get("line_items", [])
+    method = extracted_data.get("extraction_method", "desconocido")
+    
+    # Formatear total
+    if total:
+        total_str = f"${total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    else:
+        total_str = "No detectado"
+    
+    response = f"""
+        ✅ *Ticket procesado exitosamente!*
+
+        🏪 *Comercio:* {merchant}
+        📅 *Fecha:* {date}
+        💰 *Total:* {total_str}
+        📦 *Items detectados:* {len(items)}
+
+        *Productos extraídos:*
+    """
+    
+    # Agregar primeros 10 items
+    for i, item in enumerate(items[:10]):
+        name = item.get("item_name", "?")
+        qty = item.get("item_quantity", 1)
+        price = item.get("item_total_price") or item.get("item_unit_price") or 0
+        price_str = f"${price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if price else "?"
+        response += f"  • {name} x{qty} - {price_str}\n"
+    
+    if len(items) > 10:
+        response += f"  _... y {len(items) - 10} productos más_\n"
+    
+    response += f"""
+        📊 *Datos cargados:* {rows_inserted} filas en BigQuery
+        🗄️ *Tabla:* `{BQ_TABLE_SUPERMARKET}`
+        🔍 *Método:* {method}
+    """
+    
+    return response
+
+def invoke_receipt_etl_step_function(sfn_client, s3_key: str, use_fallback: bool = True) -> dict:
+    """
+    Invoca la Step Function EXPRESS de forma síncrona para procesar el ticket.
+    
+    Args:
+        s3_key: La key del archivo en S3
+        use_fallback: Si usar TabScanner como fallback si OpenAI falla
+    
+    Returns:
+        Diccionario con el resultado de la ejecución
+    """
+    try:
+        if not RECEIPT_ETL_STATE_MACHINE:
+            raise Exception("RECEIPT_ETL_STATE_MACHINE no está configurada")
+        
+        # Input para la Step Function
+        sfn_input = {
+            "s3_key": s3_key,
+            "s3_bucket": S3_BUCKET_TICKETS,
+            "use_fallback": use_fallback
+        }
+        
+        # Generar nombre único para la ejecución
+        execution_name = f"receipt-{datetime.now().strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:8]}"
+        
+        print(f"🚀 Invocando Step Function: {RECEIPT_ETL_STATE_MACHINE}")
+        print(f"📝 Input: {json.dumps(sfn_input)}")
+        
+        # Invocar Step Function EXPRESS de forma síncrona
+        response = sfn_client.start_sync_execution(
+            stateMachineArn=RECEIPT_ETL_STATE_MACHINE,
+            name=execution_name,
+            input=json.dumps(sfn_input)
+        )
+        
+        # Procesar resultado
+        status = response.get("status")
+        
+        if status == "SUCCEEDED":
+            output = json.loads(response.get("output", "{}"))
+            print(f"✅ Step Function completada exitosamente")
+            return output
+        else:
+            error = response.get("error", "Unknown error")
+            cause = response.get("cause", "No additional details")
+            print(f"❌ Step Function falló: {status} - {error}: {cause}")
+            raise Exception(f"ETL falló: {error} - {cause}")
+            
+    except Exception as e:
+        print(f"❌ Error invocando Step Function: {e}")
+        raise
+
+def format_step_function_response(sfn_result: dict) -> str:
+    """
+    Formatea el resultado de la Step Function para enviar al usuario por Telegram.
+    """
+    if not sfn_result.get("success", False):
+        error_msg = sfn_result.get("error_message", "Error desconocido")
+        return f"❌ Error procesando el ticket:\n{error_msg}"
+    
+    extracted_data = sfn_result.get("extracted_data", {})
+    rows_inserted = sfn_result.get("rows_inserted", 0)
+    
+    return format_receipt_response(extracted_data, rows_inserted)
+
+def process_telegram_photo(sfn_client, message: dict, bq_client) -> str:
+    """
+    Procesa una foto enviada por Telegram:
+    1. Descarga la foto
+    2. Sube a S3
+    3. Extrae datos con OpenAI/TabScanner
+    4. Carga en BigQuery
+    5. Retorna mensaje de respuesta
+    """
+    try:
+        # Obtener el file_id de la foto (la de mayor resolución)
+        photos = message.get("photo", [])
+        if not photos:
+            return "❌ No se encontró ninguna foto en el mensaje."
+        
+        # Telegram envía varias resoluciones, tomar la más grande
+        photo = max(photos, key=lambda x: x.get("file_size", 0))
+        file_id = photo.get("file_id")
+        
+        if not file_id:
+            return "❌ No se pudo obtener el ID de la foto."
+        
+        print(f"📷 Procesando foto: {file_id}")
+        
+        # 1. Descargar foto de Telegram
+        image_bytes = download_telegram_photo(file_id)
+
+         # 2. Subir a S3
+        s3_key = upload_image_to_s3(image_bytes)
+        
+        # 3. Invocar Step Function para ejecutar el ETL completo
+        # La Step Function hace: OCR (OpenAI/TabScanner) + Carga a BigQuery
+        sfn_result = invoke_receipt_etl_step_function(sfn_client, s3_key, use_fallback=True)
+        
+        # 4. Formatear respuesta basada en el resultado de la Step Function
+        response = format_step_function_response(sfn_result)        
+        
+        return response
+        
+    except Exception as e:
+        print(f"❌ Error procesando foto: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ Error procesando el ticket: {str(e)}"
 
 def get_bigquery_client():
     """Inicializa cliente de BigQuery con credenciales de Secrets Manager"""
@@ -306,7 +863,8 @@ def generate_sql_with_openai2(question, bq_client):
             dataset=BQ_DATASET_PROD
         )
 
-        system_prompt = """Eres un experto en SQL para Google BigQuery (Standard SQL).
+        system_prompt = """
+            Eres un experto en SQL para Google BigQuery (Standard SQL).
             Tu trabajo es convertir preguntas en lenguaje natural a consultas SQL precisas.
 
             REGLAS CRÍTICAS:
@@ -589,41 +1147,108 @@ def lambda_handler(event, context):
         bq_client = get_bigquery_client()
         
         data = json.loads(event["body"])
-        text = data["message"]["text"]
-        chat_id = data["message"]["chat"]["id"]
-
-        print(f'💬 Mensaje input: {text}')
-        print(f'👤 Chat_id: {chat_id}')
-
-        # Manejar comando /start
-        if text == "/start":
-            welcome_message = """
-                🤖 *Bot de Consultas de Datos con IA*
-
-                ¡Hola! Soy tu asistente inteligente para consultar datos de transacciones y gastos.
-
-                🎯 *Características:*
-                • IA real con OpenAI GPT
-                • Datos en BigQuery
-                • Generación dinámica de SQL
-                • Respuestas inteligentes y precisas
-
-                💡 *Puedes preguntarme:*
-                • "¿Cuánto gasté este mes?"
-                • "Mostrame las transacciones de ayer"
-                • "¿Cuál fue el gasto más alto?"
-                • "Gastos por categoría"
-                • "Transacciones pendientes"
-                • "Resumen de gastos de la semana"
-                • "¿Cuánto gasté en comida este año?"
-                • "Productos más comprados en Carrefour"
-
-                ¡Escribí tu pregunta y la IA generará la consulta SQL automáticamente!
-            """
-            send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
+        message = data.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        
+        if not chat_id:
+            print("⚠️ No se encontró chat_id en el mensaje")
             return {"statusCode": 200}
 
-        # Procesar pregunta
+        print(f'👤 Chat_id: {chat_id}')
+        
+        # =========================================
+        # DETECTAR SI ES UNA FOTO O TEXTO
+        # =========================================
+        
+        # Verificar si el mensaje contiene una foto
+        if "photo" in message:
+            print("📷 Mensaje con foto detectado")
+            
+            # Enviar mensaje de "procesando"
+            send_telegram_message(
+                chat_id, 
+                "📷 *Recibí tu ticket!*\n\n🔄 Procesando imagen...\nEsto puede tomar unos segundos.", 
+                TELEGRAM_BOT_TOKEN
+            )
+            
+            # Procesar la foto
+            response_text = process_telegram_photo(sfn_client, message, bq_client)
+            send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
+        
+        # Si no es foto, debe ser texto
+        text = message.get("text", "")
+        
+        if not text:
+            send_telegram_message(
+                chat_id, 
+                "❓ No entendí tu mensaje. Podés:\n• Enviarme una *pregunta* sobre tus gastos\n• Enviarme una *foto de un ticket* para procesarlo", 
+                TELEGRAM_BOT_TOKEN
+            )
+            return {"statusCode": 200}
+
+        print(f'💬 Mensaje input: {text}')
+
+        # =========================================
+        # MANEJAR COMANDOS
+        # =========================================
+        
+        if text == "/start":
+            welcome_message = """
+            🤖 *Bot de Consultas de Datos con IA*
+
+            ¡Hola! Soy tu asistente inteligente para gestionar tus gastos.
+
+            🎯 *Características:*
+            • Consultas de datos con lenguaje natural
+            • Procesamiento de tickets de supermercado
+            • Datos almacenados en BigQuery
+
+            💬 *Puedes preguntarme:*
+            • "¿Cuánto gasté este mes?"
+            • "Mostrame los gastos por comercio"
+            • "¿Cuál fue mi mayor gasto?"
+            • "Gastos de los últimos 3 meses"
+
+            📷 *También podés enviarme:*
+            • Fotos de tickets de supermercado
+            • Los proceso automáticamente con IA
+            • Los datos se guardan en BigQuery
+
+            ¡Escribí tu pregunta o enviame una foto de un ticket!
+            """
+
+            send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
+        
+        if text == "/help":
+            help_message = """
+                📚 *Ayuda del Bot*
+
+                *Consultas de texto:*
+                Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
+
+                *Ejemplos:*
+                • ¿Cuánto gasté este mes?
+                • Gastos por comercio
+                • Mis mayores gastos
+                • ¿Cuánto gasté en Carrefour?
+
+                *Fotos de tickets:*
+                Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
+
+                *Comandos:*
+                • /start - Mensaje de bienvenida
+                • /help - Esta ayuda
+            """
+
+            send_telegram_message(chat_id, help_message, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
+
+        # =========================================
+        # PROCESAR PREGUNTA DE TEXTO
+        # =========================================
+        
         sql, response_text = handle_message(text, bq_client)
         
         # Enviar respuesta
@@ -648,12 +1273,13 @@ def lambda_handler(event, context):
         # Intentar enviar mensaje de error al usuario
         try:
             data = json.loads(event["body"])
-            chat_id = data["message"]["chat"]["id"]
-            send_telegram_message(
-                chat_id, 
-                "❌ Ocurrió un error al procesar tu mensaje. Por favor, intentá de nuevo.", 
-                TELEGRAM_BOT_TOKEN
-            )
+            chat_id = data.get("message", {}).get("chat", {}).get("id")
+            if chat_id:
+                send_telegram_message(
+                    chat_id, 
+                    "❌ Ocurrió un error al procesar tu mensaje. Por favor, intentá de nuevo.", 
+                    TELEGRAM_BOT_TOKEN
+                )
         except Exception as nested_e:
             print(f"[ERROR] No se pudo enviar mensaje de error: {str(nested_e)}")
 

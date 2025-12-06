@@ -657,7 +657,7 @@ def lambda_handler(event, context):
                 # Log del historial completo
                 history_records = history.get('history', [])
 
-                print('🔍 DEBUG - history_records completos: ', json.dumps(history_records, indent=2, default=str))
+                # print('🔍 DEBUG - history_records completos: ', json.dumps(history_records, indent=2, default=str))
                 print(f"📊 Se obtuvieron {len(history_records)} records del historial")
                 
                 if len(history_records) == 0:
@@ -695,6 +695,7 @@ def lambda_handler(event, context):
                         print(f"📧 Record {record_history_id} tiene {len(record['messagesAdded'])} mensajes agregados")
                         for m in record['messagesAdded']:
                             mail_msg_id = m['message']['id']
+                            
                             processed_in_this_record.add(mail_msg_id)
                             
                             # DEBUGGING: Obtener información completa del mensaje para logging
@@ -924,9 +925,16 @@ def lambda_handler(event, context):
                             # DEBUGGING: Obtener información completa del mensaje para logging
                             print(f"🔍 DEBUG - Analizando mensaje {mail_msg_id} (campo 'messages')")
                             
-                            msg = gmail_service.users().messages().get(
-                                userId="me", id=mail_msg_id, format="metadata"
-                            ).execute()
+                            try:
+                                msg = gmail_service.users().messages().get(
+                                    userId="me", id=mail_msg_id, format="metadata"
+                                ).execute()
+                            except Exception as e:
+                                if "404" in str(e) or "notFound" in str(e):
+                                    print(f"⚠️ Mensaje {mail_msg_id} ya no existe (fue eliminado). Se omite pero NO es un error de historyId.")
+                                    continue
+                                else:
+                                    raise
 
                             labels = msg.get("labelIds", [])
                             labels_names = [label_map.get(lid, lid) for lid in labels]
@@ -1036,6 +1044,8 @@ def lambda_handler(event, context):
             
             except Exception as e:
                 error_str = str(e)
+                print('error_str: ', error_str)
+                #  and "users.history" in error_str
                 if '404' in error_str or 'notFound' in error_str or 'not found' in error_str.lower():
                     print(f"⚠️ HistoryId {last_history_id} no encontrado (muy antiguo o inválido)")
                     print(f"⚠️ No se procesará este mensaje. Terminando ejecución.")
