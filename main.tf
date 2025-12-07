@@ -1257,8 +1257,7 @@ resource "aws_iam_policy" "step_function_start_policy" {
       Resource = [
         aws_sfn_state_machine.pdf_etl_flow.arn,
         aws_sfn_state_machine.mp_report_etl_flow.arn,
-        aws_sfn_state_machine.bank_payments_etl_flow.arn,
-        aws_sfn_state_machine.telegram_receipt_etl_flow.arn
+        aws_sfn_state_machine.bank_payments_etl_flow.arn
       ]
     }]
   })
@@ -1284,6 +1283,11 @@ resource "aws_iam_policy" "lambda_step_function_sync_policy" {
       }
     ]
   })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_step_function_sync_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_step_function_sync_policy.arn
 }
 
 resource "aws_iam_policy" "step_function_glue_policy" {
