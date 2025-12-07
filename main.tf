@@ -1257,7 +1257,8 @@ resource "aws_iam_policy" "step_function_start_policy" {
       Resource = [
         aws_sfn_state_machine.pdf_etl_flow.arn,
         aws_sfn_state_machine.mp_report_etl_flow.arn,
-        aws_sfn_state_machine.bank_payments_etl_flow.arn
+        aws_sfn_state_machine.bank_payments_etl_flow.arn,
+        aws_sfn_state_machine.telegram_receipt_etl_flow.arn
       ]
     }]
   })
