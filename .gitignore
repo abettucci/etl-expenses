@@ -16,6 +16,7 @@
 /extract_data_gmail/reset_history_id.py
 /extract_data_gmail/purge_pubsub_messages.py
 /extract_data_gmail/purge_pubsub_messages.sh
+/extract_data_gmail/test_token.py
 /ai_agent/lambda_agent_tools.py
 /ai_agent/lambda_glue_cache.py
 /ai_agent/lambda_rag_faiss.py

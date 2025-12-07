@@ -196,7 +196,7 @@ jobs:
 
           terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_lambda_policy || true
           terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_start_policy || true
-          # terraform import aws_iam_policy.lambda_step_function_sync_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_step_function_sync_policy || true
+          terraform import aws_iam_policy.lambda_step_function_sync_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_step_function_sync_policy || true
           terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_glue_policy || true
           terraform import aws_iam_policy.lambda_ecr_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_ecr_access || true
           terraform import aws_iam_policy.lambda_bedrock_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_bedrock_access || true
@@ -225,7 +225,7 @@ jobs:
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf || true
           terraform import aws_lambda_function.extract_data_gmail extract_data_gmail || true
           terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
-          # terraform import aws_lambda_function.process_telegram_img process_telegram_img || true
+          terraform import aws_lambda_function.process_telegram_img process_telegram_img || true
           terraform import aws_lambda_function.load_receipt_to_bq load_receipt_to_bq || true
 
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
@@ -236,7 +236,7 @@ jobs:
           terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
           terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
-          # terraform import aws_sfn_state_machine.telegram_receipt_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:telegram-receipt-etl-flow || true
+          terraform import aws_sfn_state_machine.telegram_receipt_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:telegram-receipt-etl-flow || true
 
           terraform import aws_glue_catalog_database.etl_database "$TF_VAR_AWS_ACCOUNT_ID:etl_database" || true
           terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler || true
