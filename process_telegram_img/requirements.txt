@@ -2,3 +2,7 @@ openai
 requests
 boto3
 pandas
+google-cloud-bigquery
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
