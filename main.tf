@@ -718,10 +718,10 @@ resource "aws_lambda_function" "process_telegram_img" {
 
   environment {
     variables = {
-      OPENAI_API_KEY     = var.OPENAI_API_KEY
-      TABSCANNER_API_KEY = var.TABSCANNER_API_KEY
-      S3_BUCKET_TICKETS  = aws_s3_bucket.telegram_receipts.bucket,
-      OPENAI_API_KEY = var.OPENAI_API_KEY
+      GCP_PROJECT_ID = var.GCP_PROJECT_ID,
+      OPENAI_API_KEY     = var.OPENAI_API_KEY,
+      TABSCANNER_API_KEY = var.TABSCANNER_API_KEY,
+      S3_BUCKET_TICKETS  = aws_s3_bucket.telegram_receipts.bucket
     }
   }
 }
