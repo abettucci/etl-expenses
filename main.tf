@@ -518,6 +518,25 @@ resource "aws_dynamodb_table" "schema_cache" {
   }
 }
 
+resource "aws_dynamodb_table" "telegram_processed_messages" {
+  name         = "telegram_processed_messages"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "message_id"
+
+  attribute {
+    name = "message_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "telegram-processed-messages"
+  }
+}
 
 # 4. EventBridge rule (cada domingo 00:00 UTC)
 resource "aws_cloudwatch_event_rule" "weekly" {

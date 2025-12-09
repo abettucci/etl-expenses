@@ -254,6 +254,32 @@ sfn_client = boto3.client("stepfunctions", region_name=REGION)
 # PROCESAMIENTO DE IMÁGENES DE TICKETS
 # =============================================================================
 
+DDB_PROCESSED_MESSAGES_TABLE = os.environ.get("DDB_PROCESSED_MESSAGES_TABLE", "telegram_processed_messages")
+
+def is_message_already_processed(message_id: int) -> bool:
+    """Verifica si un mensaje de Telegram ya fue procesado (control de idempotencia)"""
+    try:
+        processed_table = dynamo.Table(DDB_PROCESSED_MESSAGES_TABLE)
+        response = processed_table.get_item(Key={"message_id": str(message_id)})
+        return "Item" in response
+    except Exception as e:
+        print(f"⚠️ Error verificando idempotencia: {e}")
+        return False  # En caso de error, procesar de todos modos
+
+def mark_message_as_processed(message_id: int) -> None:
+    """Marca un mensaje de Telegram como procesado"""
+    try:
+        processed_table = dynamo.Table(DDB_PROCESSED_MESSAGES_TABLE)
+        processed_table.put_item(
+            Item={
+                "message_id": str(message_id),
+                "processed_at": int(time.time()),
+                "ttl": int(time.time()) + 86400 * 7  # TTL de 7 días
+            }
+        )
+    except Exception as e:
+        print(f"⚠️ Error marcando mensaje como procesado: {e}")
+        
 def download_telegram_photo(file_id: str) -> bytes:
     """Descarga una foto de Telegram usando el file_id"""
     try:
@@ -340,7 +366,6 @@ def extract_receipt_with_openai(s3_key: str) -> dict:
 
             {
                 "merchant_name": "nombre del comercio/supermercado",
-                "merchant_address": "dirección del comercio (si está visible)",
                 "transaction_date": "fecha de la compra en formato YYYY-MM-DD",
                 "transaction_time": "hora de la compra en formato HH:MM",
                 "total_amount": número con el total de la compra,
@@ -463,7 +488,6 @@ def extract_receipt_with_tabscanner(s3_key: str) -> dict:
         
         extracted_data = {
             "merchant_name": ts_result.get("establishment"),
-            "merchant_address": ts_result.get("address"),
             "transaction_date": ts_result.get("date"),
             "transaction_time": ts_result.get("time"),
             "total_amount": ts_result.get("total"),
@@ -515,7 +539,6 @@ def receipt_data_to_dataframe(extracted_data: dict) -> pd.DataFrame:
     # Datos comunes del ticket
     common_data = {
         "merchant_name": extracted_data.get("merchant_name"),
-        "merchant_address": extracted_data.get("merchant_address"),
         "transaction_date": extracted_data.get("transaction_date"),
         "transaction_time": extracted_data.get("transaction_time"),
         "total_amount": extracted_data.get("total_amount"),
@@ -584,7 +607,6 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
     date = extracted_data.get("transaction_date", "Fecha desconocida")
     total = extracted_data.get("total_amount")
     items = extracted_data.get("line_items", [])
-    method = extracted_data.get("extraction_method", "desconocido")
     
     # Formatear total
     if total:
@@ -613,12 +635,6 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
     
     if len(items) > 10:
         response += f"  _... y {len(items) - 10} productos más_\n"
-    
-    response += f"""
-        📊 *Datos cargados:* {rows_inserted} filas en BigQuery
-        🗄️ *Tabla:* `{BQ_TABLE_SUPERMARKET}`
-        🔍 *Método:* {method}
-    """
     
     return response
 
@@ -1167,8 +1183,18 @@ def lambda_handler(event, context):
         # Verificar si el mensaje contiene una foto
         if "photo" in message:
             print("📷 Mensaje con foto detectado")
+
+            # Control de idempotencia: verificar si ya procesamos este mensaje
+            telegram_message_id = message.get("message_id")
+            if telegram_message_id and is_message_already_processed(telegram_message_id):
+                print(f"⚠️ Mensaje {telegram_message_id} ya fue procesado, ignorando duplicado")
+                return {"statusCode": 200}
             
-            # Enviar mensaje de "procesando"
+            # Marcar como procesado ANTES de procesar (para evitar race conditions)
+            if telegram_message_id:
+                mark_message_as_processed(telegram_message_id)
+            
+            # Enviar mensaje de "procesando" (solo una vez)            
             send_telegram_message(
                 chat_id, 
                 "📷 *Recibí tu ticket!*\n\n🔄 Procesando imagen...\nEsto puede tomar unos segundos.", 
