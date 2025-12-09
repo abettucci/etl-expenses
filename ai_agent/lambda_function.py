@@ -279,7 +279,222 @@ def mark_message_as_processed(message_id: int) -> None:
         )
     except Exception as e:
         print(f"⚠️ Error marcando mensaje como procesado: {e}")
+
+# =============================================================================
+# SISTEMA DE TICKETS MULTI-FOTO
+# =============================================================================
+# Permite procesar tickets largos que requieren múltiples fotos.
+# Detecta si el ticket está completo buscando indicadores de "FINAL" o "TOTAL".
+
+DDB_PENDING_TICKETS_TABLE = os.environ.get("DDB_PENDING_TICKETS_TABLE", "telegram_pending_tickets")
+MULTI_PHOTO_TIMEOUT_SECONDS = 120  # 2 minutos para esperar más fotos
+
+# Indicadores de que el ticket está completo (fin del ticket)
+TICKET_END_INDICATORS = [
+    "TOTAL",
+    "TOTAL:",
+    "TOT.",
+    "SUBTOTAL",
+    "IVA CONTENIDO",
+    "GRACIAS POR SU COMPRA",
+    "VUELTO",
+    "SU VUELTO",
+    "AHORRO",
+    "TOT.AHORRO",
+    "C.A.E",
+    "CAE:",
+    "CODIGO QR",
+    "www.",
+    "ATENCION TELEFONICA"
+]
+
+def get_pending_ticket(chat_id: int) -> dict:
+    """Obtiene un ticket pendiente (incompleto) para un chat_id"""
+    try:
+        pending_table = dynamo.Table(DDB_PENDING_TICKETS_TABLE)
+        response = pending_table.get_item(Key={"chat_id": str(chat_id)})
+        item = response.get("Item")
         
+        if not item:
+            return None
+        
+        # Verificar si expiró (timeout)
+        created_at = float(item.get("created_at", 0))
+        if time.time() - created_at > MULTI_PHOTO_TIMEOUT_SECONDS:
+            print(f"⏰ Ticket pendiente expirado para chat {chat_id}, eliminando...")
+            delete_pending_ticket(chat_id)
+            return None
+        
+        return item
+    except Exception as e:
+        print(f"⚠️ Error obteniendo ticket pendiente: {e}")
+        return None
+
+def save_pending_ticket(chat_id: int, partial_data: dict, s3_keys: list, photo_count: int) -> None:
+    """Guarda un ticket pendiente (incompleto) para un chat_id"""
+    try:
+        pending_table = dynamo.Table(DDB_PENDING_TICKETS_TABLE)
+        pending_table.put_item(
+            Item={
+                "chat_id": str(chat_id),
+                "partial_data": json.dumps(partial_data),
+                "s3_keys": s3_keys,
+                "photo_count": photo_count,
+                "created_at": Decimal(str(time.time())),
+                "ttl": int(time.time()) + 300  # TTL de 5 minutos
+            }
+        )
+        print(f"💾 Ticket pendiente guardado para chat {chat_id} ({photo_count} fotos)")
+    except Exception as e:
+        print(f"⚠️ Error guardando ticket pendiente: {e}")
+
+def delete_pending_ticket(chat_id: int) -> None:
+    """Elimina un ticket pendiente"""
+    try:
+        pending_table = dynamo.Table(DDB_PENDING_TICKETS_TABLE)
+        pending_table.delete_item(Key={"chat_id": str(chat_id)})
+        print(f"🗑️ Ticket pendiente eliminado para chat {chat_id}")
+    except Exception as e:
+        print(f"⚠️ Error eliminando ticket pendiente: {e}")
+
+def check_ticket_is_complete(s3_key: str) -> tuple:
+    """
+    Analiza una imagen para verificar si contiene indicadores de fin de ticket.
+    Retorna (is_complete: bool, extracted_data: dict)
+    """
+    try:
+        print(f"🔍 Verificando si el ticket está completo...")
+        
+        image_base64 = get_image_base64_from_s3(s3_key)
+        
+        # Prompt para verificar si es el final del ticket
+        check_prompt = """Analiza esta imagen de un ticket/recibo y responde en formato JSON:
+
+{
+    "is_complete": true/false,
+    "has_total": true/false,
+    "detected_indicators": ["lista de indicadores encontrados como TOTAL, CAE, etc"],
+    "partial_data": {
+        "merchant_name": "nombre del comercio si es visible",
+        "transaction_date": "fecha en formato YYYY-MM-DD si es visible",
+        "transaction_time": "hora en formato HH:MM si es visible",
+        "total_amount": número del total si está visible (null si no),
+        "currency": "ARS",
+        "line_items": [
+            {
+                "item_name": "nombre del producto",
+                "item_quantity": número,
+                "item_unit_price": precio unitario,
+                "item_total_price": precio total
+            }
+        ]
+    }
+}
+
+CRITERIOS PARA is_complete=true:
+- Contiene la palabra "TOTAL" con un monto final
+- Contiene "C.A.E" o "CAE:" (código de autorización electrónica)
+- Contiene "GRACIAS POR SU COMPRA" o similar
+- Contiene código QR o información fiscal al final
+- Contiene "IVA CONTENIDO"
+- Contiene información de atención al cliente (teléfono, web)
+
+Si solo ves productos sin total final, is_complete=false.
+Responde SOLO con el JSON."""
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": check_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=2000,
+            temperature=0.0
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Limpiar markdown
+        if result_text.startswith(""):
+            result_text = result_text.replace("json", "").replace("```", "").strip()
+        
+        result = json.loads(result_text)
+        
+        is_complete = result.get("is_complete", False)
+        partial_data = result.get("partial_data", {})
+        detected_indicators = result.get("detected_indicators", [])
+        
+        print(f"📋 Ticket completo: {is_complete}")
+        print(f"📋 Indicadores detectados: {detected_indicators}")
+        print(f"📋 Items extraídos: {len(partial_data.get('line_items', []))}")
+        
+        return is_complete, partial_data
+        
+    except Exception as e:
+        print(f"❌ Error verificando completitud del ticket: {e}")
+        # En caso de error, asumir que está completo para no bloquear
+        return True, {}
+
+def merge_ticket_data(data_parts: list) -> dict:
+    """
+    Fusiona datos de múltiples partes de un ticket en uno solo.
+    """
+    if not data_parts:
+        return {}
+    
+    if len(data_parts) == 1:
+        return data_parts[0]
+    
+    # Tomar datos generales de la primera parte (nombre comercio, fecha, etc.)
+    merged = {
+        "merchant_name": None,
+        "transaction_date": None,
+        "transaction_time": None,
+        "total_amount": None,
+        "currency": "ARS",
+        "payment_method": None,
+        "line_items": [],
+        "extraction_method": "openai_vision_multi"
+    }
+    
+    # Buscar merchant_name y fecha en las primeras partes
+    for part in data_parts:
+        if not merged["merchant_name"] and part.get("merchant_name"):
+            merged["merchant_name"] = part["merchant_name"]
+        if not merged["transaction_date"] and part.get("transaction_date"):
+            merged["transaction_date"] = part["transaction_date"]
+        if not merged["transaction_time"] and part.get("transaction_time"):
+            merged["transaction_time"] = part["transaction_time"]
+        if not merged["payment_method"] and part.get("payment_method"):
+            merged["payment_method"] = part["payment_method"]
+    
+    # El total debería estar en la última parte
+    for part in reversed(data_parts):
+        if part.get("total_amount"):
+            merged["total_amount"] = part["total_amount"]
+            break
+    
+    # Concatenar todos los line_items
+    for part in data_parts:
+        items = part.get("line_items", [])
+        if items:
+            merged["line_items"].extend(items)
+    
+    print(f"🔗 Ticket fusionado: {len(merged['line_items'])} items de {len(data_parts)} fotos")
+    
+    return merged
+
 def download_telegram_photo(file_id: str) -> bytes:
     """Descarga una foto de Telegram usando el file_id"""
     try:
@@ -703,50 +918,143 @@ def format_step_function_response(sfn_result: dict) -> str:
     
     return format_receipt_response(extracted_data, rows_inserted)
 
-def process_telegram_photo(sfn_client, message: dict, bq_client) -> str:
+def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
     """
-    Procesa una foto enviada por Telegram:
-    1. Descarga la foto
-    2. Sube a S3
-    3. Extrae datos con OpenAI/TabScanner
-    4. Carga en BigQuery
-    5. Retorna mensaje de respuesta
+    Procesa una foto enviada por Telegram con soporte para tickets multi-foto.
+    
+    Flujo:
+    1. Descarga la foto de Telegram y sube a S3
+    2. Verifica si hay un ticket pendiente para este chat
+    3. Analiza si el ticket está completo (busca TOTAL, CAE, etc.)
+    4. Si está incompleto, guarda en DynamoDB y espera más fotos
+    5. Si está completo, procesa todo y carga a BigQuery
+    
+    Retorna: (response_text, should_send_message)
+    - should_send_message: False si estamos esperando más fotos
     """
     try:
         # Obtener el file_id de la foto (la de mayor resolución)
         photos = message.get("photo", [])
         if not photos:
-            return "❌ No se encontró ninguna foto en el mensaje."
+            return "❌ No se encontró ninguna foto en el mensaje.", True
         
         # Telegram envía varias resoluciones, tomar la más grande
         photo = max(photos, key=lambda x: x.get("file_size", 0))
         file_id = photo.get("file_id")
         
         if not file_id:
-            return "❌ No se pudo obtener el ID de la foto."
+            return "❌ No se pudo obtener el ID de la foto.", True
         
         print(f"📷 Procesando foto: {file_id}")
         
-        # 1. Descargar foto de Telegram
+        # 1. Descargar foto de Telegram y subir a S3
         image_bytes = download_telegram_photo(file_id)
-
-         # 2. Subir a S3
         s3_key = upload_image_to_s3(image_bytes)
         
-        # 3. Invocar Step Function para ejecutar el ETL completo
-        # La Step Function hace: OCR (OpenAI/TabScanner) + Carga a BigQuery
-        sfn_result = invoke_receipt_etl_step_function(sfn_client, s3_key, use_fallback=True)
+        # 2. Verificar si hay un ticket pendiente para este chat
+        pending_ticket = get_pending_ticket(chat_id)
         
-        # 4. Formatear respuesta basada en el resultado de la Step Function
-        response = format_step_function_response(sfn_result)        
+        # 3. Analizar si esta foto completa el ticket
+        is_complete, partial_data = check_ticket_is_complete(s3_key)
+        partial_data["s3_key"] = s3_key
         
-        return response
+        if pending_ticket:
+            # Ya hay un ticket en progreso, agregar esta foto
+            existing_data = json.loads(pending_ticket.get("partial_data", "{}"))
+            existing_s3_keys = pending_ticket.get("s3_keys", [])
+            photo_count = int(pending_ticket.get("photo_count", 1))
+            
+            # Agregar nueva foto
+            existing_s3_keys.append(s3_key)
+            photo_count += 1
+            
+            # Agregar los items de esta foto a los existentes
+            existing_items = existing_data.get("line_items", [])
+            new_items = partial_data.get("line_items", [])
+            existing_data["line_items"] = existing_items + new_items
+            
+            # Si encontramos el total en esta foto, usarlo
+            if partial_data.get("total_amount"):
+                existing_data["total_amount"] = partial_data["total_amount"]
+            
+            print(f"📎 Agregando foto {photo_count} al ticket en progreso")
+            
+            if is_complete:
+                # ¡Ticket completo! Procesar todo
+                print(f"✅ Ticket completo después de {photo_count} fotos")
+                delete_pending_ticket(chat_id)
+                
+                # Fusionar todos los datos
+                existing_data["extraction_method"] = "openai_vision_multi"
+                existing_data["s3_keys"] = existing_s3_keys
+                
+                # Procesar el ticket completo
+                return process_complete_ticket(existing_data, bq_client, photo_count)
+            else:
+                # Aún incompleto, guardar y esperar más fotos
+                save_pending_ticket(chat_id, existing_data, existing_s3_keys, photo_count)
+                return f"📄 Foto {photo_count} recibida.\n\n⏳ Esperando más fotos del ticket...\n_Envía la siguiente parte del ticket._", True
+        else:
+            # No hay ticket pendiente, es una foto nueva
+            if is_complete:
+                # Ticket completo en una sola foto - flujo normal
+                print("✅ Ticket completo en una sola foto")
+                return process_single_photo_ticket(s3_key, bq_client)
+            else:
+                # Ticket incompleto, guardar y esperar más fotos
+                print("📄 Ticket incompleto, esperando más fotos...")
+                save_pending_ticket(chat_id, partial_data, [s3_key], 1)
+                return "📄 Primera parte del ticket recibida.\n\n⏳ Parece que el ticket continúa...\n_Envía la siguiente foto para completarlo._", True
         
     except Exception as e:
         print(f"❌ Error procesando foto: {e}")
         import traceback
         traceback.print_exc()
-        return f"❌ Error procesando el ticket: {str(e)}"
+        return f"❌ Error procesando el ticket: {str(e)}", True
+
+def process_single_photo_ticket(s3_key: str, bq_client) -> tuple:
+    """Procesa un ticket de una sola foto (flujo original)"""
+    try:
+        # Usar Step Function o procesamiento directo
+        if RECEIPT_ETL_STATE_MACHINE:
+            sfn_result = invoke_receipt_etl_step_function(s3_key, use_fallback=True)
+            response = format_step_function_response(sfn_result)
+        else:
+            # Procesamiento directo sin Step Function
+            extracted_data = extract_receipt_data(s3_key, use_fallback=True)
+            df = receipt_data_to_dataframe(extracted_data)
+            rows_inserted = load_receipt_to_bigquery(df, bq_client)
+            response = format_receipt_response(extracted_data, rows_inserted)
+        
+        return response, True
+    except Exception as e:
+        print(f"❌ Error en process_single_photo_ticket: {e}")
+        return f"❌ Error procesando el ticket: {str(e)}", True
+
+def process_complete_ticket(merged_data: dict, bq_client, photo_count: int) -> tuple:
+    """Procesa un ticket completo (puede ser de múltiples fotos)"""
+    try:
+        print(f"🎯 Procesando ticket completo de {photo_count} fotos")
+        print(f"📊 Total de items: {len(merged_data.get('line_items', []))}")
+        
+        # Convertir a DataFrame y cargar a BigQuery
+        df = receipt_data_to_dataframe(merged_data)
+        rows_inserted = load_receipt_to_bigquery(df, bq_client)
+        
+        # Formatear respuesta
+        response = format_receipt_response(merged_data, rows_inserted)
+        
+        # Agregar nota sobre múltiples fotos si aplica
+        if photo_count > 1:
+            response = f"🔗 Ticket reconstruido de {photo_count} fotos\n\n" + response
+        
+        return response, True
+        
+    except Exception as e:
+        print(f"❌ Error procesando ticket completo: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ Error procesando el ticket: {str(e)}", True
 
 def get_bigquery_client():
     """Inicializa cliente de BigQuery con credenciales de Secrets Manager"""
@@ -1194,15 +1502,22 @@ def lambda_handler(event, context):
             if telegram_message_id:
                 mark_message_as_processed(telegram_message_id)
             
-            # Enviar mensaje de "procesando" (solo una vez)            
-            send_telegram_message(
-                chat_id, 
-                "📷 *Recibí tu ticket!*\n\n🔄 Procesando imagen...\nEsto puede tomar unos segundos.", 
-                TELEGRAM_BOT_TOKEN
-            )
+            # Verificar si hay un ticket pendiente (para no enviar "Recibí tu ticket" en cada foto)
+            pending_ticket = get_pending_ticket(chat_id)
             
-            # Procesar la foto
-            response_text = process_telegram_photo(sfn_client, message, bq_client)
+            if not pending_ticket:
+                # Primera foto - enviar mensaje de "procesando"
+                send_telegram_message(
+                    chat_id, 
+                    "📷 Recibí tu ticket!\n\n🔄 Procesando imagen...\nEsto puede tomar unos segundos.", 
+                    TELEGRAM_BOT_TOKEN
+                )
+            
+            # Procesar la foto (ahora retorna tupla: response_text, should_send)
+            response_text, should_send = process_telegram_photo(message, bq_client, chat_id)
+            
+            if should_send:
+                send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
 
             print('response_text: ', response_text)
             

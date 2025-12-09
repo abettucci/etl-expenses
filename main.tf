@@ -963,7 +963,8 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
         ]
         Resource = [
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker",
-          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache"
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache",
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages"
         ]
       }
     ]
