@@ -888,7 +888,7 @@ def generate_sql_with_openai2(question, bq_client):
             Genera la consulta SQL:
         """
 
-        print(f"🤖 Generando SQL para: {question}")
+        print(f"Generando SQL para: {question}")
         
         res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -906,11 +906,11 @@ def generate_sql_with_openai2(question, bq_client):
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
         
-        print(f"📝 SQL generado:\n{sql}")
+        print(f"SQL generado:\n{sql}")
         return sql
         
     except Exception as e:
-        print(f"❌ Error generando SQL: {e}")
+        print(f"Error generando SQL: {e}")
         return ""
 
 def generate_sql_with_openai(question: str, bq_client) -> str:
@@ -993,7 +993,7 @@ def validate_sql_dry_run(client, sql: str) -> tuple:
         return True, None
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Dry-run falló: {error_msg}")
+        print(f"Dry-run falló: {error_msg}")
         return False, error_msg
 
 def query_bigquery(client, sql: str) -> str:
@@ -1004,19 +1004,19 @@ def query_bigquery(client, sql: str) -> str:
         # Primero validar con dry-run
         is_valid, validation_error = validate_sql_dry_run(client, sql)
         if not is_valid:
-            return f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}"
+            return f"Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}"
         
         query_job = client.query(sql)
         results = query_job.result()  # Espera a que termine
         
         # Verificar si hay resultados
         if results.total_rows == 0:
-            return "ℹ️ No se encontraron resultados para tu consulta."
+            return "No se encontraron resultados para tu consulta."
         
         return format_bigquery_results(results)
         
     except Exception as e:
-        error_msg = f"❌ Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
+        error_msg = f"Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
         print(error_msg)  # Debug en CloudWatch
         return error_msg
 
@@ -1049,7 +1049,7 @@ def format_bigquery_results(results) -> str:
             
             formatted_lines.append(f"*{col_name}:* {formatted_value}")
     
-    return "📊 *Resultados:*\n" + "\n".join(formatted_lines)
+    return "Resultados:\n" + "\n".join(formatted_lines)
 
 def handle_message(text: str, bq_client) -> tuple:
     """Maneja el mensaje del usuario y retorna SQL y respuesta"""
@@ -1059,13 +1059,13 @@ def handle_message(text: str, bq_client) -> tuple:
     sql = generate_sql_with_openai2(question, bq_client)
     
     if not sql:
-        return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
+        return "", "No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
     
     # Validar primero con dry-run
     is_valid, validation_error = validate_sql_dry_run(bq_client, sql)
     
     if not is_valid:
-        print(f"⚠️ Primera query inválida, intentando regenerar...")
+        print(f"Primera query inválida, intentando regenerar...")
         # Intentar regenerar con el error como contexto
         retry_sql = retry_sql_generation(question, sql, validation_error, bq_client)
         if retry_sql:
@@ -1073,7 +1073,7 @@ def handle_message(text: str, bq_client) -> tuple:
             is_valid, _ = validate_sql_dry_run(bq_client, sql)
     
     if not is_valid:
-        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}"
+        return sql, f"No pude generar una consulta válida. Error: {validation_error}"
     
     response = query_bigquery(bq_client, sql)
     
@@ -1116,11 +1116,11 @@ def retry_sql_generation(question: str, failed_sql: str, error: str, bq_client) 
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
         
-        print(f"🔄 SQL regenerado:\n{sql}")
+        print(f"SQL regenerado:\n{sql}")
         return sql
         
     except Exception as e:
-        print(f"❌ Error en retry: {e}")
+        print(f"Error en retry: {e}")
         return ""
 
 def send_telegram_message(chat_id, text, token):
@@ -1129,8 +1129,7 @@ def send_telegram_message(chat_id, text, token):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": None
-        # "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
