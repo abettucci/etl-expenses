@@ -1129,12 +1129,17 @@ def send_telegram_message(chat_id, text, token):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown"
+        "parse_mode": None
+        # "parse_mode": "Markdown"
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()
+    except requests.exceptions.HTTPError as http_err:
+        print("❌ Telegram API Error:")
+        print(response.text)
+        raise
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
         return None
@@ -1173,6 +1178,9 @@ def lambda_handler(event, context):
             
             # Procesar la foto
             response_text = process_telegram_photo(sfn_client, message, bq_client)
+
+            print('response_text: ', response_text)
+            
             send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
         
@@ -1251,6 +1259,8 @@ def lambda_handler(event, context):
         
         sql, response_text = handle_message(text, bq_client)
         
+        print('response_text: ', response_text)
+
         # Enviar respuesta
         result = send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
 
