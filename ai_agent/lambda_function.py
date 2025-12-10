@@ -918,7 +918,7 @@ def format_step_function_response(sfn_result: dict) -> str:
     
     return format_receipt_response(extracted_data, rows_inserted)
 
-def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
+def process_telegram_photo(message: dict, sfn_client, bq_client, chat_id: int) -> tuple:
     """
     Procesa una foto enviada por Telegram con soporte para tickets multi-foto.
     
@@ -999,7 +999,7 @@ def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
             if is_complete:
                 # Ticket completo en una sola foto - flujo normal
                 print("✅ Ticket completo en una sola foto")
-                return process_single_photo_ticket(s3_key, bq_client)
+                return process_single_photo_ticket(sfn_client, s3_key, bq_client)
             else:
                 # Ticket incompleto, guardar y esperar más fotos
                 print("📄 Ticket incompleto, esperando más fotos...")
@@ -1012,12 +1012,12 @@ def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
         traceback.print_exc()
         return f"❌ Error procesando el ticket: {str(e)}", True
 
-def process_single_photo_ticket(s3_key: str, bq_client) -> tuple:
+def process_single_photo_ticket(sfn_client, s3_key: str, bq_client) -> tuple:
     """Procesa un ticket de una sola foto (flujo original)"""
     try:
         # Usar Step Function o procesamiento directo
         if RECEIPT_ETL_STATE_MACHINE:
-            sfn_result = invoke_receipt_etl_step_function(s3_key, use_fallback=True)
+            sfn_result = invoke_receipt_etl_step_function(sfn_client, s3_key, use_fallback=True)
             response = format_step_function_response(sfn_result)
         else:
             # Procesamiento directo sin Step Function
@@ -1514,7 +1514,7 @@ def lambda_handler(event, context):
                 )
             
             # Procesar la foto (ahora retorna tupla: response_text, should_send)
-            response_text, should_send = process_telegram_photo(message, bq_client, chat_id)
+            response_text, should_send = process_telegram_photo(message, sfn_client, bq_client, chat_id)
             
             if should_send:
                 send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)

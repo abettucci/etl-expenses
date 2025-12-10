@@ -981,7 +981,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages",
-          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets ",
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",
         ]
       }
     ]
