@@ -205,7 +205,8 @@ jobs:
           terraform import aws_dynamodb_table.gmail_history gmail-history-tracker || true
           terraform import aws_dynamodb_table.schema_cache schema_cache || true
           terraform import aws_dynamodb_table.telegram_processed_messages telegram_processed_messages || true
-          
+          # terraform import aws_dynamodb_table.telegram_pending_tickets telegram_pending_tickets || true
+
           # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
           # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
 
