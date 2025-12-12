@@ -989,7 +989,7 @@ def process_telegram_photo(message: dict, sfn_client, bq_client, chat_id: int) -
                 existing_data["s3_keys"] = existing_s3_keys
                 
                 # Procesar el ticket completo
-                return process_complete_ticket(existing_data, bq_client, photo_count)
+                return process_complete_ticket(existing_data, sfn_client, bq_client, photo_count)
             else:
                 # Aún incompleto, guardar y esperar más fotos
                 save_pending_ticket(chat_id, existing_data, existing_s3_keys, photo_count)
@@ -1031,7 +1031,7 @@ def process_single_photo_ticket(sfn_client, s3_key: str, bq_client) -> tuple:
         print(f"❌ Error en process_single_photo_ticket: {e}")
         return f"❌ Error procesando el ticket: {str(e)}", True
 
-def process_complete_ticket(merged_data: dict, bq_client, photo_count: int) -> tuple:
+def process_complete_ticket(merged_data: dict, sf_client, bq_client, photo_count: int) -> tuple:
     """Procesa un ticket completo (puede ser de múltiples fotos)"""
     try:
         print(f"🎯 Procesando ticket completo de {photo_count} fotos")
@@ -1515,13 +1515,11 @@ def lambda_handler(event, context):
             
             # Procesar la foto (ahora retorna tupla: response_text, should_send)
             response_text, should_send = process_telegram_photo(message, sfn_client, bq_client, chat_id)
-            
+            print('response_text: ', response_text)
+                        
             if should_send:
                 send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
 
-            print('response_text: ', response_text)
-            
-            send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
         
         # Si no es foto, debe ser texto

@@ -704,9 +704,16 @@ def lambda_handler(event, context):
                             # DEBUGGING: Obtener información completa del mensaje para logging
                             print(f"🔍 DEBUG - Analizando mensaje {mail_msg_id}")
                             
-                            msg = gmail_service.users().messages().get(
-                                userId="me", id=mail_msg_id, format="metadata"
-                            ).execute()
+                            try:
+                                msg = gmail_service.users().messages().get(
+                                    userId="me", id=mail_msg_id, format="metadata"
+                                ).execute()
+                            except Exception as e:
+                                if "404" in str(e) or "notFound" in str(e):
+                                    print(f"⚠️ Mensaje {mail_msg_id} ya no existe (fue eliminado). Continuando con el siguiente...")
+                                    continue
+                                else:
+                                    raise
 
                             labels = msg.get("labelIds", [])
                             labels_names = [label_map.get(lid, lid) for lid in labels]
@@ -833,9 +840,16 @@ def lambda_handler(event, context):
                             print(f"💡 Este mensaje probablemente llegó en un historyId anterior")
                             
                             # Obtener el mensaje completo
-                            msg = gmail_service.users().messages().get(
-                                userId="me", id=mail_msg_id, format="metadata"
-                            ).execute()
+                            try:
+                                msg = gmail_service.users().messages().get(
+                                    userId="me", id=mail_msg_id, format="metadata"
+                                ).execute()
+                            except Exception as e:
+                                if "404" in str(e) or "notFound" in str(e):
+                                    print(f"⚠️ Mensaje {mail_msg_id} ya no existe (fue eliminado). Continuando con el siguiente...")
+                                    continue
+                                else:
+                                    raise
 
                             all_labels = msg.get("labelIds", [])
                             all_labels_names = [label_map.get(lid, lid) for lid in all_labels]
