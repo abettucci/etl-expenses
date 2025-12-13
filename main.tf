@@ -1315,7 +1315,12 @@ resource "aws_iam_policy" "lambda_step_function_sync_policy" {
           "states:DescribeExecution"
         ],
         Resource = [
-          aws_sfn_state_machine.telegram_receipt_etl_flow.arn
+          aws_sfn_state_machine.telegram_receipt_etl_flow.arn,
+          aws_sfn_state_machine.bank_payments_etl_flow.arn,
+          aws_sfn_state_machine.pdf_etl_flow.arn,
+          "${aws_sfn_state_machine.telegram_receipt_etl_flow.arn}:*",
+          "${aws_sfn_state_machine.bank_payments_etl_flow.arn}:*",
+          "${aws_sfn_state_machine.pdf_etl_flow.arn}:*"
         ]
       }
     ]

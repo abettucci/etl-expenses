@@ -3,7 +3,6 @@ import json
 import boto3
 import base64
 import requests
-import pandas as pd
 import openai
 import time
 import uuid
@@ -11,6 +10,14 @@ from datetime import datetime
 from decimal import Decimal
 from google.cloud import bigquery
 from google.oauth2 import service_account
+
+# Pandas - para conversión a DataFrame
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    print("⚠️ Pandas no disponible, usando conversión manual")
 
 # Configuración inicial
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -20,10 +27,13 @@ BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 
 # S3 Configuration para imágenes de tickets
-S3_BUCKET_TICKETS = os.environ.get("S3_BUCKET_TICKETS", "etl-expenses-tickets")
+S3_BUCKET_TICKETS = os.environ.get("S3_BUCKET_TICKETS", "telegram-receipts")
 S3_PREFIX_TICKETS = os.environ.get("S3_PREFIX_TICKETS", "receipts/")
 
-# TabScanner API (fallback)
+# Step Function para ETL de tickets (Express - síncrona)
+RECEIPT_ETL_STATE_MACHINE = os.environ.get("RECEIPT_ETL_STATE_MACHINE", "")
+
+# TabScanner API (fallback) - usado por la Lambda de OCR
 TABSCANNER_API_KEY = os.environ.get("TABSCANNER_API_KEY", "")
 
 # BigQuery table para tickets de supermercado
@@ -33,9 +43,6 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 REGION = os.environ.get("AWS_REGION", "us-east-2")
 DDB_TABLE = os.environ.get("DDB_TABLE", "schema_cache")
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))  # 7 días
-
-# Step Function para ETL de tickets (Express - síncrona)
-RECEIPT_ETL_STATE_MACHINE = os.environ.get("RECEIPT_ETL_STATE_MACHINE", "")
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
@@ -60,12 +67,6 @@ TABLE_METADATA = {
                 "description": "Fecha del pago en formato texto. IMPORTANTE: Para filtrar por fecha usar PARSE_DATE('%d/%m/%Y', FECHA_PAGO)",
                 "example": "15/11/2024"
             },
-            "HORA_PAGO": {
-                "type": "STRING",
-                "format": "HH/mm",
-                "description": "Hora del pago en formato texto.",
-                "example": "12:02"
-            },
             "MONTO": {
                 "type": "STRING", 
                 "format": "número con decimales",
@@ -86,13 +87,7 @@ TABLE_METADATA = {
                 "type": "STRING",
                 "description": "Moneda de la transacción",
                 "example": "ARS"
-            },
-            "CUOTAS": {
-                "type": "INTEGER",
-                "description": "Cantidad de cuotas de la transacción",
-                "example": "3"
             }
-
         }
     },
     "mp_data": {
@@ -102,40 +97,20 @@ TABLE_METADATA = {
             "Incluye tanto pagos enviados como recibidos"
         ],
         "columns": {
-            "TRANSACTION_DATE": {
-                "type": "STRING",
+            "fecha": {
+                "type": "DATE",
                 "description": "Fecha de la transacción",
-                "example": "2025-02-12T17:55:15.000-03:00"
+                "example": "2024-11-15"
             },
-            "PAYMENT_METHOD_TYPE" : {
-                "type": "STRING",
-                "description": "Metodo de pago",
-                "example": "Tarjeta de crédito"
-            },
-            "PAYMENT_METHOD" : {
-                "type" : "string",
-                "descripcion" : "Emisor de tarjeta",
-                "example" : "American Express"
-            },
-            "TRANSACTION_TYPE" : {
-                "type" : "string",
-                "descripcion" : "Tipo de transaccion realizada",
-                "example" : "Devolución de dinero"
-            },
-            "TRANSACTION_AMOUNT": {
-                "type": "STRING",
+            "monto": {
+                "type": "FLOAT64",
                 "description": "Monto de la transacción",
                 "example": "2500.00"
             },
-            "STORE_NAME": {
+            "descripcion": {
                 "type": "STRING",
-                "description": "Nombre del destinatario de transferencia o comercio vendedor",
-                "example": "DIA_TIENDA_478"
-            },
-            "REPORT_DATE" : {
-                "type" : "string",
-                "descripcion" : "Fecha en la que se emitio el reporte semanal de movimientos de mercado pago",
-                "example" : "2024-10-14"
+                "description": "Descripción o concepto del pago",
+                "example": "Pago a comercio"
             }
         }
     },
@@ -146,40 +121,25 @@ TABLE_METADATA = {
             "Tiene detalle a nivel de producto individual"
         ],
         "columns": {
-            "fecha": {
-                "type": "STRING",
+            "fecha_compra": {
+                "type": "DATE",
                 "description": "Fecha de la compra",
-                "example": "22/01/25"
+                "example": "2024-11-15"
             },
             "producto": {
                 "type": "STRING",
                 "description": "Nombre del producto comprado",
                 "example": "LECHE ENTERA 1L"
             },
-            "precio_unit": {
-                "type": "STRING",
-                "description": "Precio por unidad de producto",
+            "precio": {
+                "type": "FLOAT64",
+                "description": "Precio del producto",
                 "example": "850.00"
             },
-            "monto_total" : {
-                "type" : "STRING",
-                "descripcion" : "Monto total gastado en el producto. Resultado de multiplicar cantidad * precio_unit",
-                "example" : "850.00"
-            },
             "cantidad": {
-                "type": "STRING",
-                "description": "Cantidad comprada del producto",
-                "example": "2.0"
-            },
-            "peso" : {
-                "type" : "STRING",
-                "descripcion" : "Cantidad comprada en peso (kg) del producto",
-                "example" : "0.68"
-            },
-            "categoria" : {
-                "type" : "STRING",
-                "descripcion" : "Categoria de producto",
-                "example" : "Frutas Y Verduras"
+                "type": "INT64",
+                "description": "Cantidad comprada",
+                "example": "2"
             }
         }
     },
@@ -192,23 +152,12 @@ TABLE_METADATA = {
         "columns": {
             "producto_id": {
                 "type": "STRING",
-                "description": "ID único del producto",
-                "example" : "11414"
+                "description": "ID único del producto"
             },
-            "ean": {
+            "categoria": {
                 "type": "STRING",
-                "description": "Codigo del producto",
-                "example": "2505740010640"
-            },
-            "nombre_producto": {
-                "type" : "STRING",
-                "descripcion" : "Nombre del producto",
-                "example" : "PICADA ESPECIAL NOVILLITO"
-            },
-            "grupo_producto" : {
-                "type" : "STRING",
-                "descripcion" : "Agrupador de productos",
-                "example" : "picadaespecialnovillitoxkg"
+                "description": "Categoría del producto",
+                "example": "LÁCTEOS"
             }
         }
     }
@@ -216,30 +165,30 @@ TABLE_METADATA = {
 
 # Ejemplos de queries correctas para few-shot learning
 SQL_EXAMPLES = """
-    EJEMPLOS DE QUERIES CORRECTAS:
+EJEMPLOS DE QUERIES CORRECTAS:
 
-    1. Pregunta: "¿Cuánto gasté en los últimos 3 meses?"
-    SQL:
-    SELECT SUM(CAST(MONTO AS FLOAT64)) AS total_gasto
-    FROM `{project}.{dataset}.bank_payments`
-    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
+1. Pregunta: "¿Cuánto gasté en los últimos 3 meses?"
+   SQL:
+   SELECT SUM(CAST(MONTO AS FLOAT64)) AS total_gasto
+   FROM `{project}.{dataset}.bank_payments`
+   WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
 
-    2. Pregunta: "¿Cuáles fueron mis mayores gastos del mes?"
-    SQL:
-    SELECT COMERCIO, CAST(MONTO AS FLOAT64) AS monto, FECHA_PAGO
-    FROM `{project}.{dataset}.bank_payments`
-    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
-    ORDER BY CAST(MONTO AS FLOAT64) DESC
-    LIMIT 10
+2. Pregunta: "¿Cuáles fueron mis mayores gastos del mes?"
+   SQL:
+   SELECT COMERCIO, CAST(MONTO AS FLOAT64) AS monto, FECHA_PAGO
+   FROM `{project}.{dataset}.bank_payments`
+   WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+   ORDER BY CAST(MONTO AS FLOAT64) DESC
+   LIMIT 10
 
-    3. Pregunta: "Gastos por comercio este mes"
-    SQL:
-    SELECT COMERCIO, SUM(CAST(MONTO AS FLOAT64)) AS total, COUNT(*) AS cantidad_transacciones
-    FROM `{project}.{dataset}.bank_payments`
-    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
-    GROUP BY COMERCIO
-    ORDER BY total DESC
-    LIMIT 20
+3. Pregunta: "Gastos por comercio este mes"
+   SQL:
+   SELECT COMERCIO, SUM(CAST(MONTO AS FLOAT64)) AS total, COUNT(*) AS cantidad_transacciones
+   FROM `{project}.{dataset}.bank_payments`
+   WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+   GROUP BY COMERCIO
+   ORDER BY total DESC
+   LIMIT 20
 """
 
 # --- Clientes AWS/GCP ---
@@ -250,10 +199,7 @@ secrets_client = boto3.client("secretsmanager", region_name=REGION)
 s3_client = boto3.client("s3", region_name=REGION)
 sfn_client = boto3.client("stepfunctions", region_name=REGION)
 
-# =============================================================================
-# PROCESAMIENTO DE IMÁGENES DE TICKETS
-# =============================================================================
-
+# Tabla DynamoDB para control de idempotencia de mensajes de Telegram
 DDB_PROCESSED_MESSAGES_TABLE = os.environ.get("DDB_PROCESSED_MESSAGES_TABLE", "telegram_processed_messages")
 
 def is_message_already_processed(message_id: int) -> bool:
@@ -368,21 +314,30 @@ def check_ticket_is_complete(s3_key: str) -> tuple:
         image_base64 = get_image_base64_from_s3(s3_key)
         
         # Prompt para verificar si es el final del ticket
-        check_prompt = """Analiza esta imagen de un ticket/recibo y responde en formato JSON:
+        check_prompt = """Analiza esta imagen de un ticket/recibo de supermercado.
+
+IMPORTANTE: Extrae ABSOLUTAMENTE TODOS los productos visibles, incluyendo:
+- El PRIMER producto que aparece en la parte superior de la imagen
+- El ÚLTIMO producto que aparece en la parte inferior de la imagen
+- NO omitas productos aunque estén parcialmente cortados
+
+Responde en formato JSON:
 
 {
     "is_complete": true/false,
-    "has_total": true/false,
-    "detected_indicators": ["lista de indicadores encontrados como TOTAL, CAE, etc"],
+    "has_total_with_amount": true/false,
+    "has_cae": true/false,
+    "has_qr_code": true/false,
+    "detected_indicators": ["lista de indicadores encontrados"],
     "partial_data": {
         "merchant_name": "nombre del comercio si es visible",
         "transaction_date": "fecha en formato YYYY-MM-DD si es visible",
         "transaction_time": "hora en formato HH:MM si es visible",
-        "total_amount": número del total si está visible (null si no),
+        "total_amount": número del total FINAL si está visible (null si no hay TOTAL FINAL),
         "currency": "ARS",
         "line_items": [
             {
-                "item_name": "nombre del producto",
+                "item_name": "nombre COMPLETO del producto",
                 "item_quantity": número,
                 "item_unit_price": precio unitario,
                 "item_total_price": precio total
@@ -391,15 +346,24 @@ def check_ticket_is_complete(s3_key: str) -> tuple:
     }
 }
 
-CRITERIOS PARA is_complete=true:
-- Contiene la palabra "TOTAL" con un monto final
-- Contiene "C.A.E" o "CAE:" (código de autorización electrónica)
-- Contiene "GRACIAS POR SU COMPRA" o similar
-- Contiene código QR o información fiscal al final
-- Contiene "IVA CONTENIDO"
-- Contiene información de atención al cliente (teléfono, web)
+CRITERIOS ESTRICTOS PARA is_complete=true (DEBEN cumplirse AL MENOS 2 de estos):
+1. Contiene la palabra "TOTAL" seguida de un monto final (ej: "TOTAL 53453,46")
+2. Contiene "C.A.E" o "CAE:" con número de autorización
+3. Contiene código QR fiscal visible
+4. Contiene "IVA CONTENIDO" con un monto
+5. Contiene "www." o número de atención telefónica al final
 
-Si solo ves productos sin total final, is_complete=false.
+is_complete=false SI:
+- Solo ves productos/items sin sección de totales
+- La imagen parece cortada y continúa más abajo
+- No hay información fiscal (CAE, IVA, QR)
+- Solo ves el encabezado del ticket con logo y primeros productos
+
+EXTRACCIÓN DE ITEMS:
+- Incluye TODOS los productos de arriba a abajo
+- El primer item visible es tan importante como el último
+- Si un producto está cortado pero se puede leer parcialmente, inclúyelo
+
 Responde SOLO con el JSON."""
 
         response = openai_client.chat.completions.create(
@@ -426,8 +390,8 @@ Responde SOLO con el JSON."""
         result_text = response.choices[0].message.content.strip()
         
         # Limpiar markdown
-        if result_text.startswith(""):
-            result_text = result_text.replace("json", "").replace("```", "").strip()
+        if result_text.startswith("```"):
+            result_text = result_text.replace("```json", "").replace("```", "").strip()
         
         result = json.loads(result_text)
         
@@ -449,6 +413,7 @@ Responde SOLO con el JSON."""
 def merge_ticket_data(data_parts: list) -> dict:
     """
     Fusiona datos de múltiples partes de un ticket en uno solo.
+    Calcula el total sumando todos los items si no hay total explícito.
     """
     if not data_parts:
         return {}
@@ -479,21 +444,41 @@ def merge_ticket_data(data_parts: list) -> dict:
         if not merged["payment_method"] and part.get("payment_method"):
             merged["payment_method"] = part["payment_method"]
     
-    # El total debería estar en la última parte
+    # Concatenar todos los line_items (evitar duplicados por nombre similar)
+    seen_items = set()
+    for part in data_parts:
+        items = part.get("line_items", [])
+        for item in items:
+            item_key = (item.get("item_name", ""), item.get("item_total_price", 0))
+            if item_key not in seen_items:
+                merged["line_items"].append(item)
+                seen_items.add(item_key)
+    
+    # El total debería estar en la última parte (donde está el "TOTAL" del ticket)
     for part in reversed(data_parts):
         if part.get("total_amount"):
             merged["total_amount"] = part["total_amount"]
             break
     
-    # Concatenar todos los line_items
-    for part in data_parts:
-        items = part.get("line_items", [])
-        if items:
-            merged["line_items"].extend(items)
+    # Si no encontramos total explícito, calcular desde los items
+    if not merged["total_amount"] and merged["line_items"]:
+        calculated_total = 0
+        for item in merged["line_items"]:
+            price = item.get("item_total_price") or item.get("item_unit_price") or 0
+            if isinstance(price, (int, float)):
+                calculated_total += price
+        if calculated_total > 0:
+            merged["total_amount"] = calculated_total
+            print(f"💰 Total calculado desde items: {calculated_total}")
     
     print(f"🔗 Ticket fusionado: {len(merged['line_items'])} items de {len(data_parts)} fotos")
+    print(f"🔗 Total final: {merged['total_amount']}")
     
     return merged
+
+# =============================================================================
+# PROCESAMIENTO DE IMÁGENES DE TICKETS
+# =============================================================================
 
 def download_telegram_photo(file_id: str) -> bytes:
     """Descarga una foto de Telegram usando el file_id"""
@@ -576,33 +561,46 @@ def extract_receipt_with_openai(s3_key: str) -> dict:
         image_base64 = get_image_base64_from_s3(s3_key)
         
         # Schema de extracción
-        extraction_prompt = """
-            Analiza esta imagen de un ticket/recibo de supermercado y extrae la siguiente información en formato JSON:
+        extraction_prompt = """Analiza esta imagen de un ticket/recibo de supermercado.
 
-            {
-                "merchant_name": "nombre del comercio/supermercado",
-                "transaction_date": "fecha de la compra en formato YYYY-MM-DD",
-                "transaction_time": "hora de la compra en formato HH:MM",
-                "total_amount": número con el total de la compra,
-                "currency": "moneda (ARS, USD, etc.)",
-                "payment_method": "método de pago si está visible",
-                "line_items": [
-                    {
-                        "item_name": "nombre del producto",
-                        "item_quantity": número de unidades,
-                        "item_unit_price": precio unitario,
-                        "item_total_price": precio total del item
-                    }
-                ]
-            }
+TAREA CRÍTICA: Debes extraer ABSOLUTAMENTE TODOS los productos visibles en la imagen.
 
-            IMPORTANTE:
-            - Si algún campo no está visible o no se puede leer, usar null
-            - Los precios deben ser números (sin símbolos de moneda)
-            - La fecha debe estar en formato YYYY-MM-DD
-            - Incluir TODOS los items que puedas leer del ticket
-            - Responde SOLO con el JSON, sin explicaciones adicionales
-        """
+INSTRUCCIONES ESPECIALES:
+1. Empieza desde el PRIMER producto visible en la PARTE SUPERIOR de la imagen
+2. Continúa hasta el ÚLTIMO producto visible en la PARTE INFERIOR
+3. NO omitas ningún producto, aunque esté parcialmente cortado o borroso
+4. Si un producto está cortado pero puedes leer parte del nombre, inclúyelo
+5. Los productos suelen tener: descripción + código + precio
+
+Extrae en formato JSON:
+
+{
+    "merchant_name": "nombre del comercio/supermercado",
+    "transaction_date": "fecha de la compra en formato YYYY-MM-DD",
+    "transaction_time": "hora de la compra en formato HH:MM",
+    "total_amount": número con el total de la compra (solo si ves "TOTAL" con monto),
+    "currency": "ARS",
+    "payment_method": "método de pago si está visible",
+    "line_items": [
+        {
+            "item_name": "nombre COMPLETO del producto",
+            "item_quantity": número de unidades (default 1),
+            "item_unit_price": precio unitario si está visible,
+            "item_total_price": precio total del item
+        }
+    ]
+}
+
+REGLAS DE EXTRACCIÓN:
+- Incluir TODOS los items de arriba a abajo sin excepción
+- El primer item de la imagen es tan importante como el último
+- Si ves "0,164 x 17999,00" seguido de un nombre = ese es un item por peso
+- Los precios en Argentina usan coma para decimales: 2951,84 = 2951.84
+- Ignorar líneas de descuento (ej: "MERCADO PAGO 25% - V")
+- NO incluir líneas de subtotales parciales o descuentos como items
+- Si no hay TOTAL visible, dejar total_amount como null
+
+Responde SOLO con el JSON, sin explicaciones:"""
 
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",  # gpt-4o-mini soporta vision
@@ -825,35 +823,53 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
     
     # Formatear total
     if total:
-        total_str = f"${total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if isinstance(total, (int, float)):
+            total_str = f"${total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        else:
+            total_str = f"${total}"
     else:
-        total_str = "No detectado"
+        # Calcular total desde items si no está disponible
+        calculated = sum(
+            (item.get("item_total_price") or item.get("item_unit_price") or 0) 
+            for item in items 
+            if isinstance(item.get("item_total_price") or item.get("item_unit_price"), (int, float))
+        )
+        if calculated > 0:
+            total_str = f"${calculated:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        else:
+            total_str = "No detectado"
     
-    response = f"""
-        ✅ *Ticket procesado exitosamente!*
+    response = f"""✅ *Ticket procesado exitosamente!*
 
-        🏪 *Comercio:* {merchant}
-        📅 *Fecha:* {date}
-        💰 *Total:* {total_str}
-        📦 *Items detectados:* {len(items)}
+🏪 *Comercio:* {merchant}
+📅 *Fecha:* {date}
+💰 *Total:* {total_str}
+📦 *Items detectados:* {len(items)}
 
-        *Productos extraídos:*
-    """
+*Productos extraídos:*
+"""
     
-    # Agregar primeros 10 items
-    for i, item in enumerate(items[:10]):
+    # Mostrar hasta 15 items para dar más contexto
+    max_items_to_show = 15
+    for i, item in enumerate(items[:max_items_to_show]):
         name = item.get("item_name", "?")
+        # Truncar nombres muy largos
+        if len(name) > 35:
+            name = name[:32] + "..."
         qty = item.get("item_quantity", 1)
         price = item.get("item_total_price") or item.get("item_unit_price") or 0
-        price_str = f"${price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if price else "?"
-        response += f"  • {name} x{qty} - {price_str}\n"
+        if isinstance(price, (int, float)) and price > 0:
+            price_str = f"${price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        else:
+            price_str = "?"
+        response += f"• {name} x{qty} - {price_str}\n"
     
-    if len(items) > 10:
-        response += f"  _... y {len(items) - 10} productos más_\n"
+    if len(items) > max_items_to_show:
+        response += f"\n_... y {len(items) - max_items_to_show} productos más_\n"
     
     return response
 
-def invoke_receipt_etl_step_function(sfn_client, s3_key: str, use_fallback: bool = True) -> dict:
+def invoke_receipt_etl_step_function(s3_key: str, use_fallback: bool = True) -> dict:
     """
     Invoca la Step Function EXPRESS de forma síncrona para procesar el ticket.
     
@@ -918,7 +934,7 @@ def format_step_function_response(sfn_result: dict) -> str:
     
     return format_receipt_response(extracted_data, rows_inserted)
 
-def process_telegram_photo(message: dict, sfn_client, bq_client, chat_id: int) -> tuple:
+def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
     """
     Procesa una foto enviada por Telegram con soporte para tickets multi-foto.
     
@@ -989,7 +1005,7 @@ def process_telegram_photo(message: dict, sfn_client, bq_client, chat_id: int) -
                 existing_data["s3_keys"] = existing_s3_keys
                 
                 # Procesar el ticket completo
-                return process_complete_ticket(existing_data, sfn_client, bq_client, photo_count)
+                return process_complete_ticket(existing_data, bq_client, photo_count)
             else:
                 # Aún incompleto, guardar y esperar más fotos
                 save_pending_ticket(chat_id, existing_data, existing_s3_keys, photo_count)
@@ -999,7 +1015,7 @@ def process_telegram_photo(message: dict, sfn_client, bq_client, chat_id: int) -
             if is_complete:
                 # Ticket completo en una sola foto - flujo normal
                 print("✅ Ticket completo en una sola foto")
-                return process_single_photo_ticket(sfn_client, s3_key, bq_client)
+                return process_single_photo_ticket(s3_key, bq_client)
             else:
                 # Ticket incompleto, guardar y esperar más fotos
                 print("📄 Ticket incompleto, esperando más fotos...")
@@ -1012,12 +1028,12 @@ def process_telegram_photo(message: dict, sfn_client, bq_client, chat_id: int) -
         traceback.print_exc()
         return f"❌ Error procesando el ticket: {str(e)}", True
 
-def process_single_photo_ticket(sfn_client, s3_key: str, bq_client) -> tuple:
+def process_single_photo_ticket(s3_key: str, bq_client) -> tuple:
     """Procesa un ticket de una sola foto (flujo original)"""
     try:
         # Usar Step Function o procesamiento directo
         if RECEIPT_ETL_STATE_MACHINE:
-            sfn_result = invoke_receipt_etl_step_function(sfn_client, s3_key, use_fallback=True)
+            sfn_result = invoke_receipt_etl_step_function(s3_key, use_fallback=True)
             response = format_step_function_response(sfn_result)
         else:
             # Procesamiento directo sin Step Function
@@ -1031,7 +1047,7 @@ def process_single_photo_ticket(sfn_client, s3_key: str, bq_client) -> tuple:
         print(f"❌ Error en process_single_photo_ticket: {e}")
         return f"❌ Error procesando el ticket: {str(e)}", True
 
-def process_complete_ticket(merged_data: dict, sf_client, bq_client, photo_count: int) -> tuple:
+def process_complete_ticket(merged_data: dict, bq_client, photo_count: int) -> tuple:
     """Procesa un ticket completo (puede ser de múltiples fotos)"""
     try:
         print(f"🎯 Procesando ticket completo de {photo_count} fotos")
@@ -1046,7 +1062,7 @@ def process_complete_ticket(merged_data: dict, sf_client, bq_client, photo_count
         
         # Agregar nota sobre múltiples fotos si aplica
         if photo_count > 1:
-            response = f"🔗 Ticket reconstruido de {photo_count} fotos\n\n" + response
+            response = f"🔗 _Ticket reconstruido de {photo_count} fotos_\n\n" + response
         
         return response, True
         
@@ -1187,32 +1203,29 @@ def generate_sql_with_openai2(question, bq_client):
             dataset=BQ_DATASET_PROD
         )
 
-        system_prompt = """
-            Eres un experto en SQL para Google BigQuery (Standard SQL).
-            Tu trabajo es convertir preguntas en lenguaje natural a consultas SQL precisas.
+        system_prompt = """Eres un experto en SQL para Google BigQuery (Standard SQL).
+Tu trabajo es convertir preguntas en lenguaje natural a consultas SQL precisas.
 
-            REGLAS CRÍTICAS:
-            1. NUNCA agregues filtros que el usuario no pidió explícitamente
-            2. Si el usuario pregunta por "gastos del banco" o "banco santander", usa bank_payments SIN filtros de banco (toda la tabla ES del banco santander)
-            3. Para campos de fecha tipo STRING con formato dd/mm/yyyy, SIEMPRE usar: PARSE_DATE('%d/%m/%Y', campo_fecha)
-            4. Para campos MONTO tipo STRING, SIEMPRE usar: CAST(MONTO AS FLOAT64)
-            5. Usa fechas relativas (CURRENT_DATE(), DATE_SUB, DATE_TRUNC)
-            6. LIMIT 20 siempre
-            7. Devuelve SOLO el SQL, sin explicaciones ni markdown
-        """
+REGLAS CRÍTICAS:
+1. NUNCA agregues filtros que el usuario no pidió explícitamente
+2. Si el usuario pregunta por "gastos del banco" o "banco santander", usa bank_payments SIN filtros de banco (toda la tabla ES del banco santander)
+3. Para campos de fecha tipo STRING con formato dd/mm/yyyy, SIEMPRE usar: PARSE_DATE('%d/%m/%Y', campo_fecha)
+4. Para campos MONTO tipo STRING, SIEMPRE usar: CAST(MONTO AS FLOAT64)
+5. Usa fechas relativas (CURRENT_DATE(), DATE_SUB, DATE_TRUNC)
+6. LIMIT 20 siempre
+7. Devuelve SOLO el SQL, sin explicaciones ni markdown"""
 
         user_prompt = f"""
-            ESQUEMA DETALLADO DE LAS TABLAS:
-            {enriched_schema}
+ESQUEMA DETALLADO DE LAS TABLAS:
+{enriched_schema}
 
-            {formatted_examples}
+{formatted_examples}
 
-            PREGUNTA DEL USUARIO: "{question}"
+PREGUNTA DEL USUARIO: "{question}"
 
-            Genera la consulta SQL:
-        """
+Genera la consulta SQL:"""
 
-        print(f"Generando SQL para: {question}")
+        print(f"🤖 Generando SQL para: {question}")
         
         res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -1230,11 +1243,11 @@ def generate_sql_with_openai2(question, bq_client):
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
         
-        print(f"SQL generado:\n{sql}")
+        print(f"📝 SQL generado:\n{sql}")
         return sql
         
     except Exception as e:
-        print(f"Error generando SQL: {e}")
+        print(f"❌ Error generando SQL: {e}")
         return ""
 
 def generate_sql_with_openai(question: str, bq_client) -> str:
@@ -1317,7 +1330,7 @@ def validate_sql_dry_run(client, sql: str) -> tuple:
         return True, None
     except Exception as e:
         error_msg = str(e)
-        print(f"Dry-run falló: {error_msg}")
+        print(f"❌ Dry-run falló: {error_msg}")
         return False, error_msg
 
 def query_bigquery(client, sql: str) -> str:
@@ -1328,19 +1341,19 @@ def query_bigquery(client, sql: str) -> str:
         # Primero validar con dry-run
         is_valid, validation_error = validate_sql_dry_run(client, sql)
         if not is_valid:
-            return f"Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}"
+            return f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}"
         
         query_job = client.query(sql)
         results = query_job.result()  # Espera a que termine
         
         # Verificar si hay resultados
         if results.total_rows == 0:
-            return "No se encontraron resultados para tu consulta."
+            return "ℹ️ No se encontraron resultados para tu consulta."
         
         return format_bigquery_results(results)
         
     except Exception as e:
-        error_msg = f"Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
+        error_msg = f"❌ Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
         print(error_msg)  # Debug en CloudWatch
         return error_msg
 
@@ -1373,7 +1386,7 @@ def format_bigquery_results(results) -> str:
             
             formatted_lines.append(f"*{col_name}:* {formatted_value}")
     
-    return "Resultados:\n" + "\n".join(formatted_lines)
+    return "📊 *Resultados:*\n" + "\n".join(formatted_lines)
 
 def handle_message(text: str, bq_client) -> tuple:
     """Maneja el mensaje del usuario y retorna SQL y respuesta"""
@@ -1383,13 +1396,13 @@ def handle_message(text: str, bq_client) -> tuple:
     sql = generate_sql_with_openai2(question, bq_client)
     
     if not sql:
-        return "", "No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
+        return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
     
     # Validar primero con dry-run
     is_valid, validation_error = validate_sql_dry_run(bq_client, sql)
     
     if not is_valid:
-        print(f"Primera query inválida, intentando regenerar...")
+        print(f"⚠️ Primera query inválida, intentando regenerar...")
         # Intentar regenerar con el error como contexto
         retry_sql = retry_sql_generation(question, sql, validation_error, bq_client)
         if retry_sql:
@@ -1397,7 +1410,7 @@ def handle_message(text: str, bq_client) -> tuple:
             is_valid, _ = validate_sql_dry_run(bq_client, sql)
     
     if not is_valid:
-        return sql, f"No pude generar una consulta válida. Error: {validation_error}"
+        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}"
     
     response = query_bigquery(bq_client, sql)
     
@@ -1408,23 +1421,21 @@ def retry_sql_generation(question: str, failed_sql: str, error: str, bq_client) 
     try:
         enriched_schema = build_enriched_schema_prompt()
         
-        prompt = f"""
-            La siguiente consulta SQL falló con un error.
+        prompt = f"""La siguiente consulta SQL falló con un error.
 
-            PREGUNTA ORIGINAL: "{question}"
+PREGUNTA ORIGINAL: "{question}"
 
-            SQL QUE FALLÓ:
-            {failed_sql}
+SQL QUE FALLÓ:
+{failed_sql}
 
-            ERROR:
-            {error}
+ERROR:
+{error}
 
-            ESQUEMA DE TABLAS:
-            {enriched_schema}
+ESQUEMA DE TABLAS:
+{enriched_schema}
 
-            Por favor, genera una nueva consulta SQL corrigiendo el error. 
-            Devuelve SOLO el SQL corregido, sin explicaciones.
-        """
+Por favor, genera una nueva consulta SQL corrigiendo el error. 
+Devuelve SOLO el SQL corregido, sin explicaciones."""
 
         res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -1440,11 +1451,11 @@ def retry_sql_generation(question: str, failed_sql: str, error: str, bq_client) 
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
         
-        print(f"SQL regenerado:\n{sql}")
+        print(f"🔄 SQL regenerado:\n{sql}")
         return sql
         
     except Exception as e:
-        print(f"Error en retry: {e}")
+        print(f"❌ Error en retry: {e}")
         return ""
 
 def send_telegram_message(chat_id, text, token):
@@ -1453,16 +1464,12 @@ def send_telegram_message(chat_id, text, token):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "HTML"
+        "parse_mode": "Markdown"
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.HTTPError as http_err:
-        print("❌ Telegram API Error:")
-        print(response.text)
-        raise
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
         return None
@@ -1491,7 +1498,7 @@ def lambda_handler(event, context):
         # Verificar si el mensaje contiene una foto
         if "photo" in message:
             print("📷 Mensaje con foto detectado")
-
+            
             # Control de idempotencia: verificar si ya procesamos este mensaje
             telegram_message_id = message.get("message_id")
             if telegram_message_id and is_message_already_processed(telegram_message_id):
@@ -1509,17 +1516,16 @@ def lambda_handler(event, context):
                 # Primera foto - enviar mensaje de "procesando"
                 send_telegram_message(
                     chat_id, 
-                    "📷 Recibí tu ticket!\n\n🔄 Procesando imagen...\nEsto puede tomar unos segundos.", 
+                    "📷 *Recibí tu ticket!*\n\n🔄 Procesando imagen...\nEsto puede tomar unos segundos.", 
                     TELEGRAM_BOT_TOKEN
                 )
             
             # Procesar la foto (ahora retorna tupla: response_text, should_send)
-            response_text, should_send = process_telegram_photo(message, sfn_client, bq_client, chat_id)
-            print('response_text: ', response_text)
-                        
+            response_text, should_send = process_telegram_photo(message, bq_client, chat_id)
+            
             if should_send:
                 send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
-
+            
             return {"statusCode": 200}
         
         # Si no es foto, debe ser texto
@@ -1540,54 +1546,48 @@ def lambda_handler(event, context):
         # =========================================
         
         if text == "/start":
-            welcome_message = """
-            🤖 *Bot de Consultas de Datos con IA*
+            welcome_message = """🤖 *Bot de Consultas de Datos con IA*
 
-            ¡Hola! Soy tu asistente inteligente para gestionar tus gastos.
+¡Hola! Soy tu asistente inteligente para gestionar tus gastos.
 
-            🎯 *Características:*
-            • Consultas de datos con lenguaje natural
-            • Procesamiento de tickets de supermercado
-            • Datos almacenados en BigQuery
+🎯 *Características:*
+• Consultas de datos con lenguaje natural
+• Procesamiento de tickets de supermercado
+• Datos almacenados en BigQuery
 
-            💬 *Puedes preguntarme:*
-            • "¿Cuánto gasté este mes?"
-            • "Mostrame los gastos por comercio"
-            • "¿Cuál fue mi mayor gasto?"
-            • "Gastos de los últimos 3 meses"
+💬 *Puedes preguntarme:*
+• "¿Cuánto gasté este mes?"
+• "Mostrame los gastos por comercio"
+• "¿Cuál fue mi mayor gasto?"
+• "Gastos de los últimos 3 meses"
 
-            📷 *También podés enviarme:*
-            • Fotos de tickets de supermercado
-            • Los proceso automáticamente con IA
-            • Los datos se guardan en BigQuery
+📷 *También podés enviarme:*
+• Fotos de tickets de supermercado
+• Los proceso automáticamente con IA
+• Los datos se guardan en BigQuery
 
-            ¡Escribí tu pregunta o enviame una foto de un ticket!
-            """
-
+¡Escribí tu pregunta o enviame una foto de un ticket!"""
             send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
         
         if text == "/help":
-            help_message = """
-                📚 *Ayuda del Bot*
+            help_message = """📚 *Ayuda del Bot*
 
-                *Consultas de texto:*
-                Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
+*Consultas de texto:*
+Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
 
-                *Ejemplos:*
-                • ¿Cuánto gasté este mes?
-                • Gastos por comercio
-                • Mis mayores gastos
-                • ¿Cuánto gasté en Carrefour?
+*Ejemplos:*
+• ¿Cuánto gasté este mes?
+• Gastos por comercio
+• Mis mayores gastos
+• ¿Cuánto gasté en Carrefour?
 
-                *Fotos de tickets:*
-                Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
+*Fotos de tickets:*
+Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
 
-                *Comandos:*
-                • /start - Mensaje de bienvenida
-                • /help - Esta ayuda
-            """
-
+*Comandos:*
+• /start - Mensaje de bienvenida
+• /help - Esta ayuda"""
             send_telegram_message(chat_id, help_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
 
@@ -1597,8 +1597,6 @@ def lambda_handler(event, context):
         
         sql, response_text = handle_message(text, bq_client)
         
-        print('response_text: ', response_text)
-
         # Enviar respuesta
         result = send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
 
