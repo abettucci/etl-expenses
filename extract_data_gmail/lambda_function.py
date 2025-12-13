@@ -434,11 +434,12 @@ def reproceso_historico(table_name):
                     if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
                         table_name = 'bank_payments'
                         pk = 'id'
-
                     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                         table_name = 'carrefour_data'
                         pk = 'nro_ticket'
-
+                    elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                        table_name = 'mp_data'
+                        pk = 'REPORT_ID'
                     else:
                         print(f'Email ignorado (no cumple filtros): {sender} - {subject}')
                         continue
@@ -772,6 +773,9 @@ def lambda_handler(event, context):
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                                table_name = 'mp_data'
+                                pk = 'REPORT_ID'
                             else:
                                 print(f'⚠️  Email ignorado (no cumple filtros de sender/subject): {sender} - {subject}')
                                 continue
@@ -885,6 +889,9 @@ def lambda_handler(event, context):
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                                table_name = 'mp_data'
+                                pk = 'REPORT_ID'
                             else:
                                 print(f'⚠️  Email ignorado (no cumple filtros de sender/subject): {sender} - {subject}')
                                 continue
