@@ -451,7 +451,7 @@ def lambda_handler(event, context):
             df_bank.columns = [clean_column_name(c) for c in df_bank.columns]
             
             # Si existe columna ID, usarla como clave
-            key_cols = ['ID'] if 'ID' in df_bank.columns else []
+            key_cols = ['MESSAGE_ID'] if 'MESSAGE_ID' in df_bank.columns else []
             
             load_to_staging(bq_client, df_bank, table_name)
             merge_to_prod(bq_client, table_name, key_cols, list(df_bank.columns))

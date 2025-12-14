@@ -433,7 +433,7 @@ def reproceso_historico(table_name):
                     table_name, pk = None, None
                     if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
                         table_name = 'bank_payments'
-                        pk = 'id'
+                        pk = 'MESSAGE_ID'
                     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                         table_name = 'carrefour_data'
                         pk = 'nro_ticket'
@@ -769,7 +769,7 @@ def lambda_handler(event, context):
                             table_name, pk = None, None
                             if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
                                 table_name = 'bank_payments'
-                                pk = 'id'
+                                pk = 'MESSAGE_ID'
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
@@ -885,7 +885,7 @@ def lambda_handler(event, context):
                             table_name, pk = None, None
                             if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
                                 table_name = 'bank_payments'
-                                pk = 'id'
+                                pk = 'MESSAGE_ID'
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
@@ -1014,7 +1014,7 @@ def lambda_handler(event, context):
                             table_name, pk = None, None
                             if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
                                 table_name = 'bank_payments'
-                                pk = 'id'
+                                pk = 'MESSAGE_ID'
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
