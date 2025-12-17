@@ -1513,6 +1513,11 @@ def lambda_handler(event, context):
             pending_ticket = get_pending_ticket(chat_id)
             
             if not pending_ticket:
+                print("""
+                *Recibí tu ticket!*
+                🔄 Procesando imagen...
+                Esto puede tomar unos segundos.
+                """)
                 # Primera foto - enviar mensaje de "procesando"
                 send_telegram_message(
                     chat_id, 
@@ -1522,6 +1527,7 @@ def lambda_handler(event, context):
             
             # Procesar la foto (ahora retorna tupla: response_text, should_send)
             response_text, should_send = process_telegram_photo(message, bq_client, chat_id)
+            print('response_text: ' , response_text)
             
             if should_send:
                 send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
@@ -1532,9 +1538,18 @@ def lambda_handler(event, context):
         text = message.get("text", "")
         
         if not text:
+            print("""No entendí tu mensaje. 
+                Podés:
+                • Enviarme una *pregunta* sobre tus gastos
+                • Enviarme una *foto de un ticket* para procesarlo
+            """)
             send_telegram_message(
                 chat_id, 
-                "❓ No entendí tu mensaje. Podés:\n• Enviarme una *pregunta* sobre tus gastos\n• Enviarme una *foto de un ticket* para procesarlo", 
+                """No entendí tu mensaje. 
+                Podés:
+                • Enviarme una *pregunta* sobre tus gastos
+                • Enviarme una *foto de un ticket* para procesarlo
+                """, 
                 TELEGRAM_BOT_TOKEN
             )
             return {"statusCode": 200}
@@ -1546,48 +1561,51 @@ def lambda_handler(event, context):
         # =========================================
         
         if text == "/start":
-            welcome_message = """🤖 *Bot de Consultas de Datos con IA*
+            welcome_message = """ 
+                🤖*Bot de Consultas de Datos con IA*
+                ¡Hola! Soy tu asistente inteligente para gestionar tus gastos.
 
-¡Hola! Soy tu asistente inteligente para gestionar tus gastos.
+                🎯 *Características:*
+                • Consultas de datos con lenguaje natural
+                • Procesamiento de tickets de supermercado
+                • Datos almacenados en BigQuery
 
-🎯 *Características:*
-• Consultas de datos con lenguaje natural
-• Procesamiento de tickets de supermercado
-• Datos almacenados en BigQuery
+                💬 *Puedes preguntarme:*
+                • "¿Cuánto gasté este mes?"
+                • "Mostrame los gastos por comercio"
+                • "¿Cuál fue mi mayor gasto?"
+                • "Gastos de los últimos 3 meses"
 
-💬 *Puedes preguntarme:*
-• "¿Cuánto gasté este mes?"
-• "Mostrame los gastos por comercio"
-• "¿Cuál fue mi mayor gasto?"
-• "Gastos de los últimos 3 meses"
+                📷 *También podés enviarme:*
+                • Fotos de tickets de supermercado
+                • Los proceso automáticamente con IA 
+                • Los datos se guardan en BigQuery
 
-📷 *También podés enviarme:*
-• Fotos de tickets de supermercado
-• Los proceso automáticamente con IA
-• Los datos se guardan en BigQuery
-
-¡Escribí tu pregunta o enviame una foto de un ticket!"""
+                ¡Escribí tu pregunta o enviame una foto de un ticket!
+            """
             send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
         
         if text == "/help":
-            help_message = """📚 *Ayuda del Bot*
+            help_message = """
+            📚 *Ayuda del Bot*
 
-*Consultas de texto:*
-Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
+            *Consultas de texto:*
+            Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
 
-*Ejemplos:*
-• ¿Cuánto gasté este mes?
-• Gastos por comercio
-• Mis mayores gastos
-• ¿Cuánto gasté en Carrefour?
+            *Ejemplos:*
+            • ¿Cuánto gasté este mes?
+            • Gastos por comercio
+            • Mis mayores gastos
+            • ¿Cuánto gasté en Carrefour?
 
-*Fotos de tickets:*
-Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
+            *Fotos de tickets:*
+            Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
 
-*Comandos:*
-• /start - Mensaje de bienvenida
-• /help - Esta ayuda"""
+            *Comandos:*
+            • /start - Mensaje de bienvenida
+            • /help - Esta ayuda
+            """
             send_telegram_message(chat_id, help_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
 
@@ -1596,6 +1614,7 @@ Enviame una foto clara de un ticket de supermercado y lo proceso automáticament
         # =========================================
         
         sql, response_text = handle_message(text, bq_client)
+        print('response_text: ', response_text)
         
         # Enviar respuesta
         result = send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
@@ -1621,9 +1640,10 @@ Enviame una foto clara de un ticket de supermercado y lo proceso automáticament
             data = json.loads(event["body"])
             chat_id = data.get("message", {}).get("chat", {}).get("id")
             if chat_id:
+                print('Ocurrió un error al procesar tu mensaje. Por favor, intentá de nuevo.')
                 send_telegram_message(
                     chat_id, 
-                    "❌ Ocurrió un error al procesar tu mensaje. Por favor, intentá de nuevo.", 
+                    "Ocurrió un error al procesar tu mensaje. Por favor, intentá de nuevo.", 
                     TELEGRAM_BOT_TOKEN
                 )
         except Exception as nested_e:
