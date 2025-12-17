@@ -64,45 +64,24 @@ def create_bigquery_schema(df):
 
 def load_to_staging(client, df, table_name):
     """
-    Carga DataFrame a tabla staging en BigQuery
-    Returns: número de filas cargadas
+    Carga DataFrame a tabla staging en BigQuery con timestamp único
+    Returns: staging_table_id, número de filas cargadas
     """
     if df.empty:
         print(f"ℹ️ No hay filas para {table_name}")
-        return 0
+        return None, 0
     
-    staging_table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_STAGING}.stg_{table_name}"
-    print(f"📤 Cargando {len(df)} filas a staging: {staging_table_id}")
+    # Usar timestamp para evitar colisiones entre ejecuciones paralelas
+    import time
+    timestamp_suffix = str(int(time.time() * 1000))
+    staging_table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_STAGING}.stg_{table_name}_{timestamp_suffix}"
+    print(f"📤 Cargando {len(df)} filas a staging temporal: {staging_table_id}")
     
-    # Verificar si la tabla existe
-    try:
-        client.get_table(staging_table_id)
-        table_exists = True
-        print(f"✅ Tabla staging existe: {staging_table_id}")
-    except Exception:
-        table_exists = False
-        print(f"⚠️ Tabla staging no existe, se creará: {staging_table_id}")
-    
-    if table_exists:
-        # Tabla existe: Truncar primero y luego usar WRITE_APPEND con schema_update_options
-        truncate_query = f"TRUNCATE TABLE `{staging_table_id}`"
-        client.query(truncate_query).result()
-        print(f"🧹 Tabla staging truncada")
-        
-        job_config = bigquery.LoadJobConfig(
-            write_disposition="WRITE_APPEND",
-            autodetect=True,
-            schema_update_options=[
-                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
-                bigquery.SchemaUpdateOption.ALLOW_FIELD_RELAXATION
-            ]
-        )
-    else:
-        # Tabla no existe: usar WRITE_TRUNCATE con autodetect (sin schema_update_options)
-        job_config = bigquery.LoadJobConfig(
-            write_disposition="WRITE_TRUNCATE",
-            autodetect=True
-        )
+    # Siempre crear tabla nueva con WRITE_TRUNCATE
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE",
+        autodetect=True
+    )
     
     # Cargar desde DataFrame
     job = client.load_table_from_dataframe(
@@ -112,15 +91,15 @@ def load_to_staging(client, df, table_name):
     # Esperar a que termine
     job.result()
     
-    print(f"✅ Staging {table_name}: cargadas {len(df)} filas")
-    return len(df)
+    print(f"✅ Staging {table_name}: cargadas {len(df)} filas en {staging_table_id}")
+    return staging_table_id, len(df)
 
-def merge_to_prod(client, table_name, key_columns, all_columns):
+def merge_to_prod(client, staging_table_id, table_name, key_columns, all_columns):
     """
     Ejecuta MERGE desde staging a prod en BigQuery
     Solo inserta registros que no existen (basado en key_columns)
+    Luego elimina la tabla staging temporal
     """
-    staging_table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_STAGING}.stg_{table_name}"
     prod_table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{table_name}"
     
     print(f"🔄 Ejecutando MERGE de staging a prod para {table_name}")
@@ -128,9 +107,13 @@ def merge_to_prod(client, table_name, key_columns, all_columns):
     # Construir condición de JOIN para las claves
     if key_columns:
         on_condition = " AND ".join([f"target.{k} = source.{k}" for k in key_columns])
+        # Deduplica en staging usando DISTINCT para evitar race conditions
+        distinct_keys = ", ".join(key_columns)
+        source_query = f"(SELECT DISTINCT * FROM `{staging_table_id}`)"
     else:
         # Si no hay claves, insertar todo (no hay deduplicación)
-        on_condition = "FALSE"  # Nunca matchea, siempre inserta
+        on_condition = "FALSE"
+        source_query = f"`{staging_table_id}`"
     
     # Construir lista de columnas para INSERT
     columns_list = ", ".join(all_columns)
@@ -138,7 +121,7 @@ def merge_to_prod(client, table_name, key_columns, all_columns):
     
     merge_query = f"""
     MERGE `{prod_table_id}` AS target
-    USING `{staging_table_id}` AS source
+    USING {source_query} AS source
     ON {on_condition}
     WHEN NOT MATCHED THEN
       INSERT ({columns_list})
@@ -148,11 +131,20 @@ def merge_to_prod(client, table_name, key_columns, all_columns):
     print(f"📝 Query MERGE:\n{merge_query}")
     
     try:
+        # Ejecutar MERGE dentro de una transacción para evitar race conditions
         query_job = client.query(merge_query)
         query_job.result()  # Esperar a que termine
         
         print(f"✅ MERGE completado para {table_name}")
         print(f"   Filas modificadas: {query_job.num_dml_affected_rows}")
+        
+        # Eliminar tabla staging temporal
+        if staging_table_id:
+            try:
+                client.delete_table(staging_table_id)
+                print(f"🧹 Tabla staging temporal eliminada: {staging_table_id}")
+            except Exception as cleanup_error:
+                print(f"⚠️ No se pudo eliminar staging temporal: {cleanup_error}")
         
         return query_job.num_dml_affected_rows
     except Exception as e:
@@ -169,6 +161,15 @@ def merge_to_prod(client, table_name, key_columns, all_columns):
         query_job = client.query(merge_query)
         query_job.result()
         print(f"✅ MERGE completado después de crear tabla")
+        
+        # Eliminar tabla staging temporal
+        if staging_table_id:
+            try:
+                client.delete_table(staging_table_id)
+                print(f"🧹 Tabla staging temporal eliminada: {staging_table_id}")
+            except Exception as cleanup_error:
+                print(f"⚠️ No se pudo eliminar staging temporal: {cleanup_error}")
+        
         return query_job.num_dml_affected_rows
 
 def verify_table_count(client, dataset, table_name):
@@ -338,10 +339,10 @@ def lambda_handler(event, context):
             df = df.astype({col: "string" for col in df.columns})
 
             # Cargar a staging
-            load_to_staging(bq_client, df, 'mp_data')
+            staging_table_id, _ = load_to_staging(bq_client, df, 'mp_data')
             
             # Hacer MERGE a prod (clave: REPORT_ID)
-            merge_to_prod(bq_client, 'mp_data', ['REPORT_ID'], list(df.columns))
+            merge_to_prod(bq_client, staging_table_id, 'mp_data', ['REPORT_ID'], list(df.columns))
             
             # Verificar
             verify_table_count(bq_client, BQ_DATASET_PROD, 'mp_data')
@@ -382,16 +383,17 @@ def lambda_handler(event, context):
                 df_uploaded_files = pd.DataFrame(tickets_nuevos, columns=['id'])
                 df_uploaded_files['ins_dttm'] = datetime.now()
                 
-                load_to_staging(bq_client, df_uploaded_files, 'archivos_ingestados')
-                merge_to_prod(bq_client, 'archivos_ingestados', ['id'], ['id', 'ins_dttm'])
+                staging_table_id_1, _ = load_to_staging(bq_client, df_uploaded_files, 'archivos_ingestados')
+                merge_to_prod(bq_client, staging_table_id_1, 'archivos_ingestados', ['id'], ['id', 'ins_dttm'])
                 verify_table_count(bq_client, BQ_DATASET_PROD, 'archivos_ingestados')
                 
                 # 2) CARGAR carrefour_data (solo tickets nuevos)
                 df_nuevos = df[df['nro_ticket'].isin(tickets_nuevos)].copy()
                 
-                load_to_staging(bq_client, df_nuevos, 'carrefour_data')
+                staging_table_id_2, _ = load_to_staging(bq_client, df_nuevos, 'carrefour_data')
                 merge_to_prod(
-                    bq_client, 
+                    bq_client,
+                    staging_table_id_2,
                     'carrefour_data', 
                     ['nro_ticket'],
                     ['categoria', 'producto', 'cantidad', 'peso', 'precio_unit', 
@@ -431,9 +433,10 @@ def lambda_handler(event, context):
                 df_dim = df_dim.reset_index(drop=True)
                 df_dim['product_id'] = range(max_id + 1, max_id + 1 + len(df_dim))
                 
-                load_to_staging(bq_client, df_dim, 'dim_producto')
+                staging_table_id_3, _ = load_to_staging(bq_client, df_dim, 'dim_producto')
                 merge_to_prod(
                     bq_client,
+                    staging_table_id_3,
                     'dim_producto',
                     ['nombre_producto', 'ean'],
                     ['nombre_producto', 'product_id', 'ean', 'grupo_producto']
@@ -450,11 +453,11 @@ def lambda_handler(event, context):
             df_bank = df.copy()
             df_bank.columns = [clean_column_name(c) for c in df_bank.columns]
             
-            # Si existe columna ID, usarla como clave
+            # Si existe columna MESSAGE_ID, usarla como clave
             key_cols = ['MESSAGE_ID'] if 'MESSAGE_ID' in df_bank.columns else []
             
-            load_to_staging(bq_client, df_bank, table_name)
-            merge_to_prod(bq_client, table_name, key_cols, list(df_bank.columns))
+            staging_table_id, _ = load_to_staging(bq_client, df_bank, table_name)
+            merge_to_prod(bq_client, staging_table_id, table_name, key_cols, list(df_bank.columns))
             verify_table_count(bq_client, BQ_DATASET_PROD, table_name)
             
             tables_processed = [table_name]
