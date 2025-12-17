@@ -30,6 +30,7 @@ def lambda_handler(event, context):
         # Obtener datos del body - CORREGIDO: la firma está en el body, no en headers
         transaction_id = body_json.get("transaction_id", "")
         generation_date = body_json.get("generation_date", "")
+        request_date = body_json.get("request_date", "")
         firma_enviada = body_json.get("signature", "")  # ¡Esto es lo importante!
 
         if not transaction_id or not generation_date or not firma_enviada:
@@ -41,13 +42,14 @@ def lambda_handler(event, context):
 
         # Agrega esto al inicio de tu lambda_handler después de parsear el body
         print("=== DEBUG INFO ===")
-        print(f"Transaction ID: {body_json.get('transaction_id')}")
-        print(f"Generation Date: {body_json.get('generation_date')}")
-        print(f"Signature: {body_json.get('signature')}")
+        print(f"Transaction ID: {transaction_id}")
+        print(f"Generation Date: {generation_date}")
+        print(f"Request Date: {request_date}")
+        print(f"Signature: {firma_enviada}")
         print(f"All body keys: {list(body_json.keys())}")
 
         # Construir la cadena para verificación
-        cadena_para_firma = f"{transaction_id}-{CIFRADO_SECRET}-{generation_date}"
+        cadena_para_firma = f"{transaction_id}-{CIFRADO_SECRET}-{request_date}"
         cadena_para_firma_bytes = cadena_para_firma.encode("utf-8")
         
         print(f"Cadena para verificación: {cadena_para_firma}")
