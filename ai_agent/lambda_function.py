@@ -97,20 +97,40 @@ TABLE_METADATA = {
             "Incluye tanto pagos enviados como recibidos"
         ],
         "columns": {
-            "fecha": {
-                "type": "DATE",
+            "TRANSACTION_DATE": {
+                "type": "STRING",
                 "description": "Fecha de la transacción",
-                "example": "2024-11-15"
+                "example": "2025-02-12T17:55:15.000-03:00"
             },
-            "monto": {
-                "type": "FLOAT64",
-                "description": "Monto de la transacción",
+            "SETTLEMENT_NET_AMOUNT": {
+                "type": "STRING",
+                "description": "Monto neto de la transacción",
                 "example": "2500.00"
             },
-            "descripcion": {
+            "TRANSACTION_TYPE": {
                 "type": "STRING",
-                "description": "Descripción o concepto del pago",
-                "example": "Pago a comercio"
+                "description": "Tipo de transaccion, si es una salida de dinero (PAYOUTS), si es una devolucion (CASHBACK), etc.",
+                "example": "PAYOUTS"
+            },
+            "PAYMENT_METHOD": {
+                "type": "STRING",
+                "description": "Metodo de pago",
+                "example": "American Express"
+            },
+            "PAYMENT_METHOD_TYPE": {
+                "type": "STRING",
+                "description": "Tipo de medio de pago",
+                "example": "Tarjeta de credito"
+            },
+            "INSTALLMENTS": {
+                "type": "STRING",
+                "description": "Cuotas",
+                "example": "1"
+            },
+            "SETTLEMENT_CURRENCY": {
+                "type": "STRING",
+                "description": "Divisa del pago",
+                "example": "ARS"
             }
         }
     },
@@ -121,8 +141,8 @@ TABLE_METADATA = {
             "Tiene detalle a nivel de producto individual"
         ],
         "columns": {
-            "fecha_compra": {
-                "type": "DATE",
+            "fecha": {
+                "type": "STRING",
                 "description": "Fecha de la compra",
                 "example": "2024-11-15"
             },
@@ -131,15 +151,40 @@ TABLE_METADATA = {
                 "description": "Nombre del producto comprado",
                 "example": "LECHE ENTERA 1L"
             },
-            "precio": {
+            "categoria": {
+                "type": "STRING",
+                "description": "Categoria del producto comprado",
+                "example": "Frutas Y Verduras"
+            },
+            "monto_total": {
                 "type": "FLOAT64",
-                "description": "Precio del producto",
+                "description": "Monto total gasto en el producto. Puede ser el resultado de multilpicar precio_unit * cantidad o precio_unit * peso.",
+                "example": "850.00"
+            },
+            "precio_unit": {
+                "type": "FLOAT64",
+                "description": "Precio por cada unidad del producto. En caso de ser un producto con peso <> 0 y cantidad = 0 entonces es precio por kilogramo del producto.",
                 "example": "850.00"
             },
             "cantidad": {
-                "type": "INT64",
+                "type": "FLOAT64",
                 "description": "Cantidad comprada",
-                "example": "2"
+                "example": "2.0"
+            },
+            "peso": {
+                "type": "FLOAT64",
+                "description": "Cantidad comprada en peso (kilogramos)",
+                "example": "2.0"
+            },
+            "total_ticket_meli": {
+                "type": "FLOAT64",
+                "description": "Monto total del ticket considerando el descuento de Mercado Libre.",
+                "example": "2.0"
+            },
+            "total_ticket_bruto": {
+                "type": "FLOAT64",
+                "description": "Monto total del ticket.",
+                "example": "2.0"
             }
         }
     },
@@ -150,14 +195,73 @@ TABLE_METADATA = {
             "Contiene categorías y clasificaciones de productos"
         ],
         "columns": {
-            "producto_id": {
+            "nombre_producto": {
                 "type": "STRING",
-                "description": "ID único del producto"
+                "description": "Nombre del producto",
+                "example" : "PICADA ESPECIAL NOVILLITO X KG"
             },
-            "categoria": {
+            "grupo_producto": {
                 "type": "STRING",
-                "description": "Categoría del producto",
-                "example": "LÁCTEOS"
+                "description": "Agrupador de productos por nombres similares.",
+                "example": "picadaespecialnovillitoxkg"
+            }
+        }
+    },
+    "supermarket_tickets": {
+        "description": "Compras en supermercados que no son Carrefour, con detalle de productos",
+        "semantic_hints": [
+            "Usar cuando pregunten por 'supermercado', 'compras de comida'",
+            "Tiene detalle a nivel de producto individual"
+        ],
+        "columns": {
+            "merchant_name": {
+                "type": "STRING",
+                "description": "PONTEFRUT S.A."
+            },
+            "transaction_date": {
+                "type": "STRING",
+                "description": "Dia de la compra.",
+                "example": "2022-12-03"
+            },
+            "transaction_time": {
+                "type": "STRING",
+                "description": "Horario de la compra.",
+                "example": "18:40"
+            },
+            "total_amount": {
+                "type": "STRING",
+                "description": "Monto total del ticket",
+                "example": "7750.0"
+            },
+            "currency": {
+                "type": "STRING",
+                "description": "Divisa del pago",
+                "example": "ARS"
+            },
+            "payment_method" : {
+                "type" : "STRING",
+                "description" : "Metodo de pago",
+                "example" : "Mercado Pago"
+            },
+            "item_name" : {
+                "type" : "STRING",
+                "description" : "Nombre del item",
+                "example" : "Avena Arrollada Instantanea 1 Kg."
+            },
+            "item_quantity" : {
+                "type" : "FLOAT64",
+                "description" : "Cantidad comprada del item.",
+                "example" : "1"
+            },
+            "item_unit_price" : {
+                "type" : "FLOAT64",
+                "description" : "Precio por unidad o kilogramo del item.",
+                "example" : "3950.0"
+            },
+            "item_total_price" : {
+                "type" : "FLOAT64",
+                "description" : "Monto total comprado del item.",
+                "example" : "3950.0"
             }
         }
     }

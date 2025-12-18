@@ -49,7 +49,7 @@ def lambda_handler(event, context):
         print(f"All body keys: {list(body_json.keys())}")
 
         # Construir la cadena para verificación
-        cadena_para_firma = f"{transaction_id}-{CIFRADO_SECRET}-{request_date}"
+        cadena_para_firma = f"{transaction_id}-{CIFRADO_SECRET}-{generation_date}"
         cadena_para_firma_bytes = cadena_para_firma.encode("utf-8")
         
         print(f"Cadena para verificación: {cadena_para_firma}")
