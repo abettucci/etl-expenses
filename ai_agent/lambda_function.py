@@ -57,8 +57,10 @@ TABLE_METADATA = {
         "description": "Gastos y transacciones del banco Santander. TODOS los registros son del Banco Santander, NO filtrar por banco/santander.",
         "semantic_hints": [
             "Esta tabla contiene TODOS los gastos bancarios",
-            "Si el usuario pregunta por 'gastos del banco' o 'banco santander', usar esta tabla SIN filtros adicionales de banco",
-            "El total de gastos es la suma de MONTO"
+            "Si el usuario pregunta por 'gastos del banco' o 'banco santander' o 'santander', usar esta tabla SIN filtros adicionales de banco",
+            "El total de gastos es la suma de MONTO",
+            "Cuando se pregunte por fechas, siempre convertir el campo FECHA_PAGO con la funcion PARSE_DATE(%d/%m/%Y', FECHA_PAGO)",
+            "Cuando se pregunte por horarios, siempre convertir el campo HORA_PAGO con la funcion PARSE_TIME('%H:%S', HORA_PAGO)"
         ],
         "columns": {
             "FECHA_PAGO": {
@@ -94,7 +96,8 @@ TABLE_METADATA = {
         "description": "Transacciones realizadas a través de Mercado Pago (transferencias, pagos QR, etc.)",
         "semantic_hints": [
             "Usar cuando pregunten por 'mercado pago', 'MP', 'transferencias', 'QR'",
-            "Incluye tanto pagos enviados como recibidos"
+            "Incluye tanto pagos enviados como recibidos",
+            "Cuando se pregunte por fechas, siempre convertir el campo TRANSACTION_DATE con la funcion TIMESTAMP()"
         ],
         "columns": {
             "TRANSACTION_DATE": {
@@ -138,7 +141,8 @@ TABLE_METADATA = {
         "description": "Compras en supermercado Carrefour con detalle de productos",
         "semantic_hints": [
             "Usar cuando pregunten por 'carrefour', 'supermercado', 'compras de comida'",
-            "Tiene detalle a nivel de producto individual"
+            "Tiene detalle a nivel de producto individual",
+            "Cuando se pregunte por fechas, siempre convertir el campo FECHA con la funcion PARSE_DATE(%d/%m/%Y', FECHA)",
         ],
         "columns": {
             "fecha": {
@@ -893,6 +897,45 @@ def load_receipt_to_bigquery(df: pd.DataFrame, bq_client) -> int:
     try:
         table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{BQ_TABLE_SUPERMARKET}"
         
+        # === LOGGING DETALLADO DEL DATAFRAME ===
+        print("=" * 80)
+        print("📊 ANÁLISIS DEL DATAFRAME ANTES DE CARGAR A BIGQUERY")
+        print("=" * 80)
+        
+        # 1. Información general
+        print(f"📋 Número de filas: {len(df)}")
+        print(f"📋 Número de columnas: {len(df.columns)}")
+        print(f"📋 Columnas: {list(df.columns)}")
+        
+        # 2. Tipos de datos del DataFrame
+        print("\n📊 TIPOS DE DATOS DEL DATAFRAME:")
+        for col in df.columns:
+            dtype = df[col].dtype
+            non_null = df[col].notna().sum()
+            null_count = df[col].isna().sum()
+            print(f"  • {col}: {dtype} (Non-null: {non_null}, Null: {null_count})")
+            
+            # Mostrar algunos valores de ejemplo
+            sample_values = df[col].dropna().head(3).tolist()
+            if sample_values:
+                print(f"    Ejemplos: {sample_values}")
+        
+        # 3. Obtener el esquema actual de BigQuery
+        print("\n📊 ESQUEMA DE LA TABLA EN BIGQUERY:")
+        try:
+            table = bq_client.get_table(table_id)
+            print(f"  Tabla: {table_id}")
+            for field in table.schema:
+                print(f"  • {field.name}: {field.field_type} (mode: {field.mode})")
+        except Exception as schema_error:
+            print(f"  ⚠️ No se pudo obtener el esquema: {schema_error}")
+        
+        # 4. Muestra de los primeros 3 registros
+        print("\n📋 MUESTRA DE DATOS (primeras 3 filas):")
+        print(df.head(3).to_string())
+        
+        print("\n" + "=" * 80)
+        
         # Configurar el job
         job_config = bigquery.LoadJobConfig(
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
@@ -913,7 +956,44 @@ def load_receipt_to_bigquery(df: pd.DataFrame, bq_client) -> int:
         return len(df)
         
     except Exception as e:
-        print(f"❌ Error cargando datos en BigQuery: {e}")
+        print("\n" + "=" * 80)
+        print("❌ ERROR AL CARGAR DATOS EN BIGQUERY")
+        print("=" * 80)
+        print(f"Error: {e}")
+        print(f"Tipo de error: {type(e).__name__}")
+        
+        # Intentar identificar el campo problemático
+        error_msg = str(e)
+        if "truncated converting to int64" in error_msg.lower():
+            print("\n🔍 ANÁLISIS DEL ERROR DE TIPO DE DATO:")
+            print("  → El error indica que hay un valor float siendo convertido a int64")
+            
+            # Buscar campos que podrían ser el problema
+            print("\n🔎 CAMPOS CON VALORES FLOAT EN EL DATAFRAME:")
+            for col in df.columns:
+                if df[col].dtype in ['float64', 'float32', 'float']:
+                    has_decimals = (df[col].dropna() % 1 != 0).any()
+                    if has_decimals:
+                        print(f"  ⚠️ {col}: {df[col].dtype}")
+                        print(f"     → Contiene valores con decimales")
+                        print(f"     → Valores únicos: {df[col].dropna().unique()[:10]}")
+            
+            # Comparar con el esquema de BigQuery
+            try:
+                table = bq_client.get_table(table_id)
+                print("\n🔎 CAMPOS INTEGER EN BIGQUERY:")
+                for field in table.schema:
+                    if field.field_type in ['INTEGER', 'INT64']:
+                        print(f"  • {field.name}: {field.field_type}")
+                        if field.name in df.columns:
+                            df_type = df[field.name].dtype
+                            print(f"    → En DataFrame: {df_type}")
+                            sample_vals = df[field.name].dropna().head(5).tolist()
+                            print(f"    → Valores: {sample_vals}")
+            except Exception as schema_error:
+                print(f"  ⚠️ No se pudo comparar esquemas: {schema_error}")
+        
+        print("=" * 80 + "\n")
         raise
 
 def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:

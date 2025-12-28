@@ -913,27 +913,6 @@ resource "aws_iam_policy" "lambda_ecr_access" {
   })
 }
 
-resource "aws_iam_policy" "lambda_bedrock_access" {
-  name = "lambda_bedrock_access"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream",
-          "bedrock:ListFoundationModels",
-          "bedrock:GetFoundationModel",
-          "bedrock-runtime:InvokeModel",
-          "bedrock-runtime:InvokeModelWithResponseStream"
-        ],
-        Effect   = "Allow",
-        Resource = "*"
-      }
-    ]
-  })
-}
-
 resource "aws_iam_policy" "lambda_s3_access" {
   name = "lambda_s3_access"
   policy = jsonencode({
@@ -974,6 +953,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
           "dynamodb:Query",
           "dynamodb:Scan"
         ]
