@@ -1009,11 +1009,6 @@ resource "aws_iam_role_policy_attachment" "lambda_ecr" {
   policy_arn = aws_iam_policy.lambda_ecr_access.arn
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_bedrock" {
-  role       = aws_iam_role.lambda_exec.name
-  policy_arn = aws_iam_policy.lambda_bedrock_access.arn
-}
-
 resource "aws_iam_role_policy_attachment" "lambda_s3" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_s3_access.arn
