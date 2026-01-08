@@ -106,9 +106,14 @@ variable "glue_crawler_name_mp_reports" {
   default = "mp-reports-crawler"
 }
 
-variable "gluw_crawler_name_bank_payments" {
+variable "glue_crawler_name_bank_payments" {
   type    = string
   default = "bank-payments-crawler"
+}
+
+variable "glue_crawler_name_mp_transfers" {
+  type    = string
+  default = "mp-transfers-crawler"
 }
 
 variable "dynamodb_table_name" {
@@ -138,6 +143,12 @@ resource "aws_s3_bucket" "bank_payments" {
 # 1.4 Bucket para Tickets de Telegram (fotos de recibos)
 resource "aws_s3_bucket" "telegram_receipts" {
   bucket        = "telegram-receipts"
+  force_destroy = true
+}
+
+# 1.5 Bucket para Transferencias de Mercado Pago
+resource "aws_s3_bucket" "mp_transfers" {
+  bucket        = "mercadopago-tranfers"
   force_destroy = true
 }
 
@@ -761,6 +772,7 @@ resource "aws_lambda_function" "process_telegram_img" {
   }
 }
 
+# 4.12 
 resource "aws_lambda_function" "load_receipt_to_bq" {
   function_name = "load_receipt_to_bq"
   role          = aws_iam_role.lambda_exec.arn
@@ -773,6 +785,23 @@ resource "aws_lambda_function" "load_receipt_to_bq" {
   environment {
     variables = {
       GCP_PROJECT_ID = var.GCP_PROJECT_ID
+    }
+  }
+}
+
+# 4.13 Lambda para procesar las transferencias de mercado pago
+resource "aws_lambda_function" "mp_transfers_processor" {
+  function_name = "mp_transfers_processor"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:mp_transfers_processor-latest"
+
+  memory_size = 1024  # Ajustar según necesidades
+  timeout     = 900   # Máximo 15 minutos
+
+  environment {
+    variables = {
+      BUCKET_NAME = aws_s3_bucket.mp_transfers.bucket
     }
   }
 }
@@ -933,6 +962,8 @@ resource "aws_iam_policy" "lambda_s3_access" {
           "${aws_s3_bucket.mp_reports.arn}/*",
           "${aws_s3_bucket.bank_payments.arn}/*",
           aws_s3_bucket.bank_payments.arn,
+          "${aws_s3_bucket.mp_transfers.arn}/*",
+          aws_s3_bucket.mp_transfers.arn,
           "${aws_s3_bucket.telegram_receipts.arn}/*",
           aws_s3_bucket.telegram_receipts.arn
         ]
@@ -1067,6 +1098,8 @@ resource "aws_iam_role_policy" "lambda_exec_copy_policy" {
           aws_s3_bucket.mp_reports.arn,
           "${aws_s3_bucket.bank_payments.arn}/*",
           aws_s3_bucket.bank_payments.arn,
+          "${aws_s3_bucket.mp_transfers.arn}/*",
+          aws_s3_bucket.mp_transfers.arn,
           "${aws_s3_bucket.telegram_receipts.arn}/*",
           aws_s3_bucket.telegram_receipts.arn
         ]
@@ -1117,6 +1150,8 @@ resource "aws_iam_role_policy" "glue_s3_access" {
           "${aws_s3_bucket.mp_reports.arn}/*",
           aws_s3_bucket.bank_payments.arn,
           "${aws_s3_bucket.bank_payments.arn}/*",
+          "${aws_s3_bucket.mp_transfers.arn}/*",
+          aws_s3_bucket.mp_transfers.arn,
           aws_s3_bucket.telegram_receipts.arn,
           "${aws_s3_bucket.telegram_receipts.arn}/*"
         ]
@@ -1138,6 +1173,29 @@ resource "aws_s3_bucket_policy" "market_tickets_policy" {
         Resource = [
           aws_s3_bucket.market_tickets.arn,
           "${aws_s3_bucket.market_tickets.arn}/*"
+        ],
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_s3_bucket_policy" "mp_transfers_policy" {
+  bucket = aws_s3_bucket.mp_transfers.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Deny",
+        Principal = "*",
+        Action    = "s3:*",
+        Resource = [
+          aws_s3_bucket.mp_transfers.arn,
+          "${aws_s3_bucket.mp_transfers.arn}/*"
         ],
         Condition = {
           Bool = {
@@ -1640,6 +1698,82 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
   })
 }
 
+resource "aws_sfn_state_machine" "mp_transfers_etl_flow" {
+  name     = "mp-transfers-etl-flow"
+  role_arn = aws_iam_role.step_function_role.arn
+
+  logging_configuration {
+    level                  = "ALL"
+    include_execution_data = true
+    log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
+  }
+
+  definition = jsonencode({
+    StartAt = "Check If Should Process",
+    States = {
+      # Step 1: Choice
+      "Check If Should Process" = {
+        Type = "Choice",
+        Choices = [
+          {
+            Variable      = "$.body.process",
+            BooleanEquals = true,
+            Next          = "Transform Gmail MP Transfers"
+          }
+        ],
+        Default = "SkipProcessing"
+      },
+
+      "SkipProcessing" = {
+        Type = "Succeed"
+      },
+
+      # Step 2: Transform
+      "Transform Gmail MP Transfers" = {
+        Type       = "Task",
+        Resource   = aws_lambda_function.mp_transfers_processor.arn,
+        Parameters = {
+          "key.$" = "$.body.key"
+        },
+        Next  = "Load Gmail MP Transfers",
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
+          }
+        ]
+      },
+
+      # Step 3: Load
+      "Load Gmail MP Transfers" = {
+        Type       = "Task",
+        Resource   = aws_lambda_function.load_report_and_pdf.arn,
+        Parameters = {
+          "etl_flow.$"    = "$.body.etl_flow",
+          "bucket.$"      = "$.body.bucket",
+          "key.$"         = "$.body.key"
+        },
+        End = true,
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
+          }
+        ]
+      },
+
+      # Step compensatorio
+      "CompensationFlow" = {
+        Type     = "Task",
+        Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        End      = true
+      }
+    }
+  })
+}
+
 # 8.4 Step Function EXPRESS para ETL de tickets de Telegram (síncrona)
 resource "aws_sfn_state_machine" "telegram_receipt_etl_flow" {
   name     = "telegram-receipt-etl-flow"
@@ -1721,7 +1855,6 @@ resource "aws_sfn_state_machine" "telegram_receipt_etl_flow" {
   })
 }
 
-
 ########### 9. Glue Data Catalog ###########
 
 resource "aws_glue_catalog_database" "etl_database" {
@@ -1797,7 +1930,7 @@ resource "aws_glue_classifier" "csv_classifier" {
 }
 
 resource "aws_glue_crawler" "bank_payments_crawler" {
-  name          = var.gluw_crawler_name_bank_payments
+  name          = var.glue_crawler_name_bank_payments
   role          = aws_iam_role.glue_service_role.arn
   database_name = aws_glue_catalog_database.etl_database.name
   description   = "Crawler semanal que analiza la carpeta processed/ en S3"
@@ -1822,7 +1955,31 @@ resource "aws_glue_crawler" "bank_payments_crawler" {
   schedule = "cron(0 11 ? * MON *)" # Corre todos los lunes a las 8:00 UTC-3
 }
 
+resource "aws_glue_crawler" "mp_transfers_crawler" {
+  name          = var.glue_crawler_name_mp_transfers
+  role          = aws_iam_role.glue_service_role.arn
+  database_name = aws_glue_catalog_database.etl_database.name
+  description   = "Crawler semanal que analiza la carpeta processed/ en S3"
+  table_prefix  = "mp_transfers_"
 
+  s3_target {
+    path = "s3://${aws_s3_bucket.mp_transfers.bucket}/processed/"
+  }
+
+  configuration = jsonencode({
+    Version = 1.0,
+    CrawlerOutput = {
+      Partitions = {
+        AddOrUpdateBehavior = "InheritFromTable"
+      }
+    },
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
+  })
+
+  schedule = "cron(0 11 ? * MON *)" # Corre todos los lunes a las 8:00 UTC-3
+}
 
 
 ########### 11. CloudWatch Alarm ###########

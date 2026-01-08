@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: ["pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "extract_data_gmail-latest|extract_data_gmail/extract_data_gmail.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile", "ai_agent-latest|ai_agent/ai_agent.dockerfile", "gmail_watcher-latest|gmail_watcher/gmail_watcher.dockerfile", "process_telegram_img-latest|process_telegram_img/process_telegram_img.dockerfile", "load_receipt_to_bq-latest|load_receipt_to_bq/load_receipt_to_bq.dockerfile"]
+        image: ["pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "extract_data_gmail-latest|extract_data_gmail/extract_data_gmail.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile", "ai_agent-latest|ai_agent/ai_agent.dockerfile", "gmail_watcher-latest|gmail_watcher/gmail_watcher.dockerfile", "process_telegram_img-latest|process_telegram_img/process_telegram_img.dockerfile", "load_receipt_to_bq-latest|load_receipt_to_bq/load_receipt_to_bq.dockerfile","mp_transfers_processor-latest|transform_data_mp_transfers/transform_data_mp_transfers.dockerfile"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -141,9 +141,11 @@ jobs:
           terraform import aws_s3_bucket.mp_reports mercadopago-reports || true
           terraform import aws_s3_bucket.bank_payments bank-payments || true
           terraform import aws_s3_bucket.telegram_receipts telegram-receipts || true
+          # terraform import aws_s3_bucket.mp_transfers mercadopago-transfers || true
 
           terraform import aws_s3_bucket_policy.mp_reports_policy mercadopago-reports || true
           terraform import aws_s3_bucket_policy.market_tickets_policy market-tickets || true
+          # terraform import aws_s3_bucket_policy.mp_transfers_policy mercadopago-transfers || true
 
           API_ID=$(aws apigateway get-rest-apis --query "items[?name=='main-api'].id" --output text)
 
@@ -215,7 +217,6 @@ jobs:
           terraform import aws_iam_role_policy_attachment.lambda_bedrock lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_bedrock_access || true
           # terraform import aws_iam_role_policy_attachment.lambda_basic lambda_exec/arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || true
 
-
           terraform import aws_lambda_function.webhook_mp_report webhook_mp_report || true
           terraform import aws_lambda_function.compensation_flow compensation_flow || true
           terraform import aws_lambda_function.pdf_processor pdf_processor || true
@@ -228,6 +229,7 @@ jobs:
           terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
           terraform import aws_lambda_function.process_telegram_img process_telegram_img || true
           terraform import aws_lambda_function.load_receipt_to_bq load_receipt_to_bq || true
+          # terraform import aws_lambda_function.mp_transfers_processor mp_transfers_processor || true
 
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
@@ -238,11 +240,13 @@ jobs:
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
           terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
           terraform import aws_sfn_state_machine.telegram_receipt_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:telegram-receipt-etl-flow || true
+          # terraform import aws_sfn_state_machine.mp_transfers_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-transfers-etl-flow || true
 
           terraform import aws_glue_catalog_database.etl_database "$TF_VAR_AWS_ACCOUNT_ID:etl_database" || true
           terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler || true
           terraform import aws_glue_crawler.mp_reports_crawler mp-reports-crawler || true
           terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler || true
+          # terraform import aws_glue_crawler.mp_transfers_crawler mp-transfers-crawler || true
 
           terraform import aws_glue_classifier.csv_classifier  mercadopago_csv_classifier
           

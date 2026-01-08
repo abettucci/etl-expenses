@@ -26,7 +26,8 @@ BANK_SUBJECTS = ["Pagaste","Aviso de débito automático"]
 MARKET_EMAIL_SENDERS = ["atencion_clientes@m.contactocarrefour.com.ar", "contacto@m.tarjetacarrefour.com.ar"]
 MARKET_SUBJECT = "Hola, te enviamos el ticket digital de tu compra."
 MP_EMAIL_SENDERS = ['info@mercadopago.com']
-MP_SUBJECT = 'Tu transferencia fue enviada' # Pago aprobado en, Pagaste tu tarjeta de crédito
+MP_SUBJECT_TRANSFER = 'Tu transferencia fue enviada' # Pago aprobado en, Pagaste tu tarjeta de crédito
+MP_SUBJECT_REPORT = 'Ya podés conciliar todas tus transacciones'
 
 # bank_body_contains = ["Te acercamos el detalle de tu consumo con la Tarjeta Santander", "Te acercamos el detalle del débito con tu Tarjeta Santander"]
 
@@ -179,40 +180,6 @@ def get_last_message_loaded(bq_client):
         else:
             print(f"❌ Error al consultar BigQuery: {e}")
         return '2024/10/01'
-
-def extract_by_date_payments_from_gmail(bq_client, ids_existentes, gmail_service, s3_client, bucket_name, folder):
-    for subject in SUBJECT_CONTAINS:
-        date_str = get_last_message_loaded(bq_client)
-        query = f'from:{SENDER_EMAIL} subject:"{subject}" after:{date_str}'
-        results = gmail_service.users().messages().list(userId='me', q=query).execute()
-        messages = results.get('messages', [])
-        print(f"Total de mails de Santander posterior a {date_str}: {len(messages)}")
-
-        for msg in messages:
-            message = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
-            msg_id = msg['id']
-
-            if msg_id not in ids_existentes:
-                payload = message['payload']
-                parts = payload.get('parts', [])
-                html_encoded = find_html_part(payload)
-                html_data = base64.urlsafe_b64decode(html_encoded).decode('utf-8', errors='replace') if html_encoded else None
-                body_text = BeautifulSoup(html_data, 'html.parser').get_text() if html_data else ""
-
-                mail_data = {
-                    "message_id": msg_id,
-                    "date": datetime.fromtimestamp(int(message['internalDate']) / 1000).isoformat(),
-                    "sender": SENDER_EMAIL,
-                    "subject": next(h['value'] for h in payload['headers'] if h['name'] == 'Subject'),
-                    "html_body": html_data,
-                    "raw_text": body_text,
-                }
-
-                s3_key = f"{folder}{mail_data['date'][:10]}-{msg_id}.json"
-                s3_client.put_object(Body=json.dumps(mail_data), Bucket=bucket_name, Key=s3_key)
-                print(f"✅ Archivo subido a S3: {s3_key}")
-            else:
-                print("⚠️ El archivo ya existe en S3, se omite la subida.")
 
 def process_email(message_id, gmail_service):
     """Procesar email completo desde Gmail API"""
@@ -398,8 +365,11 @@ def reproceso_historico(table_name):
         if table_name == 'carrefour_data':
             labels = ['Avisos Compra Carrefour']
             crawler_name = 'market-tickets-crawler'
-        else: # bank_payments
+        elif table_name == 'bank_payments':
             labels = ['Avisos Gastos Santander']
+            crawler_name = 'bank-payments-crawler'
+        else: # Transferencia MP
+            labels = ['Aviso Transferencia MP']
             crawler_name = 'bank-payments-crawler'
 
         results = gmail_service.users().labels().list(userId="me").execute()
@@ -437,9 +407,12 @@ def reproceso_historico(table_name):
                     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                         table_name = 'carrefour_data'
                         pk = 'nro_ticket'
-                    elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                    elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_REPORT in subject):
                         table_name = 'mp_data'
                         pk = 'REPORT_ID'
+                    elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_TRANSFER in subject):
+                        table_name = 'mp_transfer_data'
+                        pk = 'message_id'    
                     else:
                         print(f'Email ignorado (no cumple filtros): {sender} - {subject}')
                         continue
@@ -466,6 +439,8 @@ def reproceso_historico(table_name):
                         step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
                     elif label['name'] == 'Avisos Compra Carrefour':
                         step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                    elif label['name'] == 'Aviso Transferencia MP':
+                        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
                     else:
                         print(f"Label {label['name']} no reconocido - continuamos con el siguiente mail")
                         continue
@@ -602,12 +577,14 @@ def lambda_handler(event, context):
         s3_client = boto3.client('s3')
         bank_bucket = os.environ['BANK_BUCKET_NAME']
         market_bucket = os.environ['MARKET_BUCKET_NAME']
+        mp_transfer_bucket = os.environ['MP_TRANSFER_BUCKET_NAME']
+        mp_reports_bucket = os.environ['MP_REPORTS_BUCKET_NAME']
         folder = 'raw/'
 
         # Construir mapa de labels para referencia
         results = gmail_service.users().labels().list(userId="me").execute()
         label_map = {}
-        target_label_names = ['Avisos Gastos Santander', 'Avisos Compra Carrefour']
+        target_label_names = ['Avisos Gastos Santander', 'Avisos Compra Carrefour', 'Aviso Transferencia MP']
         target_label_ids = []
         
         for label in results['labels']:
@@ -773,9 +750,12 @@ def lambda_handler(event, context):
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
-                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_REPORT in subject):
                                 table_name = 'mp_data'
                                 pk = 'REPORT_ID'
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_TRANSFER in subject):
+                                table_name = 'mp_transfer_data'
+                                pk = 'message_id'    
                             else:
                                 print(f'⚠️  Email ignorado (no cumple filtros de sender/subject): {sender} - {subject}')
                                 continue
@@ -802,6 +782,8 @@ def lambda_handler(event, context):
                                 step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
                             elif 'Avisos Compra Carrefour' in labels_names:
                                 step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                            elif  'Aviso Transferencia MP' in labels_names:
+                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue
@@ -889,9 +871,12 @@ def lambda_handler(event, context):
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
-                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_REPORT in subject):
                                 table_name = 'mp_data'
                                 pk = 'REPORT_ID'
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_TRANSFER in subject):
+                                table_name = 'mp_transfer_data'
+                                pk = 'message_id'    
                             else:
                                 print(f'⚠️  Email ignorado (no cumple filtros de sender/subject): {sender} - {subject}')
                                 continue
@@ -919,6 +904,8 @@ def lambda_handler(event, context):
                                 step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
                             elif 'Avisos Compra Carrefour' in all_labels_names:
                                 step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                            elif  'Aviso Transferencia MP' in labels_names:
+                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {all_labels_names}")
                                 continue
@@ -1018,10 +1005,12 @@ def lambda_handler(event, context):
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
                                 table_name = 'carrefour_data'
                                 pk = 'nro_ticket'
-                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT in subject):
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_REPORT in subject):
                                 table_name = 'mp_data'
                                 pk = 'REPORT_ID'
-
+                            elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_TRANSFER in subject):
+                                table_name = 'mp_transfer_data'
+                                pk = 'message_id'    
                             else:
                                 print(f'⚠️  Email ignorado (no cumple filtros de sender/subject): {sender} - {subject}')
                                 continue
@@ -1048,6 +1037,8 @@ def lambda_handler(event, context):
                                 step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
                             elif 'Avisos Compra Carrefour' in labels_names:
                                 step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                            elif  'Aviso Transferencia MP' in labels_names:
+                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue
@@ -1107,11 +1098,7 @@ def lambda_handler(event, context):
             'body': json.dumps({'message': 'Procesamiento completado exitosamente'})
         }
         
-            
     except Exception as e:
-        # Si falla la logica de filtrado por ids podria probar con traer los mails recibidos desde la ultima fecha de ingestion
-        # extract_by_date_payments_from_gmail(bq_client, ids_existentes, gmail_service, s3_client, bucket_name, folder)
-
         print("⚠️ Error:", str(e))
         import traceback
         traceback.print_exc()
