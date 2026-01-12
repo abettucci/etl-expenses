@@ -4,6 +4,9 @@ import pandas as pd
 import unicodedata
 import re
 import requests
+import os
+
+MP_REPORTS_BUCKET_NAME = os.environ['MP_REPORTS_BUCKET_NAME']
 
 def auth_mp():
     # Cliente AWS SSM para Parameter Store
@@ -83,13 +86,6 @@ def move_to_processed(s3_client, file_key, bucket_name):
             ContentType='text/csv'
         )
 
-        # # Eliminar archivo original (opcional)
-        # try:
-        #     s3_client.delete_object(Bucket=bucket_name, Key=file_key)
-        #     print(f"🧹 Archivo original eliminado: {file_key}")
-        # except Exception as e:
-        #     print(f"⚠️ No se pudo eliminar el archivo original: {str(e)}")
-
         print(f"✅ Archivo convertido a CSV y cargado en {destination_folder}: {new_key}")
 
         return new_key
@@ -121,7 +117,6 @@ def get_report_id(my_file_name, access_token):
 def transform_mp_report_data(event):
     key = event['key']  # ya incluye carpeta (raw/)
     s3_client = boto3.client('s3')
-    bucket_name = 'mercadopago-reports'
 
     print(f"📄 Procesando archivo: {key}")
     s3_filename = key.split('/')[-1]
@@ -134,7 +129,7 @@ def transform_mp_report_data(event):
     s3_report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
     
     # Mover y convertir archivo
-    new_key = move_to_processed(s3_client, key, bucket_name)
+    new_key = move_to_processed(s3_client, key, MP_REPORTS_BUCKET_NAME)
 
     print(f"🗓️ Fecha del reporte: {report_date}")
     return new_key, report_date, report_id
@@ -144,7 +139,7 @@ def lambda_handler(event, context):
         new_key, report_date, report_id = transform_mp_report_data(event)
         return {
             "etl_flow": 'MP',
-            "bucket": 'mercadopago-reports',
+            "bucket": MP_REPORTS_BUCKET_NAME,
             "key": new_key,
             "report_date": report_date,
             "report_id": report_id

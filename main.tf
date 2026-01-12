@@ -595,6 +595,12 @@ resource "aws_lambda_function" "pdf_processor" {
 
   memory_size = 1024  # Más memoria para procesar PDFs
   timeout     = 900
+
+  environment {
+    variables = {
+      MARKET_BUCKET = aws_s3_bucket.market_tickets.bucket
+    }
+  }
 }
 
 # 4.3 Lambda para extraer reportes de Mercado Pago
@@ -609,7 +615,9 @@ resource "aws_lambda_function" "mp_report_extractor" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
+      MP_REPORTS_BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
+      MP_REPORT_STEP_FUNCTION_ARN = aws_sfn_state_machine.mp_report_etl_flow.arn
+      CIFRADO_SECRET_MP = var.CIFRADO_SECRET_MP
     }
   }
 }
@@ -626,7 +634,7 @@ resource "aws_lambda_function" "mp_report_processor" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
+      MP_REPORTS_BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
     }
   }
 }
@@ -645,6 +653,10 @@ resource "aws_lambda_function" "extract_data_gmail" {
     variables = {
       MARKET_BUCKET_NAME = aws_s3_bucket.market_tickets.bucket
       BANK_BUCKET_NAME   = aws_s3_bucket.bank_payments.bucket
+      MP_TRANSFER_BUCKET_NAME = aws_s3_bucket.mp_transfers.bucket
+      BANK_STEP_FUNCTION_ARN = aws_sfn_state_machine.bank_payments_etl_flow.arn
+      MARKET_STEP_FUNCTION_ARN = aws_sfn_state_machine.pdf_etl_flow.arn
+      MP_TRANSFER_STEP_FUNCTION_ARN =  aws_sfn_state_machine.mp_transfers_etl_flow.arn
       GCP_PROJECT_ID     = var.GCP_PROJECT_ID
       BQ_DATASET_PROD    = "PRD"
     }
@@ -663,7 +675,7 @@ resource "aws_lambda_function" "bank_payments_processor" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
+      BANK_BUCKET = aws_s3_bucket.bank_payments.bucket
     }
   }
 }
@@ -684,7 +696,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
       BQ_DATASET_STAGING = "STG"
       BQ_DATASET_PROD    = "PRD"
       BQ_LOCATION        = "US"
-      BUCKET_NAME        = aws_s3_bucket.mp_reports.bucket
+      MP_REPORTS_BUCKET  = aws_s3_bucket.mp_reports.bucket
     }
   }
 }
@@ -701,7 +713,7 @@ resource "aws_lambda_function" "webhook_mp_report" {
 
   environment {
     variables = {
-      STEP_FUNCTION_ARN = aws_sfn_state_machine.mp_report_etl_flow.arn
+      MP_REPORT_STEP_FUNCTION_ARN = aws_sfn_state_machine.mp_report_etl_flow.arn
       CIFRADO_SECRET_MP = var.CIFRADO_SECRET_MP
     }
   }
@@ -801,7 +813,7 @@ resource "aws_lambda_function" "mp_transfers_processor" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.mp_transfers.bucket
+      MP_TRANSFER_BUCKET_NAME = aws_s3_bucket.mp_transfers.bucket
     }
   }
 }

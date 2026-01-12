@@ -5,6 +5,9 @@ import hashlib
 from bs4 import BeautifulSoup
 from datetime import datetime 
 import io
+import os
+
+BANK_BUCKET = os.environ['BANK_BUCKET']
 
 def parse_monto(monto_raw):
     if not monto_raw:
@@ -69,12 +72,11 @@ def parse_mail(json_obj):
     }
 
 def transform_bank_payments_data(s3_key):
-    bucket_name = 'bank-payments'
     prefix = 'raw/'
     destination_folder = 'processed/'
     s3_client = boto3.client('s3')
 
-    obj = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+    obj = s3_client.get_object(Bucket=BANK_BUCKET, Key=s3_key)
     content = json.loads(obj['Body'].read().decode('utf-8'))
     records = parse_mail(content)
     df = pd.DataFrame([records])
@@ -85,7 +87,7 @@ def transform_bank_payments_data(s3_key):
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer, index=False)
         new_key = f"{destination_folder}{records['date']}-{records['message_id']}.csv"
-        s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=bucket_name, Key=new_key)
+        s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=BANK_BUCKET, Key=new_key)
         print(f"✅ Archivo subido como csv a S3/{new_key}")
 
     except Exception as e:

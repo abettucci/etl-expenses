@@ -5,6 +5,9 @@ import hashlib
 from bs4 import BeautifulSoup
 from datetime import datetime 
 import io
+import os
+
+MP_TRANSFER_BUCKET_NAME  = os.environ.get('MP_TRANSFER_BUCKET_NAME')
 
 def parse_monto(monto_raw):
     if not monto_raw:
@@ -57,12 +60,11 @@ def parse_mail(json_obj):
     }
 
 def transform_mp_transfers_data(s3_key):
-    bucket_name = 'mercadopago-transfers'
     prefix = 'raw/'
     destination_folder = 'processed/'
     s3_client = boto3.client('s3')
 
-    obj = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+    obj = s3_client.get_object(Bucket=MP_TRANSFER_BUCKET_NAME, Key=s3_key)
     content = json.loads(obj['Body'].read().decode('utf-8'))
     records = parse_mail(content)
     df = pd.DataFrame([records])
@@ -73,7 +75,7 @@ def transform_mp_transfers_data(s3_key):
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer, index=False)
         new_key = f"{destination_folder}{records['date']}-{records['message_id']}.csv"
-        s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=bucket_name, Key=new_key)
+        s3_client.put_object(Body=csv_buffer.getvalue(), Bucket=MP_TRANSFER_BUCKET_NAME, Key=new_key)
         print(f"✅ Archivo subido como csv a S3/{new_key}")
 
     except Exception as e:
@@ -89,7 +91,7 @@ def lambda_handler(event,context):
             "statusCode": 200,
             "body": {
                 "etl_flow": 'MP_TRANSFER',
-                "bucket": 'mercadopago-transfers',
+                "bucket": MP_TRANSFER_BUCKET_NAME,
                 "key": key
             }
         }

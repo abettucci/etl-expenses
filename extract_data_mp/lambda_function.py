@@ -4,16 +4,19 @@ import boto3
 import re
 import time
 import os
-from datetime import datetime, timedelta
 import pandas as pd
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
+
+MP_REPORTS_BUCKET = os.environ['MP_REPORTS_BUCKET_NAME']
+CIFRADO_SECRET = os.environ.get("CIFRADO_SECRET_MP")
+MP_REPORT_STEP_FUNCTION_ARN = os.environ.get("MP_REPORT_STEP_FUNCTION_ARN")
+PARAMETER_NAME = "/mercado_pago/token"
 
 # Funciona para obtener parametro de parameter store de AWS que contiene el access token a la API de Mercado Pago
 def auth_mp():
     # Cliente AWS SSM para Parameter Store
     ssm_client = boto3.client("ssm", region_name="us-east-2")
-    PARAMETER_NAME = "/mercado_pago/token"
 
     # Obtener el parámetro desde AWS Parameter Store
     try:
@@ -180,16 +183,10 @@ def run_step_function_sync(sfn_client, step_function_arn, payload, poll_interval
 def carga_inicial_de_s3(access_token):
     s3_client = boto3.client('s3')
     folder = 'raw/'
-    bucket_name = 'mercadopago-reports'
-
-    CIFRADO_SECRET = os.environ.get("CIFRADO_SECRET_MP")
-
     sfn_client = boto3.client("stepfunctions")
-    step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-report-etl-flow'  
-
     crawler_name = 'mp-reports-crawler'
 
-    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
+    response = s3_client.list_objects_v2(Bucket=MP_REPORTS_BUCKET, Prefix=folder)
     keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.csv')]
     for key in keys:
         file_type = 'csv'
@@ -214,7 +211,7 @@ def carga_inicial_de_s3(access_token):
 
             status, desc = run_step_function_sync(
                 sfn_client,
-                step_function_arn,
+                MP_REPORT_STEP_FUNCTION_ARN,
                 payload,
                 poll_interval=5  # cada 10 segundos chequea
             )
@@ -227,13 +224,12 @@ def extract_mercado_pago_reports(event, access_token):
     file_url = event['file_url']
     file_type = event['file_type']
     s3_client = boto3.client('s3')
-    bucket_name = 'mercadopago-reports'
     folder = 'raw/'
     key = f'{folder}{file_name}'
     s3_filename = key.split('/')[-1]
     report_file_name, report_date_hour, report_date = format_report_file_name(s3_filename)
     report_id, file_type = get_report_id(report_file_name, access_token)
-    save_report_to_s3(file_name, access_token, s3_client, bucket_name, key, file_type, report_id, report_date)
+    save_report_to_s3(file_name, access_token, s3_client, MP_REPORTS_BUCKET, key, file_type, report_id, report_date)
 
     return key
 

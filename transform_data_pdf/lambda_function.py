@@ -1,12 +1,14 @@
 import boto3
 import io
 import pdfplumber
-import json
+import os
 import pandas as pd
 import hashlib
 from PyPDF2 import PdfReader
 pd.set_option('display.max_columns', None)
-pd.set_option('display.max_rows', None)
+pd.set
+
+MARKET_BUCKET = os.environ['MARKET_BUCKET_NAME']
 
 def calcular_hash_pdf(content_bytes):
     return hashlib.sha256(content_bytes).hexdigest()
@@ -197,15 +199,13 @@ def lambda_handler(event, context):
     try:
         s3_file_to_transform = event['key']
         s3 = boto3.client('s3')
-        bucket = 'market-tickets'
-
         key = process_pdf_file(s3, bucket, s3_file_to_transform)
 
         return {
             "statusCode": 200,
             "body": {
                 "etl_flow": 'TICKET',
-                "bucket": bucket,
+                "bucket": MARKET_BUCKET,
                 "key": key
             }
         }

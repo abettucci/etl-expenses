@@ -21,6 +21,14 @@ from google.oauth2 import service_account
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
+BANK_BUCKET = os.environ['BANK_BUCKET_NAME']
+MARKET_BUCKET = os.environ['MARKET_BUCKET_NAME']
+MP_TRANSFER_BUCKET = os.environ['MP_TRANSFER_BUCKET_NAME']
+
+BANK_STEP_FUNCTION_ARN = os.environ['BANK_STEP_FUNCTION_ARN']
+MARKET_STEP_FUNCTION_ARN = os.environ['MARKET_STEP_FUNCTION_ARN']
+MP_TRANSFER_STEP_FUNCTION_ARN =  os.environ['MP_TRANSFER_STEP_FUNCTION_ARN']
+
 BANK_EMAIL_SENDER = "mensajesyavisos@mails.santander.com.ar"
 BANK_SUBJECTS = ["Pagaste","Aviso de débito automático"]
 MARKET_EMAIL_SENDERS = ["atencion_clientes@m.contactocarrefour.com.ar", "contacto@m.tarjetacarrefour.com.ar"]
@@ -265,7 +273,7 @@ def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s
 
     return s3_key
 
-def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject):
+def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject):
     """Dispatch basado en subject y sender"""
 
     if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
@@ -273,7 +281,7 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
         s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
         s3_client.put_object(
             Body=json.dumps(mail_data),
-            Bucket=bank_bucket,
+            Bucket=BANK_BUCKET,
             Key=s3_key
         )        
         print(f"✅ Archivo subido a S3: {s3_key}")
@@ -288,7 +296,7 @@ def dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client,
 
     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
         print('Descargando el pdf del mail de carrefour...')
-        s3_key = download_pdf_from_email_urls(mail_data, sender, market_bucket, folder, s3_client)
+        s3_key = download_pdf_from_email_urls(mail_data, sender, MARKET_BUCKET, folder, s3_client)
         print(f"✅ Archivo subido a S3: {s3_key}")
 
         return  {
@@ -356,10 +364,6 @@ def reproceso_historico(table_name):
         dynamo_table_name = "gmail-history-tracker"
         bq_client = get_bigquery_client()
         s3_client = boto3.client('s3')
-        bank_bucket = 'bank-payments'
-        market_bucket = 'market-tickets'
-        # bank_bucket = os.environ['BANK_BUCKET_NAME']
-        # market_bucket = os.environ['MARKET_BUCKET_NAME']
         folder = 'raw/'
 
         if table_name == 'carrefour_data':
@@ -427,7 +431,7 @@ def reproceso_historico(table_name):
                     
                     if msg_id not in ids_existentes:
                         print('Intentamos extraer los datos del mail y cargarlos a S3')
-                        response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)              
+                        response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)              
 
                     save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), '') #el history_id lo dejamos vacio porque no tenemos ese dato
 
@@ -436,11 +440,11 @@ def reproceso_historico(table_name):
                     print(payload)
 
                     if label['name'] == 'Avisos Gastos Santander':
-                        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
+                        step_function_arn = BANK_STEP_FUNCTION_ARN
                     elif label['name'] == 'Avisos Compra Carrefour':
-                        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                        step_function_arn = MARKET_STEP_FUNCTION_ARN
                     elif label['name'] == 'Aviso Transferencia MP':
-                        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
+                        step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                     else:
                         print(f"Label {label['name']} no reconocido - continuamos con el siguiente mail")
                         continue
@@ -465,7 +469,7 @@ def carga_inicial_desde_s3(table_name):
     folder = 'raw/'
 
     if table_name == 'carrefour_data':
-        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'  
+        step_function_arn = MARKET_STEP_FUNCTION_ARN
         bucket_name = 'market-tickets'
         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
         keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
@@ -488,7 +492,7 @@ def carga_inicial_desde_s3(table_name):
                 if status != "SUCCEEDED":
                     print(f"⚠️ Ejecución fallida para s3 file {key}: {status}")
     else: #bank_payments
-        step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'  
+        step_function_arn = BANK_STEP_FUNCTION_ARN
         bucket_name = 'bank-payments'
         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder)
         keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
@@ -575,10 +579,6 @@ def lambda_handler(event, context):
         gmail_service = build('gmail', 'v1', credentials=creds)
         bq_client = get_bigquery_client()
         s3_client = boto3.client('s3')
-        bank_bucket = os.environ['BANK_BUCKET_NAME']
-        market_bucket = os.environ['MARKET_BUCKET_NAME']
-        mp_transfer_bucket = os.environ['MP_TRANSFER_BUCKET_NAME']
-        mp_reports_bucket = os.environ['MP_REPORTS_BUCKET_NAME']
         folder = 'raw/'
 
         # Construir mapa de labels para referencia
@@ -771,7 +771,7 @@ def lambda_handler(event, context):
                             
                             # Procesar y subir a S3
                             print(f'💾 Extrayendo datos del mail y cargando a S3...')
-                            response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)    
+                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)    
                             print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
                             
                             # Ejecutar Step Function
@@ -779,11 +779,11 @@ def lambda_handler(event, context):
                             print(f'🚀 Payload para Step Function: {payload}')
 
                             if 'Avisos Gastos Santander' in labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
+                                step_function_arn = BANK_STEP_FUNCTION_ARN 
                             elif 'Avisos Compra Carrefour' in labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                                step_function_arn = MARKET_STEP_FUNCTION_ARN
                             elif  'Aviso Transferencia MP' in labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
+                                step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue
@@ -892,7 +892,7 @@ def lambda_handler(event, context):
                             
                             # Procesar y subir a S3
                             print(f'💾 Extrayendo datos del mail y cargando a S3...')
-                            response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)    
+                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)    
                             print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
                             
                             # Ejecutar Step Function
@@ -901,11 +901,11 @@ def lambda_handler(event, context):
 
                             # Determinar Step Function basado en labels actuales
                             if 'Avisos Gastos Santander' in all_labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
+                                step_function_arn = BANK_STEP_FUNCTION_ARN   
                             elif 'Avisos Compra Carrefour' in all_labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                                step_function_arn = MARKET_STEP_FUNCTION_ARN
                             elif  'Aviso Transferencia MP' in labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
+                                step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {all_labels_names}")
                                 continue
@@ -1026,7 +1026,7 @@ def lambda_handler(event, context):
                             
                             # Procesar y subir a S3
                             print(f'💾 Extrayendo datos del mail y cargando a S3...')
-                            response = dispatch_processor(mail_data, folder, market_bucket, bank_bucket, s3_client, sender, subject)    
+                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)    
                             print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
                             
                             # Ejecutar Step Function
@@ -1034,11 +1034,11 @@ def lambda_handler(event, context):
                             print(f'🚀 Payload para Step Function: {payload}')
 
                             if 'Avisos Gastos Santander' in labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:bank-payments-etl-flow'    
+                                step_function_arn = BANK_STEP_FUNCTION_ARN 
                             elif 'Avisos Compra Carrefour' in labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:pdf-etl-flow'
+                                step_function_arn = MARKET_STEP_FUNCTION_ARN
                             elif  'Aviso Transferencia MP' in labels_names:
-                                step_function_arn = 'arn:aws:states:us-east-2:039434644707:stateMachine:mp-transfers-etl-flow'
+                                step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue

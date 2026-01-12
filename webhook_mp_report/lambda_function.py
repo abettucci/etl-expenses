@@ -4,12 +4,13 @@ import os
 import boto3
 import re
 
+MP_REPORT_STEP_FUNCTION_ARN = os.environ.get("MP_REPORT_STEP_FUNCTION_ARN")
+CIFRADO_SECRET = os.environ.get("CIFRADO_SECRET_MP")
+
 def lambda_handler(event, context):
     step_functions_client = boto3.client('stepfunctions')
     
-    # Usar la variable de entorno
-    CIFRADO_SECRET = os.environ.get("CIFRADO_SECRET_MP")
-    
+    # Usar la variable de entorno    
     print('CIFRADO_SECRET: ', CIFRADO_SECRET)
     
     # Parsear el body
@@ -81,7 +82,7 @@ def lambda_handler(event, context):
                 }
 
                 response = step_functions_client.start_execution(
-                    stateMachineArn=os.environ['STEP_FUNCTION_ARN'],
+                    stateMachineArn=MP_REPORT_STEP_FUNCTION_ARN,
                     input=json.dumps(step_input)
                 )
                 

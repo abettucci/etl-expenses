@@ -273,30 +273,30 @@ TABLE_METADATA = {
 
 # Ejemplos de queries correctas para few-shot learning
 SQL_EXAMPLES = """
-EJEMPLOS DE QUERIES CORRECTAS:
+    EJEMPLOS DE QUERIES CORRECTAS:
 
-1. Pregunta: "¿Cuánto gasté en los últimos 3 meses?"
-   SQL:
-   SELECT SUM(CAST(MONTO AS FLOAT64)) AS total_gasto
-   FROM `{project}.{dataset}.bank_payments`
-   WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
+    1. Pregunta: "¿Cuánto gasté en los últimos 3 meses?"
+    SQL:
+    SELECT SUM(CAST(MONTO AS FLOAT64)) AS total_gasto
+    FROM `{project}.{dataset}.bank_payments`
+    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
 
-2. Pregunta: "¿Cuáles fueron mis mayores gastos del mes?"
-   SQL:
-   SELECT COMERCIO, CAST(MONTO AS FLOAT64) AS monto, FECHA_PAGO
-   FROM `{project}.{dataset}.bank_payments`
-   WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
-   ORDER BY CAST(MONTO AS FLOAT64) DESC
-   LIMIT 10
+    2. Pregunta: "¿Cuáles fueron mis mayores gastos del mes?"
+    SQL:
+    SELECT COMERCIO, CAST(MONTO AS FLOAT64) AS monto, FECHA_PAGO
+    FROM `{project}.{dataset}.bank_payments`
+    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+    ORDER BY CAST(MONTO AS FLOAT64) DESC
+    LIMIT 10
 
-3. Pregunta: "Gastos por comercio este mes"
-   SQL:
-   SELECT COMERCIO, SUM(CAST(MONTO AS FLOAT64)) AS total, COUNT(*) AS cantidad_transacciones
-   FROM `{project}.{dataset}.bank_payments`
-   WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
-   GROUP BY COMERCIO
-   ORDER BY total DESC
-   LIMIT 20
+    3. Pregunta: "Gastos por comercio este mes"
+    SQL:
+    SELECT COMERCIO, SUM(CAST(MONTO AS FLOAT64)) AS total, COUNT(*) AS cantidad_transacciones
+    FROM `{project}.{dataset}.bank_payments`
+    WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+    GROUP BY COMERCIO
+    ORDER BY total DESC
+    LIMIT 20
 """
 
 # --- Clientes AWS/GCP ---
@@ -309,6 +309,27 @@ sfn_client = boto3.client("stepfunctions", region_name=REGION)
 
 # Tabla DynamoDB para control de idempotencia de mensajes de Telegram
 DDB_PROCESSED_MESSAGES_TABLE = os.environ.get("DDB_PROCESSED_MESSAGES_TABLE", "telegram_processed_messages")
+DDB_PENDING_TICKETS_TABLE = os.environ.get("DDB_PENDING_TICKETS_TABLE", "telegram_pending_tickets")
+MULTI_PHOTO_TIMEOUT_SECONDS = 120  # 2 minutos para esperar más fotos
+
+# Indicadores de que el ticket está completo (fin del ticket)
+TICKET_END_INDICATORS = [
+    "TOTAL",
+    "TOTAL:",
+    "TOT.",
+    "SUBTOTAL",
+    "IVA CONTENIDO",
+    "GRACIAS POR SU COMPRA",
+    "VUELTO",
+    "SU VUELTO",
+    "AHORRO",
+    "TOT.AHORRO",
+    "C.A.E",
+    "CAE:",
+    "CODIGO QR",
+    "www.",
+    "ATENCION TELEFONICA"
+]
 
 def is_message_already_processed(message_id: int) -> bool:
     """Verifica si un mensaje de Telegram ya fue procesado (control de idempotencia)"""
@@ -339,28 +360,6 @@ def mark_message_as_processed(message_id: int) -> None:
 # =============================================================================
 # Permite procesar tickets largos que requieren múltiples fotos.
 # Detecta si el ticket está completo buscando indicadores de "FINAL" o "TOTAL".
-
-DDB_PENDING_TICKETS_TABLE = os.environ.get("DDB_PENDING_TICKETS_TABLE", "telegram_pending_tickets")
-MULTI_PHOTO_TIMEOUT_SECONDS = 120  # 2 minutos para esperar más fotos
-
-# Indicadores de que el ticket está completo (fin del ticket)
-TICKET_END_INDICATORS = [
-    "TOTAL",
-    "TOTAL:",
-    "TOT.",
-    "SUBTOTAL",
-    "IVA CONTENIDO",
-    "GRACIAS POR SU COMPRA",
-    "VUELTO",
-    "SU VUELTO",
-    "AHORRO",
-    "TOT.AHORRO",
-    "C.A.E",
-    "CAE:",
-    "CODIGO QR",
-    "www.",
-    "ATENCION TELEFONICA"
-]
 
 def get_pending_ticket(chat_id: int) -> dict:
     """Obtiene un ticket pendiente (incompleto) para un chat_id"""
@@ -422,57 +421,59 @@ def check_ticket_is_complete(s3_key: str) -> tuple:
         image_base64 = get_image_base64_from_s3(s3_key)
         
         # Prompt para verificar si es el final del ticket
-        check_prompt = """Analiza esta imagen de un ticket/recibo de supermercado.
+        check_prompt = """
+            Analiza esta imagen de un ticket/recibo de supermercado.
 
-IMPORTANTE: Extrae ABSOLUTAMENTE TODOS los productos visibles, incluyendo:
-- El PRIMER producto que aparece en la parte superior de la imagen
-- El ÚLTIMO producto que aparece en la parte inferior de la imagen
-- NO omitas productos aunque estén parcialmente cortados
+            IMPORTANTE: Extrae ABSOLUTAMENTE TODOS los productos visibles, incluyendo:
+            - El PRIMER producto que aparece en la parte superior de la imagen
+            - El ÚLTIMO producto que aparece en la parte inferior de la imagen
+            - NO omitas productos aunque estén parcialmente cortados
 
-Responde en formato JSON:
+            Responde en formato JSON:
 
-{
-    "is_complete": true/false,
-    "has_total_with_amount": true/false,
-    "has_cae": true/false,
-    "has_qr_code": true/false,
-    "detected_indicators": ["lista de indicadores encontrados"],
-    "partial_data": {
-        "merchant_name": "nombre del comercio si es visible",
-        "transaction_date": "fecha en formato YYYY-MM-DD si es visible",
-        "transaction_time": "hora en formato HH:MM si es visible",
-        "total_amount": número del total FINAL si está visible (null si no hay TOTAL FINAL),
-        "currency": "ARS",
-        "line_items": [
             {
-                "item_name": "nombre COMPLETO del producto",
-                "item_quantity": número,
-                "item_unit_price": precio unitario,
-                "item_total_price": precio total
+                "is_complete": true/false,
+                "has_total_with_amount": true/false,
+                "has_cae": true/false,
+                "has_qr_code": true/false,
+                "detected_indicators": ["lista de indicadores encontrados"],
+                "partial_data": {
+                    "merchant_name": "nombre del comercio si es visible",
+                    "transaction_date": "fecha en formato YYYY-MM-DD si es visible",
+                    "transaction_time": "hora en formato HH:MM si es visible",
+                    "total_amount": número del total FINAL si está visible (null si no hay TOTAL FINAL),
+                    "currency": "ARS",
+                    "line_items": [
+                        {
+                            "item_name": "nombre COMPLETO del producto",
+                            "item_quantity": número,
+                            "item_unit_price": precio unitario,
+                            "item_total_price": precio total
+                        }
+                    ]
+                }
             }
-        ]
-    }
-}
 
-CRITERIOS ESTRICTOS PARA is_complete=true (DEBEN cumplirse AL MENOS 2 de estos):
-1. Contiene la palabra "TOTAL" seguida de un monto final (ej: "TOTAL 53453,46")
-2. Contiene "C.A.E" o "CAE:" con número de autorización
-3. Contiene código QR fiscal visible
-4. Contiene "IVA CONTENIDO" con un monto
-5. Contiene "www." o número de atención telefónica al final
+            CRITERIOS ESTRICTOS PARA is_complete=true (DEBEN cumplirse AL MENOS 2 de estos):
+            1. Contiene la palabra "TOTAL" seguida de un monto final (ej: "TOTAL 53453,46")
+            2. Contiene "C.A.E" o "CAE:" con número de autorización
+            3. Contiene código QR fiscal visible
+            4. Contiene "IVA CONTENIDO" con un monto
+            5. Contiene "www." o número de atención telefónica al final
 
-is_complete=false SI:
-- Solo ves productos/items sin sección de totales
-- La imagen parece cortada y continúa más abajo
-- No hay información fiscal (CAE, IVA, QR)
-- Solo ves el encabezado del ticket con logo y primeros productos
+            is_complete=false SI:
+            - Solo ves productos/items sin sección de totales
+            - La imagen parece cortada y continúa más abajo
+            - No hay información fiscal (CAE, IVA, QR)
+            - Solo ves el encabezado del ticket con logo y primeros productos
 
-EXTRACCIÓN DE ITEMS:
-- Incluye TODOS los productos de arriba a abajo
-- El primer item visible es tan importante como el último
-- Si un producto está cortado pero se puede leer parcialmente, inclúyelo
+            EXTRACCIÓN DE ITEMS:
+            - Incluye TODOS los productos de arriba a abajo
+            - El primer item visible es tan importante como el último
+            - Si un producto está cortado pero se puede leer parcialmente, inclúyelo
 
-Responde SOLO con el JSON."""
+            Responde SOLO con el JSON.
+        """
 
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -669,46 +670,48 @@ def extract_receipt_with_openai(s3_key: str) -> dict:
         image_base64 = get_image_base64_from_s3(s3_key)
         
         # Schema de extracción
-        extraction_prompt = """Analiza esta imagen de un ticket/recibo de supermercado.
+        extraction_prompt = """
+            Analiza esta imagen de un ticket/recibo de supermercado.
 
-TAREA CRÍTICA: Debes extraer ABSOLUTAMENTE TODOS los productos visibles en la imagen.
+            TAREA CRÍTICA: Debes extraer ABSOLUTAMENTE TODOS los productos visibles en la imagen.
 
-INSTRUCCIONES ESPECIALES:
-1. Empieza desde el PRIMER producto visible en la PARTE SUPERIOR de la imagen
-2. Continúa hasta el ÚLTIMO producto visible en la PARTE INFERIOR
-3. NO omitas ningún producto, aunque esté parcialmente cortado o borroso
-4. Si un producto está cortado pero puedes leer parte del nombre, inclúyelo
-5. Los productos suelen tener: descripción + código + precio
+            INSTRUCCIONES ESPECIALES:
+            1. Empieza desde el PRIMER producto visible en la PARTE SUPERIOR de la imagen
+            2. Continúa hasta el ÚLTIMO producto visible en la PARTE INFERIOR
+            3. NO omitas ningún producto, aunque esté parcialmente cortado o borroso
+            4. Si un producto está cortado pero puedes leer parte del nombre, inclúyelo
+            5. Los productos suelen tener: descripción + código + precio
 
-Extrae en formato JSON:
+            Extrae en formato JSON:
 
-{
-    "merchant_name": "nombre del comercio/supermercado",
-    "transaction_date": "fecha de la compra en formato YYYY-MM-DD",
-    "transaction_time": "hora de la compra en formato HH:MM",
-    "total_amount": número con el total de la compra (solo si ves "TOTAL" con monto),
-    "currency": "ARS",
-    "payment_method": "método de pago si está visible",
-    "line_items": [
-        {
-            "item_name": "nombre COMPLETO del producto",
-            "item_quantity": número de unidades (default 1),
-            "item_unit_price": precio unitario si está visible,
-            "item_total_price": precio total del item
-        }
-    ]
-}
+            {
+                "merchant_name": "nombre del comercio/supermercado",
+                "transaction_date": "fecha de la compra en formato YYYY-MM-DD",
+                "transaction_time": "hora de la compra en formato HH:MM",
+                "total_amount": número con el total de la compra (solo si ves "TOTAL" con monto),
+                "currency": "ARS",
+                "payment_method": "método de pago si está visible",
+                "line_items": [
+                    {
+                        "item_name": "nombre COMPLETO del producto",
+                        "item_quantity": número de unidades (default 1),
+                        "item_unit_price": precio unitario si está visible,
+                        "item_total_price": precio total del item
+                    }
+                ]
+            }
 
-REGLAS DE EXTRACCIÓN:
-- Incluir TODOS los items de arriba a abajo sin excepción
-- El primer item de la imagen es tan importante como el último
-- Si ves "0,164 x 17999,00" seguido de un nombre = ese es un item por peso
-- Los precios en Argentina usan coma para decimales: 2951,84 = 2951.84
-- Ignorar líneas de descuento (ej: "MERCADO PAGO 25% - V")
-- NO incluir líneas de subtotales parciales o descuentos como items
-- Si no hay TOTAL visible, dejar total_amount como null
+            REGLAS DE EXTRACCIÓN:
+            - Incluir TODOS los items de arriba a abajo sin excepción
+            - El primer item de la imagen es tan importante como el último
+            - Si ves "0,164 x 17999,00" seguido de un nombre = ese es un item por peso
+            - Los precios en Argentina usan coma para decimales: 2951,84 = 2951.84
+            - Ignorar líneas de descuento (ej: "MERCADO PAGO 25% - V")
+            - NO incluir líneas de subtotales parciales o descuentos como items
+            - Si no hay TOTAL visible, dejar total_amount como null
 
-Responde SOLO con el JSON, sin explicaciones:"""
+            Responde SOLO con el JSON, sin explicaciones:
+        """
 
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",  # gpt-4o-mini soporta vision
@@ -1025,13 +1028,13 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
     
     response = f"""✅ *Ticket procesado exitosamente!*
 
-🏪 *Comercio:* {merchant}
-📅 *Fecha:* {date}
-💰 *Total:* {total_str}
-📦 *Items detectados:* {len(items)}
+        🏪 *Comercio:* {merchant}
+        📅 *Fecha:* {date}
+        💰 *Total:* {total_str}
+        📦 *Items detectados:* {len(items)}
 
-*Productos extraídos:*
-"""
+        *Productos extraídos:*
+    """
     
     # Mostrar hasta 15 items para dar más contexto
     max_items_to_show = 15

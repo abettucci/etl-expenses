@@ -11,6 +11,8 @@ from datetime import datetime
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
+from extract_data_mp.lambda_function import MP_REPORTS_BUCKET
+
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
@@ -19,6 +21,8 @@ GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET_STAGING = os.environ.get("BQ_DATASET_STAGING", "STG")
 BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
+MP_REPORTS_BUCKET = os.environ.get("MP_REPORTS_BUCKET")
+PARAMETER_NAME = "/mercado_pago/token"
 
 # --------------------------
 # Inicialización de BigQuery Client
@@ -495,7 +499,7 @@ def drop_bigquery_tables():
 def listar_archivos_s3():
     s3 = boto3.client("s3")
     archivos = []
-    response = s3.list_objects_v2(Bucket='mercadopago-reports', Prefix='processed')
+    response = s3.list_objects_v2(Bucket=MP_REPORTS_BUCKET, Prefix='processed')
     for obj in response.get("Contents", []):
         key = obj["Key"]
         if key.endswith(".csv"):
@@ -505,7 +509,6 @@ def listar_archivos_s3():
 def auth_mp():
     # Cliente AWS SSM para Parameter Store
     ssm_client = boto3.client("ssm", region_name="us-east-2")
-    PARAMETER_NAME = "/mercado_pago/token"
 
     # Obtener el parámetro desde AWS Parameter Store
     try:
