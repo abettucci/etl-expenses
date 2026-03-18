@@ -129,10 +129,10 @@ jobs:
           terraform init
 
           # Importar dataset STG
-          terraform import google_bigquery_dataset.staging $TF_VAR_GCP_PROJECT_ID/STG
+          terraform import google_bigquery_dataset.staging $TF_VAR_GCP_PROJECT_ID/STG || true
 
           # Importar dataset PRD
-          terraform import google_bigquery_dataset.production $TF_VAR_GCP_PROJECT_ID/PRD
+          terraform import google_bigquery_dataset.production $TF_VAR_GCP_PROJECT_ID/PRD || true
           
           terraform import aws_ecr_repository.lambda_images etl-expenses || true
           terraform import aws_ecr_lifecycle_policy.delete_unwanted_images etl-expenses || true
@@ -248,7 +248,7 @@ jobs:
           terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler || true
           # terraform import aws_glue_crawler.mp_transfers_crawler mp-transfers-crawler || true
 
-          terraform import aws_glue_classifier.csv_classifier  mercadopago_csv_classifier
+          terraform import aws_glue_classifier.csv_classifier mercadopago_csv_classifier || true
           
           # terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge
 
@@ -269,18 +269,18 @@ jobs:
           fi
           
           # Importar Service Account existente
-          terraform import google_service_account.pubsub_sa projects/$TF_VAR_GCP_PROJECT_ID/serviceAccounts/terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com
+          terraform import google_service_account.pubsub_sa projects/$TF_VAR_GCP_PROJECT_ID/serviceAccounts/terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com || true
 
           # Importar Topic existente
-          terraform import google_pubsub_topic.gmail_events projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events
+          terraform import google_pubsub_topic.gmail_events projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events || true
 
           # Importar Subscription existente
-          terraform import google_pubsub_subscription.gmail_subscription_market_tickets projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/market-tickets-sub-to-api-gateway
-          terraform import google_pubsub_subscription.gmail_subscription_bank_payments projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/bank-payments-sub-to-api-gateway
+          terraform import google_pubsub_subscription.gmail_subscription_market_tickets projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/market-tickets-sub-to-api-gateway || true
+          terraform import google_pubsub_subscription.gmail_subscription_bank_payments projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/bank-payments-sub-to-api-gateway || true
 
           # Importar IAM Binding del topic
           terraform import google_pubsub_topic_iam_member.sa_publisher \
-          "projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events roles/pubsub.publisher serviceAccount:terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com"
+          "projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events roles/pubsub.publisher serviceAccount:terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com" || true
       
       - name: Check GCP identity
         run: gcloud auth list
@@ -297,7 +297,7 @@ jobs:
           
           # 💎 MÉTODO BULLET-PROOF: grep + sed (ignora TODO debug)
           LINE=$(terraform output 2>/dev/null | grep '^telegram_webhook_url =')
-          WEBHOOK_URL=$(echo "$LINE" | sed 's/.*= "\(.*\)"/\1/')
+          WEBHOOK_URL=$(echo "$LINE" | sed 's/.= "\(.\)"/\1/')
           echo "🔍 Raw: $WEBHOOK_URL"
           
           # 🛠️ FIX1: Insertar /prod/ (com// → com/prod/)
