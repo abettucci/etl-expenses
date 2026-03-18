@@ -148,7 +148,7 @@ resource "aws_s3_bucket" "telegram_receipts" {
 
 # 1.5 Bucket para Transferencias de Mercado Pago
 resource "aws_s3_bucket" "mp_transfers" {
-  bucket        = "mercadopago-tranfers"
+  bucket        = "mercadopago-transfers"
   force_destroy = true
 }
 
