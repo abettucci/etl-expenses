@@ -226,31 +226,36 @@ jobs:
           terraform import aws_lambda_function.ai_agent ai_agent || true
           terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf || true
           terraform import aws_lambda_function.extract_data_gmail extract_data_gmail || true
-          terraform import aws_lambda_function.gmail_watcher  gmail-watcher-renewer  || true
+          terraform import aws_lambda_function.gmail_watcher gmail-watcher-renewer || true
           terraform import aws_lambda_function.process_telegram_img process_telegram_img || true
           terraform import aws_lambda_function.load_receipt_to_bq load_receipt_to_bq || true
-          # terraform import aws_lambda_function.mp_transfers_processor mp_transfers_processor || true
+          terraform import aws_lambda_function.mp_transfers_processor mp_transfers_processor || true
+
+          # Lambda Permissions
+          terraform import aws_lambda_permission.allow_api_gateway_ai_agent ai_agent/AllowAPIGatewayInvokeAiAgent || true
+          terraform import aws_lambda_permission.allow_api_gateway_mp_webhook webhook_mp_report/AllowAPIGatewayInvokeMercadoPagoWebhook || true
+          terraform import aws_lambda_permission.allow_api_gateway_market_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeMarketMailDataExtractor || true
+          terraform import aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor || true
+          terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge || true
 
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
           terraform import aws_iam_role.glue_service_role glue_service_role || true
-          terraform import aws_iam_role.api_gateway_role  api_gateway_step_function_role  || true       
+          terraform import aws_iam_role.api_gateway_role api_gateway_step_function_role || true       
 
           terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
           terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
           terraform import aws_sfn_state_machine.telegram_receipt_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:telegram-receipt-etl-flow || true
-          # terraform import aws_sfn_state_machine.mp_transfers_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-transfers-etl-flow || true
+          terraform import aws_sfn_state_machine.mp_transfers_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-transfers-etl-flow || true
 
           terraform import aws_glue_catalog_database.etl_database "$TF_VAR_AWS_ACCOUNT_ID:etl_database" || true
           terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler || true
           terraform import aws_glue_crawler.mp_reports_crawler mp-reports-crawler || true
           terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler || true
-          # terraform import aws_glue_crawler.mp_transfers_crawler mp-transfers-crawler || true
+          terraform import aws_glue_crawler.mp_transfers_crawler mp-transfers-crawler || true
 
           terraform import aws_glue_classifier.csv_classifier mercadopago_csv_classifier || true
-          
-          # terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge
 
           terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs || true  
           # terraform import aws_cloudwatch_metric_alarm.etl_step_function_pdf_failure etl-step-function-pdf-failure || true
