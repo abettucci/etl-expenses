@@ -616,7 +616,7 @@ resource "aws_lambda_function" "mp_report_extractor" {
   environment {
     variables = {
       MP_REPORTS_BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
-      MP_REPORT_STEP_FUNCTION_ARN = aws_sfn_state_machine.mp_report_etl_flow.arn
+      MP_REPORT_STEP_FUNCTION_ARN = "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:stateMachine:mp-report-etl-flow"
       CIFRADO_SECRET_MP = var.CIFRADO_SECRET_MP
     }
   }
