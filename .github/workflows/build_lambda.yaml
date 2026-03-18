@@ -300,16 +300,15 @@ jobs:
         run: |
           echo "🔍 Obteniendo URL del webhook..."
           
-          # 💎 MÉTODO BULLET-PROOF: grep + sed (ignora TODO debug)
-          LINE=$(terraform output 2>/dev/null | grep '^telegram_webhook_url =')
-          WEBHOOK_URL=$(echo "$LINE" | sed 's/.= "\(.\)"/\1/')
+          # Usar terraform output -raw para obtener solo el valor
+          WEBHOOK_URL=$(terraform output -raw telegram_webhook_url 2>/dev/null)
           echo "🔍 Raw: $WEBHOOK_URL"
           
-          # 🛠️ FIX1: Insertar /prod/ (com// → com/prod/)
+          # 🛠️ FIX: Insertar /prod/ si falta (com// → com/prod/)
           WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's|\.amazonaws\.com//|\.amazonaws\.com/prod/|')
           
           # ✅ Validate
-          if [[ ! "$WEBHOOK_URL" =~ ^https://.+prod/ ]]; then
+          if [[ ! "$WEBHOOK_URL" =~ ^https://.+telegram_bot$ ]]; then
             echo "❌ FALLO: $WEBHOOK_URL"
             exit 1
           fi
