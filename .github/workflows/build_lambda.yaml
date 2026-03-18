@@ -119,6 +119,7 @@ jobs:
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: 1.5.6
+          terraform_wrapper: false
       
       # - name: Configure GCP Credentials
       #   run: echo "${{ secrets.GCP_CREDENTIALS }}" > gcp-creds.json
@@ -298,23 +299,30 @@ jobs:
       - name: Get Webhook URL
         id: webhook
         run: |
-          echo "🔍 Obteniendo URL del webhook..."
-          
-          # Usar terraform output -raw para obtener solo el valor
-          WEBHOOK_URL=$(terraform output -raw telegram_webhook_url 2>/dev/null)
-          echo "🔍 Raw: $WEBHOOK_URL"
-          
-          # 🛠️ FIX: Insertar /prod/ si falta (com// → com/prod/)
-          WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's|\.amazonaws\.com//|\.amazonaws\.com/prod/|')
-          
-          # ✅ Validate
-          if [[ ! "$WEBHOOK_URL" =~ ^https://.+telegram_bot$ ]]; then
-            echo "❌ FALLO: $WEBHOOK_URL"
-            exit 1
-          fi
-          
-          echo "✅ PERFECTA: $WEBHOOK_URL"
-          echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
+            echo "🔍 Obteniendo URL del webhook..."
+        
+            # Obtener output y filtrar SOLO la URL válida
+            WEBHOOK_URL=$(terraform output -raw telegram_webhook_url 2>/dev/null | grep -Eo 'https://[^ ]+')
+        
+            echo "🔍 Cleaned: $WEBHOOK_URL"
+        
+            # 🛠️ FIX: Insertar /prod/ si falta (com// → com/prod/)
+            WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's|\.amazonaws\.com//|\.amazonaws\.com/prod/|')
+        
+            # 🧪 Debug extra (opcional pero útil)
+            echo "🔍 Final URL: $WEBHOOK_URL"
+            echo "🔍 Length: ${#WEBHOOK_URL}"
+        
+            # ✅ Validate más robusto
+            if [[ -z "$WEBHOOK_URL" || ! "$WEBHOOK_URL" =~ ^https://.+/telegram_bot$ ]]; then
+              echo "❌ FALLO: URL inválida -> $WEBHOOK_URL"
+              exit 1
+            fi
+        
+            echo "✅ PERFECTA: $WEBHOOK_URL"
+        
+            # Exportar output
+            echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
 
       - name: Configure Telegram Webhook
         run: |
