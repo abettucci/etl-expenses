@@ -10,9 +10,6 @@ from rapidfuzz import fuzz
 from datetime import datetime
 from google.cloud import bigquery
 from google.oauth2 import service_account
-
-from extract_data_mp.lambda_function import MP_REPORTS_BUCKET
-
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
@@ -21,7 +18,7 @@ GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET_STAGING = os.environ.get("BQ_DATASET_STAGING", "STG")
 BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
-MP_REPORTS_BUCKET = os.environ.get("MP_REPORTS_BUCKET")
+MP_REPORTS_BUCKET = os.environ.get("MP_REPORTS_BUCKET") 
 PARAMETER_NAME = "/mercado_pago/token"
 
 # --------------------------

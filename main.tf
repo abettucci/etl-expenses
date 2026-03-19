@@ -697,6 +697,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
       BQ_DATASET_PROD    = "PRD"
       BQ_LOCATION        = "US"
       MP_REPORTS_BUCKET  = aws_s3_bucket.mp_reports.bucket
+      MP_REPORTS_BUCKET_NAME = aws_s3_bucket.mp_reports.bucket
     }
   }
 }
