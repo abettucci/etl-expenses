@@ -5,6 +5,7 @@ import unicodedata
 import re
 import requests
 import os
+import csv
 
 MP_REPORTS_BUCKET_NAME = os.environ['MP_REPORTS_BUCKET_NAME']
 
@@ -50,6 +51,29 @@ def format_report_file_name(s3_filename):
     report_file_name = f"{base}.{extension}"
     return report_file_name, report_id, report_date
 
+def fix_json_in_csv(content_str):
+    """
+    Preprocesa el CSV para escapar correctamente los campos JSON embebidos.
+    MercadoPago genera CSVs con JSON mal escapado como: "[{"key":"value"}]"
+    Esto lo convierte a: "[{""key"":""value""}]" (formato CSV correcto)
+    """
+    lines = content_str.split('\n')
+    fixed_lines = [lines[0]]  # Header no necesita fix
+    
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        # Buscar patrones de JSON mal escapado: "[{...}]" o "{...}"
+        # y reemplazar las comillas internas
+        fixed_line = re.sub(
+            r'"(\[?\{[^"]*\}]?)"',
+            lambda m: '"' + m.group(1).replace('"', '""').replace('""[', '[').replace(']""', ']') + '"',
+            line
+        )
+        fixed_lines.append(fixed_line)
+    
+    return '\n'.join(fixed_lines)
+
 def move_to_processed(s3_client, file_key, bucket_name):
     destination_folder = 'processed/'
     try:
@@ -59,9 +83,34 @@ def move_to_processed(s3_client, file_key, bucket_name):
 
         # Detectar formato
         if file_key.endswith('.csv'):
-            report_df = pd.read_csv(io.BytesIO(content), encoding='utf-8', delimiter=',')
+            # Decodificar el CSV
+            content_str = content.decode('utf-8')
+            
+            # Debug: mostrar primeras líneas del CSV original
+            lines = content_str.split('\n')
+            print(f"📋 Header CSV: {lines[0]}")
+            print(f"📋 Primera fila datos: {lines[1] if len(lines) > 1 else 'N/A'}")
+            print(f"📋 Total columnas en header: {len(lines[0].split(','))}")
+            
+            # Usar pandas con configuración robusta
+            report_df = pd.read_csv(
+                io.StringIO(content_str),
+                sep=',',
+                quotechar='"',
+                doublequote=True,
+                engine='python',
+                dtype=str,
+                keep_default_na=False,
+                skipinitialspace=True
+            )
+            
+            # Debug: verificar columnas parseadas
+            print(f"📊 Columnas parseadas: {len(report_df.columns)}")
+            print(f"📊 Nombres columnas: {list(report_df.columns)}")
+            print(f"📊 Primera fila parseada: {report_df.iloc[0].to_dict() if len(report_df) > 0 else 'N/A'}")
+            
         elif file_key.endswith('.xlsx'):
-            report_df = pd.read_excel(io.BytesIO(content))
+            report_df = pd.read_excel(io.BytesIO(content), dtype=str)
         else:
             raise Exception("Formato no soportado: debe ser .csv o .xlsx")
 
@@ -70,7 +119,14 @@ def move_to_processed(s3_client, file_key, bucket_name):
 
         # Convertir a CSV en memoria
         csv_buffer = io.BytesIO()
-        report_df.to_csv(csv_buffer, sep=',', index=False, encoding='utf-8')
+        report_df.to_csv(
+            csv_buffer,
+            sep=',',
+            index=False,
+            encoding='utf-8',
+            quoting=csv.QUOTE_MINIMAL,
+            quotechar='"'
+        )
 
         # Construir nuevo nombre de archivo (convertir a .csv si era .xlsx)
         filename = file_key.split('/')[-1]
