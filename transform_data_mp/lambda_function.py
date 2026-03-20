@@ -55,25 +55,47 @@ def fix_json_in_csv(content_str):
     """
     Preprocesa el CSV para escapar correctamente los campos JSON embebidos.
     MercadoPago genera CSVs con JSON mal escapado como: "[{"key":"value"}]"
-    Esto lo convierte a: "[{""key"":""value""}]" (formato CSV correcto)
+    Esto lo convierte a un formato que pandas pueda parsear.
+    
+    Estrategia: Reemplazar los campos JSON problemáticos por una versión escapada.
     """
     lines = content_str.split('\n')
     fixed_lines = [lines[0]]  # Header no necesita fix
     
     for line in lines[1:]:
         if not line.strip():
+            fixed_lines.append(line)
             continue
-        # Buscar patrones de JSON mal escapado: "[{...}]" o "{...}"
-        # y reemplazar las comillas internas
-        fixed_line = re.sub(
-            r'"(\[?\{[^"]*\}]?)"',
-            lambda m: '"' + m.group(1).replace('"', '""').replace('""[', '[').replace(']""', ']') + '"',
+            
+        # Patrón para encontrar campos JSON: ,"[{...}]", o ,"{...}",
+        # El problema es que tienen comillas internas sin escapar
+        
+        # Reemplazar patrones de JSON array: "[{...}]"
+        # Busca: ,"[{ seguido de cualquier cosa hasta }]",
+        line = re.sub(
+            r',"(\[\{.*?\}\])"(,|$)',
+            lambda m: ',"' + m.group(1).replace('"', "'") + '"' + m.group(2),
             line
         )
-        fixed_lines.append(fixed_line)
+        
+        # Reemplazar patrones de JSON object simple: "{...}"
+        line = re.sub(
+            r',"(\{.*?\})"(,|$)',
+            lambda m: ',"' + m.group(1).replace('"', "'") + '"' + m.group(2),
+            line
+        )
+        
+        # Reemplazar patrones de array vacío o simple: "[]"
+        line = re.sub(
+            r',"(\[\])"(,|$)',
+            lambda m: ',"' + m.group(1) + '"' + m.group(2),
+            line
+        )
+        
+        fixed_lines.append(line)
     
     return '\n'.join(fixed_lines)
-
+    
 def move_to_processed(s3_client, file_key, bucket_name):
     destination_folder = 'processed/'
     try:
@@ -89,8 +111,15 @@ def move_to_processed(s3_client, file_key, bucket_name):
             # Debug: mostrar primeras líneas del CSV original
             lines = content_str.split('\n')
             print(f"📋 Header CSV: {lines[0]}")
-            print(f"📋 Primera fila datos: {lines[1] if len(lines) > 1 else 'N/A'}")
+            print(f"📋 Primera fila datos (original): {lines[1][:200] if len(lines) > 1 else 'N/A'}...")
             print(f"📋 Total columnas en header: {len(lines[0].split(','))}")
+            
+            # Preprocesar para arreglar JSON mal escapado
+            content_str = fix_json_in_csv(content_str)
+            
+            # Debug: mostrar línea después del fix
+            fixed_lines = content_str.split('\n')
+            print(f"📋 Primera fila datos (fixed): {fixed_lines[1][:200] if len(fixed_lines) > 1 else 'N/A'}...")
             
             # Usar pandas con configuración robusta
             report_df = pd.read_csv(
@@ -106,8 +135,11 @@ def move_to_processed(s3_client, file_key, bucket_name):
             
             # Debug: verificar columnas parseadas
             print(f"📊 Columnas parseadas: {len(report_df.columns)}")
-            print(f"📊 Nombres columnas: {list(report_df.columns)}")
-            print(f"📊 Primera fila parseada: {report_df.iloc[0].to_dict() if len(report_df) > 0 else 'N/A'}")
+            print(f"📊 Filas parseadas: {len(report_df)}")
+            if len(report_df) > 0:
+                print(f"📊 Valores primera fila - EXTERNAL_REFERENCE: {report_df.iloc[0].get('EXTERNAL_REFERENCE', 'N/A')}")
+                print(f"📊 Valores primera fila - SOURCE_ID: {report_df.iloc[0].get('SOURCE_ID', 'N/A')}")
+                print(f"📊 Valores primera fila - TRANSACTION_TYPE: {report_df.iloc[0].get('TRANSACTION_TYPE', 'N/A')}")
             
         elif file_key.endswith('.xlsx'):
             report_df = pd.read_excel(io.BytesIO(content), dtype=str)
