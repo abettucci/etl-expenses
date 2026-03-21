@@ -1002,6 +1002,7 @@ def load_receipt_to_bigquery(df: pd.DataFrame, bq_client) -> int:
 def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
     """
     Formatea la respuesta para enviar al usuario por Telegram.
+    Usa formato Markdown compatible con Telegram.
     """
     merchant = extracted_data.get("merchant_name", "Comercio desconocido")
     date = extracted_data.get("transaction_date", "Fecha desconocida")
@@ -1026,15 +1027,17 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
         else:
             total_str = "No detectado"
     
-    response = f"""✅ *Ticket procesado exitosamente!*
-
-        🏪 *Comercio:* {merchant}
-        📅 *Fecha:* {date}
-        💰 *Total:* {total_str}
-        📦 *Items detectados:* {len(items)}
-
-        *Productos extraídos:*
-    """
+    # Construir respuesta sin indentación extra (importante para Telegram)
+    lines = [
+        "✅ Ticket procesado exitosamente!",
+        "",
+        f"🏪 Comercio: {merchant}",
+        f"📅 Fecha: {date}",
+        f"💰 Total: {total_str}",
+        f"📦 Items detectados: {len(items)}",
+        "",
+        "Productos extraídos:"
+    ]
     
     # Mostrar hasta 15 items para dar más contexto
     max_items_to_show = 15
@@ -1049,13 +1052,13 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
             price_str = f"${price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         else:
             price_str = "?"
-        response += f"• {name} x{qty} - {price_str}\n"
+        lines.append(f"• {name} x{qty} - {price_str}")
     
     if len(items) > max_items_to_show:
-        response += f"\n_... y {len(items) - max_items_to_show} productos más_\n"
+        lines.append(f"... y {len(items) - max_items_to_show} productos más")
     
-    return response
-
+    return "\n".join(lines)
+    
 def invoke_receipt_etl_step_function(s3_key: str, use_fallback: bool = True) -> dict:
     """
     Invoca la Step Function EXPRESS de forma síncrona para procesar el ticket.
@@ -1645,20 +1648,30 @@ Devuelve SOLO el SQL corregido, sin explicaciones."""
         print(f"❌ Error en retry: {e}")
         return ""
 
-def send_telegram_message(chat_id, text, token):
-    """Envía mensaje a Telegram"""
+def send_telegram_message(chat_id, text, token, parse_mode="Markdown"):
+    """Envía mensaje a Telegram con soporte para formato Markdown"""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "parse_mode": parse_mode
     }
-    # "parse_mode": "Markdown"
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
+        # Si falla con Markdown, intentar sin formato
+        if parse_mode:
+            print("🔄 Reintentando sin parse_mode...")
+            payload.pop("parse_mode", None)
+            try:
+                response = requests.post(url, json=payload, timeout=10)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e2:
+                print(f"Error en reintento: {e2}")
         return None
 
 def lambda_handler(event, context):

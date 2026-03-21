@@ -129,7 +129,14 @@ def extract_receipt_with_openai(s3_key: str, OPENAI_API_KEY, s3_client, S3_BUCKE
                 ]
             }
 
-            IMPORTANTE:
+            IMPORTANTE SOBRE LA FECHA:
+            - Busca el campo "Fecha" o "Fecha:" en el ticket (generalmente cerca de "P.V. Nro", "Nro T." o "Hora")
+            - En tickets argentinos, la fecha suele estar en formato DD/MM/YY o DD/MM/YYYY
+            - Si el año tiene 2 dígitos (ej: 26), asume que es 20XX (ej: 2026)
+            - Ejemplo: "Fecha 19/03/26" debe convertirse a "2026-03-19"
+            - NO uses fechas de vencimiento (Vto:), CAE, o cualquier otra fecha que no sea la fecha de compra
+            
+            OTRAS REGLAS:
             - Si algún campo no está visible o no se puede leer, usar null
             - Los precios deben ser números (sin símbolos de moneda)
             - La fecha debe estar en formato YYYY-MM-DD
