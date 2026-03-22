@@ -298,6 +298,9 @@ def lambda_handler(event, context):
         if etl_flow == 'MP':
             dtype = {}
             table_name = 'mp_data'
+        elif etl_flow == 'MP_TRANSFER':
+            dtype = {}
+            table_name = 'mp_transfer_data'
         elif etl_flow == 'TICKET':
             dtype = {
                 'ean': str,
@@ -349,6 +352,23 @@ def lambda_handler(event, context):
             verify_table_count(bq_client, BQ_DATASET_PROD, 'mp_data')
             
             tables_processed = ['mp_data']
+
+        elif etl_flow == 'MP_TRANSFER':
+            df = column_name_mapping(df)
+            df.columns = [clean_column_name(c) for c in df.columns]         
+            df = df.astype({col: "string" for col in df.columns})
+
+            # Cargar a staging
+            staging_table_id, _ = load_to_staging(bq_client, df, 'mp_transfer_data')
+            
+            # Hacer MERGE a prod (clave: REPORT_ID)
+            merge_to_prod(bq_client, staging_table_id, 'mp_transfer_data', ['message_id'], list(df.columns))
+            
+            # Verificar
+            verify_table_count(bq_client, BQ_DATASET_PROD, 'mp_transfer_data')
+            
+            tables_processed = ['mp_transfer_data']
+
         
         # ========================================
         # FLUJO: TICKETS CARREFOUR
