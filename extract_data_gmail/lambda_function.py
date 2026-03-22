@@ -290,7 +290,8 @@ def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client,
             "statusCode": 200,
             "body": {
                 "key": s3_key,
-                "process": True
+                "process": True,
+                "etl_flow": "BANK"
             }
         }
 
@@ -303,7 +304,27 @@ def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client,
             "statusCode": 200,
             "body": {
                 "key": s3_key,
-                "process": True
+                "process": True,
+                "etl_flow": "TICKET"
+            }
+        }
+
+    elif (sender in MP_EMAIL_SENDERS and MP_SUBJECT_TRANSFER in subject):
+        print('Descargando la info del mail de transferencia de Mercado Pago...')
+        s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
+        s3_client.put_object(
+            Body=json.dumps(mail_data),
+            Bucket=MP_TRANSFER_BUCKET,
+            Key=s3_key
+        )        
+        print(f"✅ Archivo subido a S3: {s3_key}")
+
+        return  {
+            "statusCode": 200,
+            "body": {
+                "key": s3_key,
+                "process": True,
+                "etl_flow": "MP_TRANSFER"
             }
         }
 
@@ -432,12 +453,24 @@ def reproceso_historico(table_name):
                     if msg_id not in ids_existentes:
                         print('Intentamos extraer los datos del mail y cargarlos a S3')
                         response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)              
+                    else:
+                        print(f"⚠️ Mensaje {msg_id} ya existe en BigQuery, se omite procesamiento")
+                        continue
 
                     save_last_history_id_in_dynamo(dynamodb.Table("gmail-history-tracker"), '') #el history_id lo dejamos vacio porque no tenemos ese dato
 
                     # Parámetros para la Step Function: el bloque de Transform espera un "key" y "process=true"
                     payload = response
                     print(payload)
+                    
+                    # Si dispatch_processor retornó process=False, no ejecutar Step Function
+                    should_process = response.get('process') if isinstance(response, dict) else False
+                    if isinstance(response, dict) and 'body' in response and isinstance(response['body'], dict):
+                        should_process = response['body'].get('process', False)
+                    
+                    if not should_process:
+                        print(f"⏭️ Mensaje {msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
+                        continue
 
                     if label['name'] == 'Avisos Gastos Santander':
                         step_function_arn = BANK_STEP_FUNCTION_ARN
@@ -774,9 +807,18 @@ def lambda_handler(event, context):
                             response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)    
                             print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
                             
-                            # Ejecutar Step Function
+                            # Verificar si dispatch_processor marcó el mensaje para procesar
                             payload = response
                             print(f'🚀 Payload para Step Function: {payload}')
+                            
+                            # Si dispatch_processor retornó process=False, no ejecutar Step Function
+                            should_process = response.get('process') if isinstance(response, dict) else False
+                            if isinstance(response, dict) and 'body' in response and isinstance(response['body'], dict):
+                                should_process = response['body'].get('process', False)
+                            
+                            if not should_process:
+                                print(f"⏭️ Mensaje {mail_msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
+                                continue
 
                             if 'Avisos Gastos Santander' in labels_names:
                                 step_function_arn = BANK_STEP_FUNCTION_ARN 
@@ -1067,16 +1109,21 @@ def lambda_handler(event, context):
                 #  and "users.history" in error_str
                 if '404' in error_str or 'notFound' in error_str or 'not found' in error_str.lower():
                     print(f"⚠️ HistoryId {last_history_id} no encontrado (muy antiguo o inválido)")
-                    print(f"⚠️ No se procesará este mensaje. Terminando ejecución.")
-                    print(f"💡 Tip: Usa reset_history_id.py para limpiar el historyId en DynamoDB")
+                    print(f"🔄 AUTO-RECUPERACIÓN: Actualizando historyId a {history_id} (valor actual de Pub/Sub)")
+                    
+                    # AUTO-RECUPERACIÓN: Guardar el historyId actual para que la próxima ejecución funcione
+                    save_last_history_id_in_dynamo(dynamodb.Table(dynamo_table_name), history_id)
+                    print(f"✅ HistoryId actualizado automáticamente a {history_id}")
+                    print(f"💡 La próxima notificación de Gmail se procesará correctamente")
                     
                     # Retornar 200 para que Pub/Sub no reintente
                     return {
                         'statusCode': 200,
                         'body': json.dumps({
-                            'message': 'HistoryId no encontrado, mensaje descartado',
-                            'historyId': last_history_id,
-                            'error': 'History not found (404)'
+                            'message': 'HistoryId inválido - auto-recuperación completada',
+                            'old_historyId': last_history_id,
+                            'new_historyId': history_id,
+                            'action': 'historyId actualizado automáticamente'
                         })
                     }
                 else:
