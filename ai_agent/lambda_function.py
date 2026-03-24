@@ -355,6 +355,35 @@ def mark_message_as_processed(message_id: int) -> None:
     except Exception as e:
         print(f"⚠️ Error marcando mensaje como procesado: {e}")
 
+def try_acquire_message_lock(message_id: int) -> bool:
+    """
+    Intenta adquirir un lock atómico para procesar el mensaje.
+    Usa ConditionExpression para garantizar que solo una invocación gane.
+    Retorna True si este proceso debe procesar el mensaje, False si ya fue tomado por otro.
+    """
+    from botocore.exceptions import ClientError
+    try:
+        processed_table = dynamo.Table(DDB_PROCESSED_MESSAGES_TABLE)
+        processed_table.put_item(
+            Item={
+                "message_id": str(message_id),
+                "processed_at": int(time.time()),
+                "ttl": int(time.time()) + 86400 * 7  # TTL de 7 días
+            },
+            ConditionExpression="attribute_not_exists(message_id)"
+        )
+        print(f"🔒 Lock adquirido para mensaje {message_id}")
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            print(f"⚠️ Mensaje {message_id} ya está siendo procesado por otra invocación")
+            return False
+        print(f"⚠️ Error adquiriendo lock: {e}")
+        return False
+    except Exception as e:
+        print(f"⚠️ Error inesperado adquiriendo lock: {e}")
+        return False
+
 # =============================================================================
 # SISTEMA DE TICKETS MULTI-FOTO
 # =============================================================================
@@ -1029,14 +1058,14 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
     
     # Construir respuesta sin indentación extra (importante para Telegram)
     lines = [
-        "✅ Ticket procesado exitosamente!",
+        "✅ *Ticket procesado exitosamente!*",
         "",
-        f"🏪 Comercio: {merchant}",
-        f"📅 Fecha: {date}",
-        f"💰 Total: {total_str}",
-        f"📦 Items detectados: {len(items)}",
+        f"🏪 *Comercio:* {merchant}",
+        f"📅 *Fecha:* {date}",
+        f"💰 *Total:* {total_str}",
+        f"📦 *Items detectados:* {len(items)}",
         "",
-        "Productos extraídos:"
+        "*Productos extraídos:*"
     ]
     
     # Mostrar hasta 15 items para dar más contexto
@@ -1055,10 +1084,10 @@ def format_receipt_response(extracted_data: dict, rows_inserted: int) -> str:
         lines.append(f"• {name} x{qty} - {price_str}")
     
     if len(items) > max_items_to_show:
-        lines.append(f"... y {len(items) - max_items_to_show} productos más")
+        lines.append(f"_... y {len(items) - max_items_to_show} productos más_")
     
     return "\n".join(lines)
-    
+
 def invoke_receipt_etl_step_function(s3_key: str, use_fallback: bool = True) -> dict:
     """
     Invoca la Step Function EXPRESS de forma síncrona para procesar el ticket.
@@ -1699,15 +1728,11 @@ def lambda_handler(event, context):
         if "photo" in message:
             print("📷 Mensaje con foto detectado")
             
-            # Control de idempotencia: verificar si ya procesamos este mensaje
+            # Control de idempotencia ATÓMICO: intentar adquirir lock
             telegram_message_id = message.get("message_id")
-            if telegram_message_id and is_message_already_processed(telegram_message_id):
-                print(f"⚠️ Mensaje {telegram_message_id} ya fue procesado, ignorando duplicado")
+            if telegram_message_id and not try_acquire_message_lock(telegram_message_id):
+                print(f"⚠️ Mensaje {telegram_message_id} ya fue procesado o está siendo procesado, ignorando")
                 return {"statusCode": 200}
-            
-            # Marcar como procesado ANTES de procesar (para evitar race conditions)
-            if telegram_message_id:
-                mark_message_as_processed(telegram_message_id)
             
             # Verificar si hay un ticket pendiente (para no enviar "Recibí tu ticket" en cada foto)
             pending_ticket = get_pending_ticket(chat_id)
@@ -1755,6 +1780,12 @@ def lambda_handler(event, context):
             return {"statusCode": 200}
 
         print(f'💬 Mensaje input: {text}')
+        
+        # Control de idempotencia ATÓMICO para mensajes de texto
+        telegram_message_id = message.get("message_id")
+        if telegram_message_id and not try_acquire_message_lock(telegram_message_id):
+            print(f"⚠️ Mensaje de texto {telegram_message_id} ya fue procesado o está siendo procesado, ignorando")
+            return {"statusCode": 200}
 
         # =========================================
         # MANEJAR COMANDOS
