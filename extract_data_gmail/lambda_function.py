@@ -685,6 +685,10 @@ def lambda_handler(event, context):
                         'body': json.dumps({'message': 'No hay cambios nuevos'})
                     }
                 
+                # Set GLOBAL para evitar procesar el mismo mensaje múltiples veces
+                # (puede aparecer en múltiples records del historial)
+                processed_message_ids = set()
+                
                 # Ahora procesar cada record del historial
                 for record in history_records:
                     
@@ -700,9 +704,6 @@ def lambda_handler(event, context):
                     print(f"   - labelsAdded: {len(record.get('labelsAdded', []))}")
                     print(f"   - labelsRemoved: {len(record.get('labelsRemoved', []))}")
                     print(f"   - messages: {len(record.get('messages', []))}")
-                    
-                    # Mantener un set de message IDs ya procesados en este record para evitar duplicados
-                    processed_in_this_record = set()
                         
                     # PASO 1: Procesar mensajes nuevos (messagesAdded)
                     if 'messagesAdded' in record:
@@ -710,7 +711,12 @@ def lambda_handler(event, context):
                         for m in record['messagesAdded']:
                             mail_msg_id = m['message']['id']
                             
-                            processed_in_this_record.add(mail_msg_id)
+                            # Verificar si ya procesamos este mensaje en un record anterior
+                            if mail_msg_id in processed_message_ids:
+                                print(f"⚠️ Mensaje {mail_msg_id} ya fue procesado en un record anterior, se omite")
+                                continue
+                            
+                            processed_message_ids.add(mail_msg_id)
                             
                             # DEBUGGING: Obtener información completa del mensaje para logging
                             print(f"🔍 DEBUG - Analizando mensaje {mail_msg_id}")
@@ -858,11 +864,11 @@ def lambda_handler(event, context):
                                 print(f"⚠️ Labels agregados al mensaje {mail_msg_id} no son de interés: {labels_added}")
                                 continue
                             
-                            if mail_msg_id in processed_in_this_record:
-                                print(f"⚠️ Mensaje {mail_msg_id} ya fue procesado en messagesAdded, se omite")
+                            if mail_msg_id in processed_message_ids:
+                                print(f"⚠️ Mensaje {mail_msg_id} ya fue procesado anteriormente, se omite")
                                 continue
                             
-                            processed_in_this_record.add(mail_msg_id)
+                            processed_message_ids.add(mail_msg_id)
                             
                             print(f"🏷️  DEBUG - Mensaje {mail_msg_id} recibió labels objetivo: {added_target_labels}")
                             print(f"💡 Este mensaje probablemente llegó en un historyId anterior")
@@ -969,11 +975,11 @@ def lambda_handler(event, context):
                         for m in record['messages']:
                             mail_msg_id = m['id']
                             
-                            if mail_msg_id in processed_in_this_record:
-                                print(f"⚠️ Mensaje {mail_msg_id} ya fue procesado, se omite")
+                            if mail_msg_id in processed_message_ids:
+                                print(f"⚠️ Mensaje {mail_msg_id} ya fue procesado anteriormente, se omite")
                                 continue
                             
-                            processed_in_this_record.add(mail_msg_id)
+                            processed_message_ids.add(mail_msg_id)
                             
                             # DEBUGGING: Obtener información completa del mensaje para logging
                             print(f"🔍 DEBUG - Analizando mensaje {mail_msg_id} (campo 'messages')")
