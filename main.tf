@@ -515,6 +515,28 @@ resource "aws_dynamodb_table" "gmail_history" {
   }
 }
 
+# Tabla para deduplicación de mensajes Pub/Sub de Gmail
+resource "aws_dynamodb_table" "gmail_pubsub_dedup" {
+  name           = "gmail-pubsub-dedup"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "pubsub_message_id"
+
+  attribute {
+    name = "pubsub_message_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "gmail-pubsub-dedup"
+    Env  = "prod"
+  }
+}
+
 resource "aws_dynamodb_table" "schema_cache" {
   name           = var.dynamodb_table_name
   billing_mode   = "PAY_PER_REQUEST"
@@ -1002,6 +1024,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
         ]
         Resource = [
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker",
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-pubsub-dedup",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",

@@ -604,6 +604,34 @@ def lambda_handler(event, context):
     try:
         body_message_pubsub = json.loads(event.get("body", "{}"))
         print(f"Body del mensaje Pub/Sub: {body_message_pubsub}")
+        
+        # =========================================
+        # DEDUPLICACIÓN A NIVEL DE PUB/SUB MESSAGE
+        # =========================================
+        # Evita procesar el mismo mensaje Pub/Sub múltiples veces
+        # (puede llegar por múltiples subscriptions o reintentos)
+        pubsub_message_id = body_message_pubsub.get('message', {}).get('messageId') or body_message_pubsub.get('message', {}).get('message_id')
+        if pubsub_message_id:
+            dynamodb_dedup = boto3.resource('dynamodb')
+            dedup_table = dynamodb_dedup.Table('gmail-pubsub-dedup')
+            
+            try:
+                # Intentar insertar con ConditionExpression para atomicidad
+                dedup_table.put_item(
+                    Item={
+                        'pubsub_message_id': pubsub_message_id,
+                        'processed_at': int(time.time()),
+                        'ttl': int(time.time()) + 86400  # TTL de 1 día
+                    },
+                    ConditionExpression='attribute_not_exists(pubsub_message_id)'
+                )
+                print(f"🔒 Lock adquirido para Pub/Sub message {pubsub_message_id}")
+            except dynamodb_dedup.meta.client.exceptions.ConditionalCheckFailedException:
+                print(f"⚠️ Pub/Sub message {pubsub_message_id} ya fue procesado, ignorando duplicado")
+                return {'statusCode': 200, 'body': json.dumps({'message': 'Duplicate Pub/Sub message ignored'})}
+            except Exception as dedup_error:
+                # Si la tabla no existe o hay otro error, continuar (no bloquear el procesamiento)
+                print(f"⚠️ Error en deduplicación Pub/Sub (continuando): {dedup_error}")
 
         creds = auth_google('gcp_api_credentials')
         dynamodb = boto3.resource('dynamodb')
