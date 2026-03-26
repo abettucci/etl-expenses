@@ -6,7 +6,7 @@ import pandas as pd
 import hashlib
 from PyPDF2 import PdfReader
 pd.set_option('display.max_columns', None)
-pd.set
+pd.set_option('display.max_rows', None)
 
 MARKET_BUCKET = os.environ['MARKET_BUCKET_NAME']
 
