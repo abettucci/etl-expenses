@@ -278,14 +278,47 @@ def lambda_handler(event, context):
     try:
         print(f"📥 Event recibido: {json.dumps(event)}")
         
+        # Normalizar input (Step Functions a veces envuelve el payload en {"statusCode", "body"})
+        payload = event.get('body', event) if isinstance(event, dict) else event
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                # Si body viene como string no-JSON, lo dejamos tal cual y fallaremos con un error claro abajo
+                pass
+        
+        # Algunos pasos pueden anidar nuevamente "body"
+        if isinstance(payload, dict) and 'body' in payload and any(k in payload['body'] for k in ('etl_flow', 'bucket', 'key')):
+            inner = payload.get('body')
+            if isinstance(inner, str):
+                try:
+                    inner = json.loads(inner)
+                except Exception:
+                    inner = None
+            if isinstance(inner, dict):
+                payload = inner
+        
         # Inicializar clientes
         bq_client = get_bigquery_client()
         s3_client = boto3.client('s3')
         
         # Extraer parámetros del event
-        etl_flow = event['etl_flow']
-        bucket = event['bucket']
-        key = event['key']
+        if not isinstance(payload, dict):
+            raise ValueError(f"Input inválido: se esperaba dict o dict en body. type={type(payload)}")
+        
+        etl_flow = payload.get('etl_flow')
+        bucket = payload.get('bucket')
+        key = payload.get('key')
+        
+        if not isinstance(etl_flow, str) or not etl_flow:
+            raise ValueError(f"`etl_flow` inválido. Esperado str no vacío, recibido: {etl_flow!r}")
+        if not isinstance(bucket, str) or not bucket:
+            raise ValueError(f"`bucket` inválido. Esperado str no vacío, recibido: {bucket!r}")
+        if not isinstance(key, str) or not key:
+            raise ValueError(
+                f"`key` inválido. Esperado str no vacío (ej: 'raw/Ticket_31-12-25.pdf'), recibido: {key!r}. "
+                f"Esto suele pasar cuando el Step previo pisa el key o devuelve false."
+            )
         
         print(f"🔧 ETL Flow: {etl_flow}")
         print(f"📦 Bucket: {bucket}")
