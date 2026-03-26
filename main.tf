@@ -620,7 +620,7 @@ resource "aws_lambda_function" "pdf_processor" {
 
   environment {
     variables = {
-      MARKET_BUCKET = aws_s3_bucket.market_tickets.bucket
+      MARKET_BUCKET_NAME = aws_s3_bucket.market_tickets.bucket
     }
   }
 }
