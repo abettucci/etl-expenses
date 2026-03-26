@@ -199,7 +199,7 @@ def lambda_handler(event, context):
     try:
         s3_file_to_transform = event['key']
         s3 = boto3.client('s3')
-        key = process_pdf_file(s3, bucket, s3_file_to_transform)
+        key = process_pdf_file(s3, MARKET_BUCKET, s3_file_to_transform)
 
         return {
             "statusCode": 200,
