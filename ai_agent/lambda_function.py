@@ -2164,18 +2164,41 @@ def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> st
     )
     return "\n".join(lines)
 
-def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str):
+def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str, match_type: str = "contains"):
+    """
+    Guarda un mapeo en dim_comercio_mapping y marca los pendientes como resueltos.
+    
+    NOTA: Las tablas de hechos (bank_payments, mp_data, etc.) NO tienen columnas
+    de categoria/subcategoria. El mapeo se aplica:
+    - Durante el ETL (load_data) para nuevos registros
+    - En tiempo de consulta con JOIN a dim_comercio_mapping
+    
+    Args:
+        flow: 'bank_payments', 'mp_data', 'mp_transfer_data', 'supermarket_receipts'
+        match_value: texto a matchear (se normaliza automáticamente)
+        comercio_depurado: nombre limpio del comercio
+        categoria: categoría principal
+        subcategoria: subcategoría
+        match_type: 'contains' (default), 'exact', 'regex', 'fuzzy', 'fuzzy:85'
+    """
     flow = flow.strip()
     match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
     if not match_norm:
         raise ValueError("match_value vacío o inválido.")
+    
+    # Validar match_type
+    valid_types = ["contains", "exact", "regex"]
+    is_fuzzy = match_type.startswith("fuzzy")
+    if not is_fuzzy and match_type not in valid_types:
+        match_type = "contains"
 
+    # 1. Guardar/actualizar regla en dim_comercio_mapping
     merge_q = f"""
     MERGE {bq_fqn(MAPPING_TABLE)} t
     USING (
       SELECT
         @flow AS flow,
-        'contains' AS match_type,
+        @match_type AS match_type,
         @match_norm AS match_value,
         @dep AS comercio_depurado,
         @cat AS categoria,
@@ -2198,6 +2221,7 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
     cfg = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("flow", "STRING", flow),
+            bigquery.ScalarQueryParameter("match_type", "STRING", match_type),
             bigquery.ScalarQueryParameter("match_norm", "STRING", match_norm),
             bigquery.ScalarQueryParameter("dep", "STRING", comercio_depurado),
             bigquery.ScalarQueryParameter("cat", "STRING", categoria),
@@ -2206,28 +2230,13 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
     )
     bq_client.query(merge_q, job_config=cfg).result()
 
-    if flow == "bank_payments":
-        table = "bank_payments"
-    elif flow == "mp_data":
-        table = "mp_data"
-    else:
-        raise ValueError("flow debe ser bank_payments o mp_data")
-
-    update_q = f"""
-    UPDATE {bq_fqn(table)}
-    SET
-      comercio_depurado = @dep,
-      categoria = @cat,
-      subcategoria = @sub
-    WHERE REGEXP_REPLACE(UPPER(IFNULL(COMERCIO, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
-    """
-    bq_client.query(update_q, job_config=cfg).result()
-
+    # 2. Marcar pendientes como resueltos en comercio_unmapped_queue
+    # Usa LIKE para matchear comercios similares que serían cubiertos por esta regla
     resolve_q = f"""
     UPDATE {bq_fqn(UNMAPPED_TABLE)}
     SET resolved = TRUE
     WHERE flow = @flow
-      AND REGEXP_REPLACE(UPPER(IFNULL(comercio_raw, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
+      AND REGEXP_REPLACE(UPPER(IFNULL(comercio_normalizado, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
       AND IFNULL(resolved, FALSE) = FALSE
     """
     bq_client.query(resolve_q, job_config=cfg).result()
@@ -2378,31 +2387,42 @@ def lambda_handler(event, context):
             return {"statusCode": 200}
         
         if text == "/help":
-            help_message = """
-            📚 *Ayuda del Bot*
+            help_message = """📚 *Ayuda del Bot*
 
-            *Consultas de texto:*
-            Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
+*Consultas de texto:*
+Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
 
-            *Ejemplos:*
-            • ¿Cuánto gasté este mes?
-            • Gastos por comercio
-            • Mis mayores gastos
-            • ¿Cuánto gasté en Carrefour?
+*Ejemplos:*
+• ¿Cuánto gasté este mes?
+• Gastos por comercio
+• Mis mayores gastos
+• ¿Cuánto gasté en Carrefour?
 
-            *Fotos de tickets:*
-            Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
+*Fotos de tickets:*
+Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
 
-            *Comandos:*
-            • /start - Mensaje de bienvenida
-            • /help - Esta ayuda
-            • /ultimo_gasto - Último movimiento banco/tarjeta
-            • /ultimo_mp - Última transacción Mercado Pago
-            • /mes - Resumen mes actual (banco + Carrefour)
-            • /exportar [banco|carrefour|mp] - CSV (máx. filas según EXPORT_MAX_ROWS)
-            • /pendientes_comercio [bank|mp|all]
-            • /mapear_comercio flow|match|depurado|categoria|subcategoria
-            """
+*Comandos básicos:*
+• /start - Mensaje de bienvenida
+• /help - Esta ayuda
+• /ultimo\_gasto - Último movimiento banco/tarjeta
+• /ultimo\_mp - Última transacción Mercado Pago
+• /mes - Resumen mes actual (banco + Carrefour)
+• /exportar [banco|carrefour|mp] - Exportar CSV
+
+*Mapeo de comercios:*
+• /pendientes\_comercio [bank|mp|all] - Ver comercios sin clasificar
+• /mapear\_comercio flow|match|depurado|cat|subcat|[tipo]
+
+*Tipos de matching:*
+• `contains` (default): busca substring
+• `exact`: coincidencia exacta
+• `fuzzy`: similitud >= 80%
+• `fuzzy:85`: similitud personalizada
+
+*Ejemplo fuzzy:*
+`/mapear_comercio bank|SHELL|Shell|nafta|combustible|fuzzy:75`
+Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
+"""
             send_telegram_message(chat_id, help_message, TELEGRAM_BOT_TOKEN)
             return {"statusCode": 200}
 
@@ -2457,8 +2477,12 @@ def lambda_handler(event, context):
                 payload = text[len("/mapear_comercio"):].strip()
                 parts = [p.strip() for p in payload.split("|")]
                 if len(parts) < 5:
-                    raise ValueError("Formato inválido")
+                    raise ValueError("Formato inválido (mínimo 5 campos)")
+                
                 flow_raw, match_value, depurado, categoria, subcategoria = parts[:5]
+                # Sexto parámetro opcional: match_type (default: contains)
+                match_type = parts[5].lower() if len(parts) > 5 else "contains"
+                
                 flow_alias = {
                     "bank": "bank_payments",
                     "bank_payments": "bank_payments",
@@ -2468,6 +2492,7 @@ def lambda_handler(event, context):
                 flow = flow_alias.get(flow_raw.lower())
                 if not flow:
                     raise ValueError("flow debe ser bank/bank_payments/mp/mp_data")
+                
                 apply_mapping_backfill(
                     bq_client,
                     flow=flow,
@@ -2475,20 +2500,36 @@ def lambda_handler(event, context):
                     comercio_depurado=depurado,
                     categoria=categoria,
                     subcategoria=subcategoria,
+                    match_type=match_type,
                 )
+                
+                # Mensaje de confirmación
                 ok = (
-                    "✅ Mapeo guardado y backfill aplicado.\n"
-                    f"flow: {flow}\nmatch: {match_value}\n"
-                    f"depurado: {depurado}\ncategoria: {categoria}\nsubcategoria: {subcategoria}"
+                    f"✅ Mapeo guardado en dim_comercio_mapping.\n\n"
+                    f"📋 Detalles:\n"
+                    f"• flow: {flow}\n"
+                    f"• match: {match_value}\n"
+                    f"• match_type: {match_type}\n"
+                    f"• depurado: {depurado}\n"
+                    f"• categoria: {categoria}\n"
+                    f"• subcategoria: {subcategoria}\n\n"
+                    f"ℹ️ El mapeo se aplicará a nuevos registros en el próximo ETL.\n"
+                    f"Para consultas históricas, usá JOIN con dim_comercio_mapping."
                 )
                 send_telegram_message(chat_id, ok, TELEGRAM_BOT_TOKEN, parse_mode=False)
             except Exception as e:
                 err = (
-                    "❌ No pude registrar el mapeo.\n"
+                    "❌ No pude registrar el mapeo.\n\n"
                     "Formato:\n"
-                    "/mapear_comercio flow|match|depurado|categoria|subcategoria\n\n"
-                    "Ejemplo:\n"
-                    "/mapear_comercio bank|MERPAGO*SHELL|Shell|nafta|combustible\n\n"
+                    "/mapear_comercio flow|match|depurado|categoria|subcategoria|[tipo]\n\n"
+                    "Tipos de matching:\n"
+                    "• contains (default): busca substring\n"
+                    "• exact: coincidencia exacta\n"
+                    "• fuzzy: similitud >= 80%\n"
+                    "• fuzzy:85: similitud >= 85%\n\n"
+                    "Ejemplos:\n"
+                    "/mapear_comercio bank|MERPAGO*SHELL|Shell|nafta|combustible\n"
+                    "/mapear_comercio bank|SHELL|Shell|nafta|combustible|fuzzy:75\n\n"
                     f"Detalle: {str(e)}"
                 )
                 send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)

@@ -28,9 +28,10 @@ resumen_tarjeta_santander_amex.pdf
 resumen_tarjeta_santander_visa.pdf
 MIGRATION_SUMMARY.md
 QUICK_START.md
-leer_resumen_tarjeta.py
 ai_agent/__pycache__/
 load_data/__pycache__/
-load_data/cargar_mapeo_comercios.py
 load_data/mapeo_comercios_mp_report.txt
 load_data/mapeo_comercios_bank.txt
+scripts/detectar_comercios_sin_mapear.py
+scripts/cargar_mapeos_inicial.py
+scripts/leer_resumen_tarjeta.py

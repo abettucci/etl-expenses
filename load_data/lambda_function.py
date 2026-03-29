@@ -389,7 +389,41 @@ def resolve_comercio_column(df):
     df["COMERCIO"] = ""
     return "COMERCIO"
 
+def fuzzy_match_comercio(comercio_normalizado: str, match_value: str, threshold: int = 80) -> bool:
+    """
+    Compara dos strings usando fuzzy matching con rapidfuzz.
+    Usa múltiples algoritmos para mayor flexibilidad:
+    - ratio: similitud general
+    - partial_ratio: para cuando uno es substring del otro
+    - token_sort_ratio: ignora orden de palabras
+    
+    Retorna True si alguno supera el threshold.
+    """
+    if not comercio_normalizado or not match_value:
+        return False
+    
+    # Calcular diferentes métricas de similitud
+    ratio = fuzz.ratio(comercio_normalizado, match_value)
+    partial = fuzz.partial_ratio(comercio_normalizado, match_value)
+    token_sort = fuzz.token_sort_ratio(comercio_normalizado, match_value)
+    
+    # Usar el máximo de las tres métricas
+    max_score = max(ratio, partial, token_sort)
+    
+    return max_score >= threshold
+
+
 def apply_comercio_mapping(df, mapping_rows, flow_name):
+    """
+    Aplica mapeos de comercio al DataFrame.
+    
+    Tipos de matching soportados:
+    - exact: coincidencia exacta del texto normalizado
+    - contains: el texto normalizado contiene el patrón (default)
+    - regex: expresión regular
+    - fuzzy: similitud >= threshold usando rapidfuzz (default 80%)
+    - fuzzy:90: similitud >= 90% (threshold personalizado)
+    """
     if "COMERCIO" not in df.columns:
         df["COMERCIO"] = ""
     df["COMERCIO"] = df["COMERCIO"].fillna("").astype(str)
@@ -404,6 +438,7 @@ def apply_comercio_mapping(df, mapping_rows, flow_name):
         if not mv:
             continue
         mt = (m.get("match_type") or "contains").lower()
+        
         if mt == "exact":
             mask = df["comercio_normalizado"] == mv
         elif mt == "regex":
@@ -411,8 +446,23 @@ def apply_comercio_mapping(df, mapping_rows, flow_name):
                 mask = df["comercio_normalizado"].str.contains(mv, regex=True, na=False)
             except Exception:
                 mask = pd.Series([False] * len(df))
+        elif mt.startswith("fuzzy"):
+            # Soporta "fuzzy" (default 80%) o "fuzzy:85" (threshold custom)
+            if ":" in mt:
+                try:
+                    threshold = int(mt.split(":")[1])
+                except ValueError:
+                    threshold = 80
+            else:
+                threshold = 80
+            # Aplicar fuzzy matching a cada fila
+            mask = df["comercio_normalizado"].apply(
+                lambda x: fuzzy_match_comercio(x, mv, threshold)
+            )
         else:
+            # Default: contains
             mask = df["comercio_normalizado"].str.contains(re.escape(mv), regex=True, na=False)
+        
         df.loc[mask, "comercio_depurado"] = m.get("comercio_depurado") or df.loc[mask, "comercio_depurado"]
         df.loc[mask, "categoria"] = m.get("categoria") or df.loc[mask, "categoria"]
         df.loc[mask, "subcategoria"] = m.get("subcategoria") or df.loc[mask, "subcategoria"]
