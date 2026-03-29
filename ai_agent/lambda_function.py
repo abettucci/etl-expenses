@@ -2230,16 +2230,21 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
     )
     bq_client.query(merge_q, job_config=cfg).result()
 
-    # 2. Marcar pendientes como resueltos en comercio_unmapped_queue
-    # Usa LIKE para matchear comercios similares que serían cubiertos por esta regla
-    resolve_q = f"""
-    UPDATE {bq_fqn(UNMAPPED_TABLE)}
-    SET resolved = TRUE
-    WHERE flow = @flow
-      AND REGEXP_REPLACE(UPPER(IFNULL(comercio_normalizado, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
-      AND IFNULL(resolved, FALSE) = FALSE
-    """
-    bq_client.query(resolve_q, job_config=cfg).result()
+    # 2. Intentar marcar pendientes como resueltos en comercio_unmapped_queue
+    # Nota: puede fallar si hay filas en streaming buffer (insertadas hace <30 min)
+    # En ese caso, simplemente continuamos - el mapeo ya quedó guardado
+    try:
+        resolve_q = f"""
+        UPDATE {bq_fqn(UNMAPPED_TABLE)}
+        SET resolved = TRUE
+        WHERE flow = @flow
+          AND REGEXP_REPLACE(UPPER(IFNULL(comercio_normalizado, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
+          AND IFNULL(resolved, FALSE) = FALSE
+        """
+        bq_client.query(resolve_q, job_config=cfg).result()
+    except Exception as e:
+        # Si falla por streaming buffer, no es crítico - el mapeo ya está guardado
+        print(f"⚠️ No se pudo marcar como resuelto en unmapped_queue (streaming buffer?): {e}")
 
 def lambda_handler(event, context):
     try:
