@@ -65,6 +65,18 @@ variable "TELEGRAM_BOT_TOKEN" {
   sensitive   = true
 }
 
+variable "TELEGRAM_ALERT_CHAT_ID" {
+  description = "Chat ID de Telegram para alertas de presupuesto (opcional)"
+  type        = string
+  default     = ""
+}
+
+variable "ALERT_BUDGET_ARS" {
+  description = "Tope mensual en ARS para alerta (opcional; vacío desactiva el chequeo útil)"
+  type        = string
+  default     = ""
+}
+
 variable "OPENAI_API_KEY" {
   description = "OpenAI API Key"
   type        = string
@@ -782,8 +794,33 @@ resource "aws_lambda_function" "ai_agent" {
       S3_BUCKET_TICKETS           = aws_s3_bucket.telegram_receipts.bucket
       S3_PREFIX_TICKETS           = "receipts/"
       RECEIPT_ETL_STATE_MACHINE   = aws_sfn_state_machine.telegram_receipt_etl_flow.arn
+      TELEGRAM_ALERT_CHAT_ID      = var.TELEGRAM_ALERT_CHAT_ID
+      ALERT_BUDGET_ARS            = var.ALERT_BUDGET_ARS
+      S3_PREFIX_EXPORTS           = "exports/"
+      EXPORT_MAX_ROWS             = "3000"
     }
   }
+}
+
+resource "aws_cloudwatch_event_rule" "ai_agent_budget_alert" {
+  name                = "ai-agent-budget-daily"
+  description         = "Chequeo diario de presupuesto mensual (gasto banco vs ALERT_BUDGET_ARS)"
+  schedule_expression = "cron(0 13 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "ai_agent_budget_alert" {
+  rule      = aws_cloudwatch_event_rule.ai_agent_budget_alert.name
+  target_id = "aiAgentBudget"
+  arn       = aws_lambda_function.ai_agent.arn
+  input     = jsonencode({ action = "alert_budget" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ai_agent_budget" {
+  statement_id  = "AllowExecutionFromEventBridgeBudget"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ai_agent_budget_alert.arn
 }
 
 # 4.11 Lambda para extraer datos de tickets con OCR (OpenAI Vision + TabScanner fallback)

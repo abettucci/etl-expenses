@@ -1,0 +1,18 @@
+206 Market Beruti => comida
+Market Beruti => comida
+SUC158 COTO CICSA => comida
+239 Carrefour Gral. Pacheco => comida
+El Patio de los Duendes => comida oficina
+
+Electro solis => hogar => luces
+Yaza copy => tramites => fotocopias
+
+Volito Sucre => kiosco
+Quiosco Ya! Congreso 2200 => kiosco
+
+Makena => salidas => boliche
+Desarmadero => salidas => bar
+
+Centro Integral Automotor => auto => lamparita (memo)
+
+Northpharm Santa Bárbara => farmacia

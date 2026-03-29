@@ -20,6 +20,8 @@ BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 MP_REPORTS_BUCKET = os.environ.get("MP_REPORTS_BUCKET") 
 PARAMETER_NAME = "/mercado_pago/token"
+MAPPING_TABLE = "dim_comercio_mapping"
+UNMAPPED_TABLE = "comercio_unmapped_queue"
 
 # --------------------------
 # Inicialización de BigQuery Client
@@ -274,6 +276,170 @@ def column_name_mapping(df):
     df.rename(columns=column_mapping, inplace=True)
     return df
 
+def normalize_text(text):
+    if text is None:
+        return ""
+    text = str(text).strip()
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^A-Za-z0-9]+", "", text.upper())
+    return text
+
+def parse_mapping_file(file_path, flow_name):
+    mappings = []
+    if not os.path.exists(file_path):
+        return mappings
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            parts = [p.strip() for p in raw.split("=>")]
+            if not parts:
+                continue
+            comercio_raw = parts[0]
+            comercio_norm = normalize_text(comercio_raw)
+            if not comercio_norm:
+                continue
+            categoria = parts[1].strip() if len(parts) > 1 else "sin_clasificar"
+            subcategoria = parts[2].strip() if len(parts) > 2 else ""
+            mappings.append(
+                {
+                    "flow": flow_name,
+                    "match_type": "contains",
+                    "match_value": comercio_norm,
+                    "comercio_depurado": comercio_raw,
+                    "categoria": categoria,
+                    "subcategoria": subcategoria,
+                    "prioridad": 100,
+                    "activo": True,
+                    "ins_dttm": datetime.utcnow().isoformat(),
+                }
+            )
+    return mappings
+
+def ensure_comercio_tables(client):
+    create_mapping = f"""
+    CREATE TABLE IF NOT EXISTS `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}` (
+      flow STRING,
+      match_type STRING,
+      match_value STRING,
+      comercio_depurado STRING,
+      categoria STRING,
+      subcategoria STRING,
+      prioridad INT64,
+      activo BOOL,
+      ins_dttm TIMESTAMP
+    )
+    """
+    create_unmapped = f"""
+    CREATE TABLE IF NOT EXISTS `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{UNMAPPED_TABLE}` (
+      flow STRING,
+      comercio_raw STRING,
+      comercio_normalizado STRING,
+      sample_record STRING,
+      ins_dttm TIMESTAMP,
+      resolved BOOL
+    )
+    """
+    client.query(create_mapping).result()
+    client.query(create_unmapped).result()
+
+def upsert_mappings(client, rows):
+    if not rows:
+        return
+    df_map = pd.DataFrame(rows)
+    staging_table_id, _ = load_to_staging(client, df_map, "dim_comercio_mapping")
+    query = f"""
+    MERGE `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}` t
+    USING `{staging_table_id}` s
+    ON t.flow = s.flow AND t.match_type = s.match_type AND t.match_value = s.match_value
+    WHEN MATCHED THEN UPDATE SET
+      comercio_depurado = s.comercio_depurado,
+      categoria = s.categoria,
+      subcategoria = s.subcategoria,
+      prioridad = s.prioridad,
+      activo = s.activo,
+      ins_dttm = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN
+      INSERT (flow, match_type, match_value, comercio_depurado, categoria, subcategoria, prioridad, activo, ins_dttm)
+      VALUES (s.flow, s.match_type, s.match_value, s.comercio_depurado, s.categoria, s.subcategoria, s.prioridad, s.activo, CURRENT_TIMESTAMP())
+    """
+    client.query(query).result()
+
+def load_mapping_for_flow(client, flow_name):
+    query = f"""
+    SELECT flow, match_type, match_value, comercio_depurado, categoria, subcategoria, prioridad
+    FROM `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}`
+    WHERE activo = TRUE AND (flow = @flow OR flow = 'all')
+    ORDER BY prioridad DESC
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("flow", "STRING", flow_name)]
+    )
+    rows = client.query(query, job_config=cfg).result()
+    return [dict(r) for r in rows]
+
+def resolve_comercio_column(df):
+    candidates = ["COMERCIO", "STORE_NAME", "PAYER_NAME", "POS_NAME", "EXTERNAL_REFERENCE"]
+    for col in candidates:
+        if col in df.columns:
+            if col != "COMERCIO":
+                df["COMERCIO"] = df[col].astype(str)
+            return "COMERCIO"
+    df["COMERCIO"] = ""
+    return "COMERCIO"
+
+def apply_comercio_mapping(df, mapping_rows, flow_name):
+    if "COMERCIO" not in df.columns:
+        df["COMERCIO"] = ""
+    df["COMERCIO"] = df["COMERCIO"].fillna("").astype(str)
+    df["comercio_normalizado"] = df["COMERCIO"].apply(normalize_text)
+    df["comercio_depurado"] = df["COMERCIO"]
+    df["categoria"] = "sin_clasificar"
+    df["subcategoria"] = ""
+
+    mapping_rows = sorted(mapping_rows, key=lambda x: x.get("prioridad", 0), reverse=True)
+    for m in mapping_rows:
+        mv = (m.get("match_value") or "").strip()
+        if not mv:
+            continue
+        mt = (m.get("match_type") or "contains").lower()
+        if mt == "exact":
+            mask = df["comercio_normalizado"] == mv
+        elif mt == "regex":
+            try:
+                mask = df["comercio_normalizado"].str.contains(mv, regex=True, na=False)
+            except Exception:
+                mask = pd.Series([False] * len(df))
+        else:
+            mask = df["comercio_normalizado"].str.contains(re.escape(mv), regex=True, na=False)
+        df.loc[mask, "comercio_depurado"] = m.get("comercio_depurado") or df.loc[mask, "comercio_depurado"]
+        df.loc[mask, "categoria"] = m.get("categoria") or df.loc[mask, "categoria"]
+        df.loc[mask, "subcategoria"] = m.get("subcategoria") or df.loc[mask, "subcategoria"]
+
+    unmapped = df[df["categoria"] == "sin_clasificar"][["COMERCIO", "comercio_normalizado"]].drop_duplicates()
+    return df, unmapped
+
+def append_unmapped_queue(client, unmapped_df, flow_name):
+    if unmapped_df.empty:
+        return
+    rows = []
+    for _, r in unmapped_df.iterrows():
+        rows.append(
+            {
+                "flow": flow_name,
+                "comercio_raw": str(r.get("COMERCIO", "")),
+                "comercio_normalizado": str(r.get("comercio_normalizado", "")),
+                "sample_record": json.dumps({"comercio": str(r.get("COMERCIO", ""))}, ensure_ascii=False),
+                "ins_dttm": datetime.utcnow(),
+                "resolved": False,
+            }
+        )
+    dfq = pd.DataFrame(rows)
+    table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{UNMAPPED_TABLE}"
+    cfg = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", autodetect=True)
+    client.load_table_from_dataframe(dfq, table_id, job_config=cfg).result()
+
 def lambda_handler(event, context):
     try:
         print(f"📥 Event recibido: {json.dumps(event)}")
@@ -301,6 +467,12 @@ def lambda_handler(event, context):
         # Inicializar clientes
         bq_client = get_bigquery_client()
         s3_client = boto3.client('s3')
+        ensure_comercio_tables(bq_client)
+        base_dir = os.path.dirname(__file__)
+        bank_mapping_file = os.path.join(base_dir, "mapeo_comercios_bank.txt")
+        mp_mapping_file = os.path.join(base_dir, "mapeo_comercios_mp_report.txt")
+        upsert_mappings(bq_client, parse_mapping_file(bank_mapping_file, "bank_payments"))
+        upsert_mappings(bq_client, parse_mapping_file(mp_mapping_file, "mp_data"))
         
         # Extraer parámetros del event
         if not isinstance(payload, dict):
@@ -365,11 +537,15 @@ def lambda_handler(event, context):
         # FLUJO: MERCADO PAGO
         # ========================================
         if etl_flow == 'MP':
-            report_id = event['report_id']
-            report_date = event['report_date']
+            report_id = payload['report_id']
+            report_date = payload['report_date']
             
             df = column_name_mapping(df)
             df.columns = [clean_column_name(c) for c in df.columns]
+            resolve_comercio_column(df)
+            mp_rules = load_mapping_for_flow(bq_client, "mp_data")
+            df, unmapped = apply_comercio_mapping(df, mp_rules, "mp_data")
+            append_unmapped_queue(bq_client, unmapped, "mp_data")
             df['REPORT_ID'] = report_id
             df['REPORT_DATE'] = report_date
             
@@ -506,6 +682,10 @@ def lambda_handler(event, context):
             print(f"💳 Procesando pagos bancarios: {table_name}")
             df_bank = df.copy()
             df_bank.columns = [clean_column_name(c) for c in df_bank.columns]
+            resolve_comercio_column(df_bank)
+            bank_rules = load_mapping_for_flow(bq_client, "bank_payments")
+            df_bank, unmapped = apply_comercio_mapping(df_bank, bank_rules, "bank_payments")
+            append_unmapped_queue(bq_client, unmapped, "bank_payments")
             
             # Si existe columna MESSAGE_ID, usarla como clave
             key_cols = ['MESSAGE_ID'] if 'MESSAGE_ID' in df_bank.columns else []

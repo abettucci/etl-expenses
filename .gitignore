@@ -29,3 +29,5 @@ resumen_tarjeta_santander_visa.pdf
 MIGRATION_SUMMARY.md
 QUICK_START.md
 leer_resumen_tarjeta.py
+ai_agent/__pycache__/
+load_data/__pycache__/

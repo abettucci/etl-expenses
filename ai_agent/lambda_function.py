@@ -1,13 +1,18 @@
 import os
+import io
+import csv
 import json
+import html
+import re
 import boto3
 import base64
 import requests
 import openai
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, date, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -29,6 +34,12 @@ BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 # S3 Configuration para imágenes de tickets
 S3_BUCKET_TICKETS = os.environ.get("S3_BUCKET_TICKETS", "telegram-receipts")
 S3_PREFIX_TICKETS = os.environ.get("S3_PREFIX_TICKETS", "receipts/")
+S3_PREFIX_EXPORTS = os.environ.get("S3_PREFIX_EXPORTS", "exports/")
+EXPORT_MAX_ROWS = int(os.environ.get("EXPORT_MAX_ROWS", "3000"))
+TELEGRAM_ALERT_CHAT_ID = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip()
+ALERT_BUDGET_ARS = os.environ.get("ALERT_BUDGET_ARS", "").strip()
+MAPPING_TABLE = os.environ.get("MAPPING_TABLE", "dim_comercio_mapping")
+UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
 
 # Step Function para ETL de tickets (Express - síncrona)
 RECEIPT_ETL_STATE_MACHINE = os.environ.get("RECEIPT_ETL_STATE_MACHINE", "")
@@ -45,6 +56,108 @@ DDB_TABLE = os.environ.get("DDB_TABLE", "schema_cache")
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))  # 7 días
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+# Zona horaria para mostrar fechas de BigQuery en el chat
+_TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
+
+# Etiquetas legibles (español) para columnas frecuentes en respuestas Telegram
+_COLUMN_LABELS_ES = {
+    "COMERCIO": "Comercio",
+    "MONTO": "Monto",
+    "FECHA_PAGO": "Fecha de pago",
+    "HORA_PAGO": "Hora",
+    "TARJETA": "Tarjeta",
+    "DIVISA": "Divisa",
+    "TRANSACTION_DATE": "Fecha y hora",
+    "fecha_transaccion": "Fecha y hora",
+    "SETTLEMENT_NET_AMOUNT": "Monto",
+    "TRANSACTION_TYPE": "Tipo de operación",
+    "PAYMENT_METHOD": "Medio de pago",
+    "PAYMENT_METHOD_TYPE": "Tipo de medio",
+    "SETTLEMENT_CURRENCY": "Moneda",
+    "INSTALLMENTS": "Cuotas",
+    "producto": "Producto",
+    "categoria": "Categoría",
+    "monto_total": "Monto",
+    "nro_ticket": "Nº ticket",
+    "fecha": "Fecha",
+}
+
+def _friendly_column_label(col_name: str) -> str:
+    if col_name in _COLUMN_LABELS_ES:
+        return _COLUMN_LABELS_ES[col_name]
+    lower = col_name.lower()
+    for k, v in _COLUMN_LABELS_ES.items():
+        if k.lower() == lower:
+            return v
+    return col_name.replace("_", " ").strip().title()
+
+def _looks_like_money_column(col_name: str) -> bool:
+    u = col_name.upper()
+    return any(
+        x in u
+        for x in ("MONTO", "AMOUNT", "PRECIO", "PRICE", "TOTAL", "NET", "SETTLEMENT")
+    )
+
+def _looks_like_date_column(col_name: str) -> bool:
+    u = col_name.upper()
+    return any(x in u for x in ("FECHA", "DATE", "TIME", "TIMESTAMP", "HORA"))
+
+def _format_number_ar(value: float) -> str:
+    s = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return s
+
+def _format_money_ar(value: float) -> str:
+    sign = "−" if value < 0 else ""
+    body = _format_number_ar(abs(value))
+    return f"{sign}$ {body}"
+
+def _format_datetime_for_chat(value) -> str:
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(_TZ_AR)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    return str(value)
+
+def _format_cell_for_chat(col_name: str, value) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, str) and not value.strip():
+        return "—"
+    if isinstance(value, str) and value.strip().upper() in ("NULL", "NONE", "NAN"):
+        return "—"
+
+    if isinstance(value, Decimal):
+        try:
+            value = float(value)
+        except Exception:
+            return html.escape(str(value))
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if _looks_like_money_column(col_name):
+            return _format_money_ar(float(value))
+        if isinstance(value, float):
+            return _format_number_ar(float(value))
+        return str(value)
+
+    if isinstance(value, datetime):
+        return _format_datetime_for_chat(value)
+    if isinstance(value, date):
+        return _format_datetime_for_chat(value)
+
+    s = str(value)
+    if _looks_like_date_column(col_name) and not _looks_like_money_column(col_name):
+        try:
+            if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", s):
+                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                return _format_datetime_for_chat(dt)
+        except Exception:
+            pass
+    return html.escape(s)
 
 # =============================================================================
 # METADATA ENRIQUECIDA DEL ESQUEMA - LA CLAVE PARA UN AGENTE INTELIGENTE
@@ -1552,70 +1665,82 @@ def validate_sql_dry_run(client, sql: str) -> tuple:
         print(f"❌ Dry-run falló: {error_msg}")
         return False, error_msg
 
-def query_bigquery(client, sql: str) -> str:
-    """Ejecuta query en BigQuery y retorna resultados formateados"""
+def query_bigquery(client, sql: str) -> tuple:
+    """Ejecuta query en BigQuery. Retorna (texto, parse_mode) con parse_mode \"HTML\" si hay tabla formateada."""
     try:
         print(f"🔍 Ejecutando query en BigQuery:\n{sql}")
         
         # Primero validar con dry-run
         is_valid, validation_error = validate_sql_dry_run(client, sql)
         if not is_valid:
-            return f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}"
+            return (
+                f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}",
+                False,
+            )
         
         query_job = client.query(sql)
         results = query_job.result()  # Espera a que termine
         
         # Verificar si hay resultados
         if results.total_rows == 0:
-            return "ℹ️ No se encontraron resultados para tu consulta."
+            return ("ℹ️ No se encontraron resultados para tu consulta.", False)
         
-        return format_bigquery_results(results)
+        return (format_bigquery_results(results), "HTML")
         
     except Exception as e:
         error_msg = f"❌ Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
         print(error_msg)  # Debug en CloudWatch
-        return error_msg
+        return (error_msg, False)
 
 def format_bigquery_results(results) -> str:
-    """Formatea resultados de BigQuery para mostrar en Telegram"""
-    formatted_lines = []
-    
-    # Obtener nombres de columnas
+    """Formatea resultados de BigQuery para Telegram (HTML, legible en español)."""
     columns = [field.name for field in results.schema]
-    
-    # Procesar cada fila
-    for row in results:
-        formatted_lines.append("---")
+    rows = list(results)
+    n = len(rows)
+    if n == 0:
+        return "ℹ️ No se encontraron filas."
+
+    def row_block(row, index=None) -> str:
+        parts = []
+        if index is not None:
+            parts.append(f"<b>{index}.</b>")
         for col_name in columns:
-            value = row[col_name]
-            
-            # Formatear según el tipo de dato
-            if value is None:
-                formatted_value = "NULL"
-            elif isinstance(value, (int, float)):
-                if isinstance(value, float):
-                    rounded = round(value, 2)
-                    formatted_value = f"{rounded:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                else:
-                    formatted_value = f"{value:,}".replace(",", ".")
-            elif isinstance(value, bool):
-                formatted_value = "Sí" if value else "No"
+            label = _friendly_column_label(col_name)
+            raw = row[col_name]
+            if isinstance(raw, bool):
+                disp = "Sí" if raw else "No"
             else:
-                formatted_value = str(value)
-            
-            formatted_lines.append(f"*{col_name}:* {formatted_value}")
-    
-    return "📊 *Resultados:*\n" + "\n".join(formatted_lines)
+                disp = _format_cell_for_chat(col_name, raw)
+            parts.append(f"• <b>{html.escape(label)}:</b> {disp}")
+        return "\n".join(parts)
+
+    if n == 1:
+        body = row_block(rows[0], None)
+        title = "📌 <b>Resultado</b>"
+        footer = f"<i>1 fila · columnas: {len(columns)}</i>"
+    else:
+        blocks = []
+        for i, row in enumerate(rows, start=1):
+            blocks.append(row_block(row, i))
+        body = "\n\n".join(blocks)
+        title = f"📊 <b>Resultados</b> <i>({n} filas)</i>"
+        footer = f"<i>Mostrando {n} filas</i>"
+
+    out = f"{title}\n\n{body}\n\n{footer}"
+    max_len = 4000
+    if len(out) > max_len:
+        out = out[: max_len - 40] + "\n\n<i>… (mensaje truncado; acotá la consulta o pedí menos filas)</i>"
+    return out
 
 def handle_message(text: str, bq_client) -> tuple:
-    """Maneja el mensaje del usuario y retorna SQL y respuesta"""
+    """Maneja el mensaje del usuario. Retorna (sql, respuesta, parse_mode) — parse_mode False = texto plano."""
     question = text
     
     # Generar SQL con el nuevo sistema mejorado
     sql = generate_sql_with_openai2(question, bq_client)
     
     if not sql:
-        return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
+        return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta.", False
     
     # Validar primero con dry-run
     is_valid, validation_error = validate_sql_dry_run(bq_client, sql)
@@ -1629,11 +1754,11 @@ def handle_message(text: str, bq_client) -> tuple:
             is_valid, _ = validate_sql_dry_run(bq_client, sql)
     
     if not is_valid:
-        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}"
+        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}", False
     
-    response = query_bigquery(bq_client, sql)
+    response, parse_mode = query_bigquery(bq_client, sql)
     
-    return sql, response
+    return sql, response, parse_mode
 
 def retry_sql_generation(question: str, failed_sql: str, error: str, bq_client) -> str:
     """Intenta regenerar la SQL corrigiendo el error"""
@@ -1677,22 +1802,119 @@ Devuelve SOLO el SQL corregido, sin explicaciones."""
         print(f"❌ Error en retry: {e}")
         return ""
 
-def send_telegram_message(chat_id, text, token, parse_mode="Markdown"):
-    """Envía mensaje a Telegram con soporte para formato Markdown"""
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode
+def bq_fqn(table_name: str) -> str:
+    return f"`{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{table_name}`"
+
+def sql_quick_ultimo_gasto() -> str:
+    return f"""
+SELECT COMERCIO, MONTO, FECHA_PAGO, TARJETA, DIVISA
+FROM {bq_fqn("bank_payments")}
+WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) IS NOT NULL
+ORDER BY PARSE_DATE('%d/%m/%Y', FECHA_PAGO) DESC
+LIMIT 1
+"""
+
+def sql_quick_ultimo_mp() -> str:
+    return f"""
+SELECT
+  TIMESTAMP(TRANSACTION_DATE) AS fecha_transaccion,
+  CAST(SETTLEMENT_NET_AMOUNT AS FLOAT64) AS monto,
+  TRANSACTION_TYPE,
+  PAYMENT_METHOD
+FROM {bq_fqn("mp_data")}
+WHERE TRANSACTION_DATE IS NOT NULL AND CAST(TRANSACTION_DATE AS STRING) != ''
+ORDER BY TIMESTAMP(TRANSACTION_DATE) DESC
+LIMIT 1
+"""
+
+def sql_quick_mes() -> str:
+    return f"""
+SELECT 'Banco (tarjeta)' AS fuente,
+  ROUND(SUM(CAST(MONTO AS FLOAT64)), 2) AS total_ars,
+  COUNT(*) AS movimientos
+FROM {bq_fqn("bank_payments")}
+WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+UNION ALL
+SELECT 'Carrefour (detalle productos)' AS fuente,
+  ROUND(SUM(monto_total), 2) AS total_ars,
+  COUNT(*) AS movimientos
+FROM {bq_fqn("carrefour_data")}
+WHERE SAFE_CAST(fecha AS DATE) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+"""
+
+def sql_quick_ultimos5_banco() -> str:
+    return f"""
+SELECT COMERCIO, MONTO, FECHA_PAGO
+FROM {bq_fqn("bank_payments")}
+WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) IS NOT NULL
+ORDER BY PARSE_DATE('%d/%m/%Y', FECHA_PAGO) DESC
+LIMIT 5
+"""
+
+def sql_quick_mes_carrefour() -> str:
+    return f"""
+SELECT
+  COUNT(DISTINCT nro_ticket) AS tickets_distintos,
+  ROUND(SUM(monto_total), 2) AS total_mes_ars
+FROM {bq_fqn("carrefour_data")}
+WHERE SAFE_CAST(fecha AS DATE) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+"""
+
+QUICK_SQL = {
+    "ultimo_gasto": sql_quick_ultimo_gasto,
+    "ultimo_mp": sql_quick_ultimo_mp,
+    "mes": sql_quick_mes,
+    "ultimos5_banco": sql_quick_ultimos5_banco,
+    "mes_carrefour": sql_quick_mes_carrefour,
+}
+
+def quick_actions_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Último gasto (banco)", "callback_data": "q:ultimo_gasto"},
+                {"text": "Último MP", "callback_data": "q:ultimo_mp"},
+            ],
+            [
+                {"text": "Mes actual (resumen)", "callback_data": "q:mes"},
+                {"text": "Últimos 5 · banco", "callback_data": "q:ultimos5_banco"},
+            ],
+            [{"text": "Mes actual · Carrefour", "callback_data": "q:mes_carrefour"}],
+        ]
     }
+
+def run_quick_sql_key(key: str, bq_client) -> tuple:
+    builder = QUICK_SQL.get(key)
+    if not builder:
+        return "", f"❌ Acción rápida desconocida: {key}", False
+    sql = builder().strip()
+    return (sql,) + query_bigquery(bq_client, sql)
+
+def telegram_answer_callback(callback_query_id: str, text: str = None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text[:200]
+    try:
+        requests.post(url, json=payload, timeout=10).raise_for_status()
+    except Exception as e:
+        print(f"answerCallbackQuery: {e}")
+
+def send_telegram_message(chat_id, text, token, parse_mode="Markdown", reply_markup=None):
+    """Envía mensaje a Telegram. parse_mode=False omite formato (texto plano). HTML/Markdown según valor."""
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode is not False and parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
-        # Si falla con Markdown, intentar sin formato
-        if parse_mode:
+        if parse_mode is not False and parse_mode:
             print("🔄 Reintentando sin parse_mode...")
             payload.pop("parse_mode", None)
             try:
@@ -1703,14 +1925,244 @@ def send_telegram_message(chat_id, text, token, parse_mode="Markdown"):
                 print(f"Error en reintento: {e2}")
         return None
 
+def send_telegram_document(chat_id, file_bytes: bytes, filename: str, caption: str, token: str):
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    try:
+        files = {"document": (filename, file_bytes, "text/csv")}
+        data = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        r = requests.post(url, data=data, files=files, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"Error sendDocument: {e}")
+        return None
+
+def query_bigquery_to_csv_bytes(bq_client, sql: str) -> tuple:
+    """Ejecuta SQL y devuelve (bytes_csv, num_filas) o (None, 0) si error."""
+    try:
+        is_valid, err = validate_sql_dry_run(bq_client, sql)
+        if not is_valid:
+            return None, 0
+        job = bq_client.query(sql)
+        it = job.result()
+        rows = list(it)
+        if not rows:
+            return b"", 0
+        cols = [k for k in rows[0].keys()]
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(cols)
+        for row in rows:
+            w.writerow([row[c] for c in cols])
+        return buf.getvalue().encode("utf-8"), len(rows)
+    except Exception as e:
+        print(f"query_bigquery_to_csv_bytes: {e}")
+        return None, 0
+
+def export_table_csv(chat_id: str, table_key: str, bq_client, token: str) -> bool:
+    """table_key: bank | carrefour | mp"""
+    table_key = (table_key or "bank").lower().strip()
+    tables = {"bank": "bank_payments", "carrefour": "carrefour_data", "mp": "mp_data"}
+    tname = tables.get(table_key, "bank_payments")
+    sql = f"SELECT * FROM {bq_fqn(tname)} LIMIT {EXPORT_MAX_ROWS}"
+    data, n = query_bigquery_to_csv_bytes(bq_client, sql)
+    if data is None:
+        send_telegram_message(chat_id, "❌ No se pudo exportar (error en la consulta).", token, parse_mode=False)
+        return False
+    if n == 0:
+        send_telegram_message(chat_id, "ℹ️ No hay filas para exportar.", token, parse_mode=False)
+        return False
+    fname = f"{tname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    try:
+        s3 = boto3.client("s3")
+        key = f"{S3_PREFIX_EXPORTS.rstrip('/')}/{chat_id}/{fname}"
+        s3.put_object(Bucket=S3_BUCKET_TICKETS, Key=key, Body=data, ContentType="text/csv")
+    except Exception as e:
+        print(f"S3 put export (opcional): {e}")
+    cap = f"Export {tname}: {n} filas (máx. {EXPORT_MAX_ROWS})"
+    send_telegram_document(chat_id, data, fname, cap, token)
+    return True
+
+def handle_telegram_callback(data: dict, bq_client) -> dict:
+    cq = data.get("callback_query") or {}
+    cq_id = cq.get("id")
+    chat_id = cq.get("message", {}).get("chat", {}).get("id")
+    raw = (cq.get("data") or "").strip()
+    if not chat_id or not cq_id:
+        return {"statusCode": 200}
+    telegram_answer_callback(cq_id, "Listo")
+    if raw.startswith("q:"):
+        key = raw[2:]
+        sql_txt, response_text, result_parse_mode = run_quick_sql_key(key, bq_client)
+        print(f"Callback quick SQL {key}: {sql_txt[:120] if sql_txt else ''}...")
+        pm = result_parse_mode if result_parse_mode in ("HTML", False) else "Markdown"
+        send_telegram_message(
+            chat_id,
+            response_text,
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=pm,
+            reply_markup=quick_actions_keyboard(),
+        )
+    return {"statusCode": 200}
+
+def run_monthly_budget_alert(event, context) -> dict:
+    """Invocación programada (EventBridge) o manual: avisa si el gasto del mes en banco supera el tope."""
+    if not TELEGRAM_ALERT_CHAT_ID or not ALERT_BUDGET_ARS:
+        print("Alertas presupuesto: TELEGRAM_ALERT_CHAT_ID o ALERT_BUDGET_ARS no configurados.")
+        return {"statusCode": 200}
+    try:
+        budget = float(ALERT_BUDGET_ARS.replace(",", "."))
+    except ValueError:
+        print("ALERT_BUDGET_ARS inválido")
+        return {"statusCode": 200}
+    try:
+        bq_client = get_bigquery_client()
+        sql = f"""
+        SELECT ROUND(SUM(CAST(MONTO AS FLOAT64)), 2) AS total_ars
+        FROM {bq_fqn("bank_payments")}
+        WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+        """
+        job = bq_client.query(sql)
+        rows = list(job.result())
+        total = float(rows[0]["total_ars"] or 0) if rows else 0.0
+    except Exception as e:
+        print(f"Alerta presupuesto query: {e}")
+        return {"statusCode": 200}
+    chat_id = int(TELEGRAM_ALERT_CHAT_ID)
+    if total > budget:
+        msg = (
+            f"⚠️ *Alerta de presupuesto*\n\n"
+            f"Gasto acumulado del mes (banco/tarjeta): *{total:.2f}* ARS\n"
+            f"Tope configurado: *{budget:.2f}* ARS\n\n"
+            f"Superaste el límite configurado."
+        )
+        send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="Markdown")
+    else:
+        print(f"Presupuesto OK: gasto mes {total} <= {budget}")
+    return {"statusCode": 200}
+
+def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> str:
+    where_flow = ""
+    if flow and flow.lower() != "all":
+        where_flow = "AND flow = @flow"
+    q = f"""
+    SELECT flow, comercio_raw, COUNT(*) AS apariciones, MAX(ins_dttm) AS last_seen
+    FROM {bq_fqn(UNMAPPED_TABLE)}
+    WHERE IFNULL(resolved, FALSE) = FALSE
+      AND IFNULL(comercio_normalizado, '') != ''
+      {where_flow}
+    GROUP BY flow, comercio_raw
+    ORDER BY apariciones DESC, last_seen DESC
+    LIMIT @lim
+    """
+    params = [bigquery.ScalarQueryParameter("lim", "INT64", limit)]
+    if flow and flow.lower() != "all":
+        params.append(bigquery.ScalarQueryParameter("flow", "STRING", flow))
+    cfg = bigquery.QueryJobConfig(query_parameters=params)
+    rows = list(bq_client.query(q, job_config=cfg).result())
+    if not rows:
+        return "✅ No hay comercios pendientes de mapear."
+    lines = ["🧩 <b>Comercios pendientes</b>"]
+    for i, r in enumerate(rows, start=1):
+        lines.append(
+            f"{i}. <b>{html.escape(r['flow'])}</b> · {html.escape(str(r['comercio_raw']))} "
+            f"(x{int(r['apariciones'])})"
+        )
+    lines.append(
+        "\n<i>Usá:</i> /mapear_comercio flow|match_value|comercio_depurado|categoria|subcategoria"
+    )
+    return "\n".join(lines)
+
+def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str):
+    flow = flow.strip()
+    match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
+    if not match_norm:
+        raise ValueError("match_value vacío o inválido.")
+
+    merge_q = f"""
+    MERGE {bq_fqn(MAPPING_TABLE)} t
+    USING (
+      SELECT
+        @flow AS flow,
+        'contains' AS match_type,
+        @match_norm AS match_value,
+        @dep AS comercio_depurado,
+        @cat AS categoria,
+        @sub AS subcategoria,
+        100 AS prioridad,
+        TRUE AS activo
+    ) s
+    ON t.flow = s.flow AND t.match_type = s.match_type AND t.match_value = s.match_value
+    WHEN MATCHED THEN UPDATE SET
+      comercio_depurado = s.comercio_depurado,
+      categoria = s.categoria,
+      subcategoria = s.subcategoria,
+      prioridad = s.prioridad,
+      activo = s.activo,
+      ins_dttm = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN
+      INSERT (flow, match_type, match_value, comercio_depurado, categoria, subcategoria, prioridad, activo, ins_dttm)
+      VALUES (s.flow, s.match_type, s.match_value, s.comercio_depurado, s.categoria, s.subcategoria, s.prioridad, s.activo, CURRENT_TIMESTAMP())
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("flow", "STRING", flow),
+            bigquery.ScalarQueryParameter("match_norm", "STRING", match_norm),
+            bigquery.ScalarQueryParameter("dep", "STRING", comercio_depurado),
+            bigquery.ScalarQueryParameter("cat", "STRING", categoria),
+            bigquery.ScalarQueryParameter("sub", "STRING", subcategoria),
+        ]
+    )
+    bq_client.query(merge_q, job_config=cfg).result()
+
+    if flow == "bank_payments":
+        table = "bank_payments"
+    elif flow == "mp_data":
+        table = "mp_data"
+    else:
+        raise ValueError("flow debe ser bank_payments o mp_data")
+
+    update_q = f"""
+    UPDATE {bq_fqn(table)}
+    SET
+      comercio_depurado = @dep,
+      categoria = @cat,
+      subcategoria = @sub
+    WHERE REGEXP_REPLACE(UPPER(IFNULL(COMERCIO, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
+    """
+    bq_client.query(update_q, job_config=cfg).result()
+
+    resolve_q = f"""
+    UPDATE {bq_fqn(UNMAPPED_TABLE)}
+    SET resolved = TRUE
+    WHERE flow = @flow
+      AND REGEXP_REPLACE(UPPER(IFNULL(comercio_raw, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
+      AND IFNULL(resolved, FALSE) = FALSE
+    """
+    bq_client.query(resolve_q, job_config=cfg).result()
+
 def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
         
-        # Inicializar cliente de BigQuery
+        if isinstance(event, dict) and (
+            event.get("source") == "aws.events"
+            or event.get("action") == "alert_budget"
+        ):
+            return run_monthly_budget_alert(event, context)
+        
+        body_raw = event.get("body") if isinstance(event, dict) else None
+        if not body_raw:
+            return {"statusCode": 200}
+        data = json.loads(body_raw) if isinstance(body_raw, str) else body_raw
+        
         bq_client = get_bigquery_client()
         
-        data = json.loads(event["body"])
+        if "callback_query" in data:
+            return handle_telegram_callback(data, bq_client)
+        
         message = data.get("message", {})
         chat_id = message.get("chat", {}).get("id")
         
@@ -1812,9 +2264,16 @@ def lambda_handler(event, context):
                 • Los proceso automáticamente con IA 
                 • Los datos se guardan en BigQuery
 
+                ⚡ *Atajos:* /ultimo_gasto · /ultimo_mp · /mes · /exportar banco
+
                 ¡Escribí tu pregunta o enviame una foto de un ticket!
             """
-            send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
+            send_telegram_message(
+                chat_id,
+                welcome_message,
+                TELEGRAM_BOT_TOKEN,
+                reply_markup=quick_actions_keyboard(),
+            )
             return {"statusCode": 200}
         
         if text == "/help":
@@ -1836,19 +2295,121 @@ def lambda_handler(event, context):
             *Comandos:*
             • /start - Mensaje de bienvenida
             • /help - Esta ayuda
+            • /ultimo_gasto - Último movimiento banco/tarjeta
+            • /ultimo_mp - Última transacción Mercado Pago
+            • /mes - Resumen mes actual (banco + Carrefour)
+            • /exportar [banco|carrefour|mp] - CSV (máx. filas según EXPORT_MAX_ROWS)
+            • /pendientes_comercio [bank|mp|all]
+            • /mapear_comercio flow|match|depurado|categoria|subcategoria
             """
             send_telegram_message(chat_id, help_message, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
+
+        quick_cmd = {
+            "/ultimo_gasto": "ultimo_gasto",
+            "/ultimo_mp": "ultimo_mp",
+            "/mes": "mes",
+        }
+        if text in quick_cmd:
+            _, response_text, result_parse_mode = run_quick_sql_key(quick_cmd[text], bq_client)
+            pm = result_parse_mode if result_parse_mode in ("HTML", False) else "Markdown"
+            send_telegram_message(
+                chat_id,
+                response_text,
+                TELEGRAM_BOT_TOKEN,
+                parse_mode=pm,
+                reply_markup=quick_actions_keyboard(),
+            )
+            return {"statusCode": 200}
+        
+        if text.startswith("/exportar"):
+            parts = text.split(maxsplit=1)
+            raw = parts[1].strip().lower() if len(parts) > 1 else "banco"
+            alias = {
+                "banco": "bank",
+                "bank": "bank",
+                "carrefour": "carrefour",
+                "mp": "mp",
+                "mercadopago": "mp",
+            }
+            which = alias.get(raw, "bank")
+            export_table_csv(chat_id, which, bq_client, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
+
+        if text.startswith("/pendientes_comercio"):
+            parts = text.split(maxsplit=1)
+            raw = parts[1].strip().lower() if len(parts) > 1 else "all"
+            flow_map = {
+                "all": "all",
+                "bank": "bank_payments",
+                "bank_payments": "bank_payments",
+                "mp": "mp_data",
+                "mp_data": "mp_data",
+            }
+            flow = flow_map.get(raw, "all")
+            msg = list_unmapped_comercios(bq_client, flow=flow, limit=20)
+            send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+            return {"statusCode": 200}
+
+        if text.startswith("/mapear_comercio"):
+            try:
+                payload = text[len("/mapear_comercio"):].strip()
+                parts = [p.strip() for p in payload.split("|")]
+                if len(parts) < 5:
+                    raise ValueError("Formato inválido")
+                flow_raw, match_value, depurado, categoria, subcategoria = parts[:5]
+                flow_alias = {
+                    "bank": "bank_payments",
+                    "bank_payments": "bank_payments",
+                    "mp": "mp_data",
+                    "mp_data": "mp_data",
+                }
+                flow = flow_alias.get(flow_raw.lower())
+                if not flow:
+                    raise ValueError("flow debe ser bank/bank_payments/mp/mp_data")
+                apply_mapping_backfill(
+                    bq_client,
+                    flow=flow,
+                    match_value=match_value,
+                    comercio_depurado=depurado,
+                    categoria=categoria,
+                    subcategoria=subcategoria,
+                )
+                ok = (
+                    "✅ Mapeo guardado y backfill aplicado.\n"
+                    f"flow: {flow}\nmatch: {match_value}\n"
+                    f"depurado: {depurado}\ncategoria: {categoria}\nsubcategoria: {subcategoria}"
+                )
+                send_telegram_message(chat_id, ok, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            except Exception as e:
+                err = (
+                    "❌ No pude registrar el mapeo.\n"
+                    "Formato:\n"
+                    "/mapear_comercio flow|match|depurado|categoria|subcategoria\n\n"
+                    "Ejemplo:\n"
+                    "/mapear_comercio bank|MERPAGO*SHELL|Shell|nafta|combustible\n\n"
+                    f"Detalle: {str(e)}"
+                )
+                send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
             return {"statusCode": 200}
 
         # =========================================
         # PROCESAR PREGUNTA DE TEXTO
         # =========================================
         
-        sql, response_text = handle_message(text, bq_client)
+        sql, response_text, result_parse_mode = handle_message(text, bq_client)
         print('response_text: ', response_text)
         
-        # Enviar respuesta
-        result = send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+        # Enviar respuesta (HTML para tablas BigQuery; texto plano para errores)
+        pm = result_parse_mode if result_parse_mode in ("HTML", False) else "Markdown"
+        markup = quick_actions_keyboard() if result_parse_mode == "HTML" else None
+        result = send_telegram_message(
+            chat_id,
+            response_text,
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=pm,
+            reply_markup=markup,
+        )
 
         if result is None:
            return {

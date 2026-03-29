@@ -1,0 +1,101 @@
+empieza con AMAZON => cloud/poryectos/productividad
+
+APPLECOMBILL => espacio icloud fotos
+GOOGLE *Google One => espacio drive
+
+cabify => transporte
+DLO*DiDi => transporte
+MERPAGO*ESTACIONAMMED => transporte? => estacionamiento oficina
+
+DLOCAL SPOTIFY / FCADLO*Spotif => suscripciones => musica
+
+PANAMERICANMALSA => peajes?
+AUTOPISTAS DEL SOL => peajes
+AUTOPISTAS URBANAS => peajes
+
+MERPAGO*DECORINTERIORES => hogar => estantes baño
+
+AYRES VERDES => plantas
+
+A C A CENTRAL COMB => nafta
+ACA CENTRAL SERV => nafta
+EST DE SERVICIO NRO 1438 => nafta
+MERCPAGO*APPYPFCOMB => nafta
+MERPAGO*ACA => nafta
+MERPAGO*SHELL => nafta
+MERPAGO*APPYPFCOMB => nafta
+MERPAGO*AXIONENERGY => nafta
+
+MERPAGO*STANLEY => regalos
+
+MERPAGO*BOMBO => salidas => jodita
+MERPAGO*CINEMULTIPLEX => salidas => cine
+MERPAGO*MULTIPLEXBELGRANO => salidas => cine
+MERPAGO*POLO => salidas => campo de polo
+ 
+MERPAGO*ACARREO1 => multas
+
+FARMACIA DOT BAIRES => farmacia
+FARMACITY => farmacia
+
+BLEST PALERMO-BLEST PALE => salidas => bar
+Buenos Aires Barber Sh => barbero
+
+CUOTA SOCIAL - CARP => river
+TICKETING TORNEO LOCAL CA => river?
+TU ENTRADACOM => river?
+
+CLORINDO
+CUATRODIAGONALES
+
+DLO*Wayfarer => ropa
+DLO*Vlacking => accesorios (anillos)
+MERPAGO*VLACKING => accesorios (anillos)
+
+DLO*DiDi => comida
+JUMBO ECOMMERCE 5206 => comida
+MERPAGO*AVECAESAR => comida oficina
+MERPAGO*GREENEAT => comida oficina
+MERPAGO*BURGIOPIZZA => comida cancha
+MERPAGO*STARBUCKS => comida
+Market Beruti => comida
+MERPAGO*PORTUGUES => commida
+MERPAGO*CARREFOUR => comida
+VEA ECOMMERCE 700 => comida
+MERPAGO*TDHRECOLETA => comida
+MERPAGO*DISCO => comida
+MERPAGO*PESCE => comida
+MERPAGO*THEFOODMARK => comida
+MERPAGO*TIENDANOVA => comida
+PEDIDOSYA RESTAURANTE => comida
+MERPAGO*JEVI => kiosco
+MERPAGO*LAARGENTINA => comida (facturas)
+
+MERPAGO*ECOMODICO => gimnasio => protes
+ 
+MEDIA MARKT ONLINE => tecnologia (kindle?)
+
+MERPAGO*MAKENA => salidas => boliche
+FINA => salidas => resto
+GRIS GRIS => salidas => resto
+MERPAGO*FLORENTIN => salidas => resto
+MERPAGO*FRANKS => salidas => burga
+MERPAGO*VKONING => salidas => resto
+MERPAGO*THEFLOURSTOREDELI => salidas => burga
+MERPAGO*WINSTONCLUB => salidas => bar
+MIXTAPE => salidas => bar
+OCHAVA-OCHAVA => salidas => bar
+TOSTADO CABELLO SRL-AIRP => salidas => resto aire libre?
+
+PAYU*AR*ZARA => ropa
+SPORTING => ropa
+
+RENAPER MS => tramites => dni?
+
+DLO*helphbomaxcom => suscripciones => hbo max
+NETFLIXCOM => suscripciones => hbo max
+
+
+IPLAN NETWORKS => servicios => wifi
+EDENOR SA => servicios => luz
+PERSONAL FLOW => servicios => celular
