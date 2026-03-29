@@ -2043,6 +2043,95 @@ def run_monthly_budget_alert(event, context) -> dict:
         print(f"Presupuesto OK: gasto mes {total} <= {budget}")
     return {"statusCode": 200}
 
+
+def run_daily_unmapped_alert(event, context) -> dict:
+    """
+    Notificación diaria de comercios no mapeados.
+    Invocada por EventBridge con action="alert_unmapped" o source="aws.events".
+    Envía al chat configurado los top N comercios pendientes de mapear.
+    """
+    if not TELEGRAM_ALERT_CHAT_ID:
+        print("Alerta unmapped: TELEGRAM_ALERT_CHAT_ID no configurado.")
+        return {"statusCode": 200}
+    
+    try:
+        bq_client = get_bigquery_client()
+        chat_id = int(TELEGRAM_ALERT_CHAT_ID)
+        
+        # Consultar comercios no mapeados agrupados por flow
+        sql = f"""
+        SELECT 
+            flow,
+            comercio_raw,
+            COUNT(*) AS apariciones,
+            MAX(ins_dttm) AS last_seen
+        FROM {bq_fqn(UNMAPPED_TABLE)}
+        WHERE IFNULL(resolved, FALSE) = FALSE
+          AND IFNULL(comercio_normalizado, '') != ''
+        GROUP BY flow, comercio_raw
+        ORDER BY apariciones DESC, last_seen DESC
+        LIMIT 10
+        """
+        
+        job = bq_client.query(sql)
+        rows = list(job.result())
+        
+        if not rows:
+            print("No hay comercios pendientes de mapear.")
+            return {"statusCode": 200}
+        
+        # Contar totales por flow
+        count_sql = f"""
+        SELECT 
+            flow,
+            COUNT(DISTINCT comercio_raw) AS total_pendientes
+        FROM {bq_fqn(UNMAPPED_TABLE)}
+        WHERE IFNULL(resolved, FALSE) = FALSE
+          AND IFNULL(comercio_normalizado, '') != ''
+        GROUP BY flow
+        """
+        count_job = bq_client.query(count_sql)
+        count_rows = list(count_job.result())
+        totals_by_flow = {r["flow"]: int(r["total_pendientes"]) for r in count_rows}
+        total_pendientes = sum(totals_by_flow.values())
+        
+        # Construir mensaje
+        lines = [
+            "🧩 <b>Comercios pendientes de mapear</b>",
+            f"<i>Total: {total_pendientes} comercios sin clasificar</i>",
+            ""
+        ]
+        
+        # Mostrar totales por flow
+        for flow, count in totals_by_flow.items():
+            flow_label = "Banco" if flow == "bank_payments" else "Mercado Pago" if flow == "mp_data" else flow
+            lines.append(f"• <b>{flow_label}:</b> {count} pendientes")
+        
+        lines.append("")
+        lines.append("<b>Top 10 más frecuentes:</b>")
+        
+        for i, r in enumerate(rows, start=1):
+            flow_short = "🏦" if r["flow"] == "bank_payments" else "💳" if r["flow"] == "mp_data" else "❓"
+            comercio = html.escape(str(r["comercio_raw"]))
+            apariciones = int(r["apariciones"])
+            lines.append(f"{i}. {flow_short} <code>{comercio}</code> (x{apariciones})")
+        
+        lines.append("")
+        lines.append("<i>Usá /pendientes_comercio para ver más</i>")
+        lines.append("<i>Usá /mapear_comercio flow|match|depurado|cat|subcat</i>")
+        
+        msg = "\n".join(lines)
+        send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+        
+        print(f"Alerta unmapped enviada: {total_pendientes} comercios pendientes")
+        return {"statusCode": 200}
+        
+    except Exception as e:
+        print(f"Error en alerta unmapped: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"statusCode": 200}
+
 def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> str:
     where_flow = ""
     if flow and flow.lower() != "all":
@@ -2147,11 +2236,23 @@ def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
         
-        if isinstance(event, dict) and (
-            event.get("source") == "aws.events"
-            or event.get("action") == "alert_budget"
-        ):
-            return run_monthly_budget_alert(event, context)
+        # Manejar invocaciones programadas de EventBridge
+        if isinstance(event, dict):
+            action = event.get("action", "")
+            source = event.get("source", "")
+            
+            # Alerta de presupuesto mensual
+            if action == "alert_budget" or (source == "aws.events" and event.get("detail-type") == "budget_alert"):
+                return run_monthly_budget_alert(event, context)
+            
+            # Alerta diaria de comercios no mapeados
+            if action == "alert_unmapped" or (source == "aws.events" and event.get("detail-type") == "unmapped_alert"):
+                return run_daily_unmapped_alert(event, context)
+            
+            # Compatibilidad: si viene de EventBridge sin detail-type, ejecutar ambas alertas
+            if source == "aws.events" and not event.get("detail-type"):
+                run_monthly_budget_alert(event, context)
+                return run_daily_unmapped_alert(event, context)
         
         body_raw = event.get("body") if isinstance(event, dict) else None
         if not body_raw:

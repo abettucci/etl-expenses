@@ -468,11 +468,29 @@ def lambda_handler(event, context):
         bq_client = get_bigquery_client()
         s3_client = boto3.client('s3')
         ensure_comercio_tables(bq_client)
+        
+        # Cargar mapeos desde archivos .txt SOLO si existen (carga inicial opcional)
+        # Una vez que los mapeos están en BigQuery, los .txt se pueden eliminar
+        # y el ETL seguirá funcionando usando solo la tabla dim_comercio_mapping
         base_dir = os.path.dirname(__file__)
         bank_mapping_file = os.path.join(base_dir, "mapeo_comercios_bank.txt")
         mp_mapping_file = os.path.join(base_dir, "mapeo_comercios_mp_report.txt")
-        upsert_mappings(bq_client, parse_mapping_file(bank_mapping_file, "bank_payments"))
-        upsert_mappings(bq_client, parse_mapping_file(mp_mapping_file, "mp_data"))
+        
+        if os.path.exists(bank_mapping_file):
+            bank_mappings = parse_mapping_file(bank_mapping_file, "bank_payments")
+            if bank_mappings:
+                upsert_mappings(bq_client, bank_mappings)
+                print(f"📋 Cargados {len(bank_mappings)} mapeos desde mapeo_comercios_bank.txt")
+        else:
+            print("ℹ️ mapeo_comercios_bank.txt no existe, usando solo BigQuery")
+        
+        if os.path.exists(mp_mapping_file):
+            mp_mappings = parse_mapping_file(mp_mapping_file, "mp_data")
+            if mp_mappings:
+                upsert_mappings(bq_client, mp_mappings)
+                print(f"📋 Cargados {len(mp_mappings)} mapeos desde mapeo_comercios_mp_report.txt")
+        else:
+            print("ℹ️ mapeo_comercios_mp_report.txt no existe, usando solo BigQuery")
         
         # Extraer parámetros del event
         if not isinstance(payload, dict):

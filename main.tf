@@ -823,6 +823,28 @@ resource "aws_lambda_permission" "allow_eventbridge_ai_agent_budget" {
   source_arn    = aws_cloudwatch_event_rule.ai_agent_budget_alert.arn
 }
 
+# EventBridge rule para notificación diaria de comercios no mapeados (10:30 AR = 13:30 UTC)
+resource "aws_cloudwatch_event_rule" "ai_agent_unmapped_alert" {
+  name                = "ai-agent-unmapped-daily"
+  description         = "Notificación diaria de comercios pendientes de mapear"
+  schedule_expression = "cron(30 13 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "ai_agent_unmapped_alert" {
+  rule      = aws_cloudwatch_event_rule.ai_agent_unmapped_alert.name
+  target_id = "aiAgentUnmapped"
+  arn       = aws_lambda_function.ai_agent.arn
+  input     = jsonencode({ action = "alert_unmapped" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ai_agent_unmapped" {
+  statement_id  = "AllowExecutionFromEventBridgeUnmapped"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ai_agent_unmapped_alert.arn
+}
+
 # 4.11 Lambda para extraer datos de tickets con OCR (OpenAI Vision + TabScanner fallback)
 resource "aws_lambda_function" "process_telegram_img" {
   function_name = "process_telegram_img"
