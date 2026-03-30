@@ -37,6 +37,31 @@ MP_EMAIL_SENDERS = ['info@mercadopago.com']
 MP_SUBJECT_TRANSFER = 'Tu transferencia fue enviada' # Pago aprobado en, Pagaste tu tarjeta de crédito
 MP_SUBJECT_REPORT = 'Ya podés conciliar todas tus transacciones'
 
+# Senders/subjects que deben IGNORARSE para evitar loops infinitos
+# (emails de error, notificaciones del sistema, etc.)
+SKIP_SENDERS = [
+    'no-reply@sns.amazonaws.com',
+    'notifications@amazonaws.com',
+    'noreply@',
+    'mailer-daemon@',
+    'postmaster@',
+    'bounce@',
+    'aws-notifications',
+    'alerts@',
+]
+SKIP_SUBJECTS = [
+    'Fallo en proceso ETL',
+    'ETL Error',
+    'Lambda Error',
+    'Step Function Failed',
+    'Delivery Status Notification',
+    'Undeliverable:',
+    'Mail delivery failed',
+    'Exceeded rate limits',
+    'AWS Notification',
+    'Alarm:',
+]
+
 # bank_body_contains = ["Te acercamos el detalle de tu consumo con la Tarjeta Santander", "Te acercamos el detalle del débito con tu Tarjeta Santander"]
 
 # Funcion para obtener la API Key de Google Cloud y consumir la API de Gmail
@@ -775,6 +800,32 @@ def lambda_handler(event, context):
                                 print(f"📧 SENDER: {sender_debug}")
                                 print(f"📧 SUBJECT: {mail_data_debug.get('subject', 'N/A')}")
                                 print(f"📧 DATE: {mail_data_debug.get('date', 'N/A')}")
+                                
+                                # FILTRO ANTI-LOOP: Ignorar emails de error/notificación del sistema
+                                subject_debug = mail_data_debug.get('subject', '')
+                                sender_lower = sender_debug.lower()
+                                
+                                # Verificar si es un email que debe ignorarse
+                                should_skip = False
+                                skip_reason = ""
+                                
+                                for skip_sender in SKIP_SENDERS:
+                                    if skip_sender.lower() in sender_lower:
+                                        should_skip = True
+                                        skip_reason = f"Sender matches skip pattern: {skip_sender}"
+                                        break
+                                
+                                if not should_skip:
+                                    for skip_subject in SKIP_SUBJECTS:
+                                        if skip_subject.lower() in subject_debug.lower():
+                                            should_skip = True
+                                            skip_reason = f"Subject matches skip pattern: {skip_subject}"
+                                            break
+                                
+                                if should_skip:
+                                    print(f"⏭️ SKIP: Email de sistema/error detectado. Razón: {skip_reason}")
+                                    print(f"⏭️ Ignorando mensaje {mail_msg_id} para evitar loop infinito")
+                                    continue
                                 
                                 # Loggear preview del body (primeros 500 caracteres)
                                 body_preview = mail_data_debug.get('raw_text', '')[:500]

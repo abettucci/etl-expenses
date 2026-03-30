@@ -490,6 +490,63 @@ def append_unmapped_queue(client, unmapped_df, flow_name):
     cfg = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", autodetect=True)
     client.load_table_from_dataframe(dfq, table_id, job_config=cfg).result()
 
+def should_skip_processing(payload):
+    """
+    Detecta si el payload corresponde a un email que NO debe procesarse.
+    Esto evita loops infinitos cuando llegan emails de error/notificación.
+    
+    Returns:
+        tuple: (should_skip: bool, reason: str)
+    """
+    if not isinstance(payload, dict):
+        return False, ""
+    
+    # Lista de patrones que indican emails de sistema/error que deben ignorarse
+    skip_patterns = {
+        'sender': [
+            'no-reply@sns.amazonaws.com',
+            'notifications@amazonaws.com', 
+            'noreply@',
+            'mailer-daemon@',
+            'postmaster@',
+            'bounce@',
+            'aws-notifications',
+        ],
+        'subject': [
+            'Fallo en proceso ETL',
+            'ETL Error',
+            'Lambda Error',
+            'Step Function Failed',
+            'Delivery Status Notification',
+            'Undeliverable:',
+            'Mail delivery failed',
+            'Exceeded rate limits',
+        ],
+        'etl_flow': [
+            # Si por alguna razón llega un etl_flow vacío o inválido
+        ]
+    }
+    
+    # Verificar sender
+    sender = payload.get('sender', '').lower()
+    for pattern in skip_patterns['sender']:
+        if pattern.lower() in sender:
+            return True, f"Sender matches skip pattern: {pattern}"
+    
+    # Verificar subject
+    subject = payload.get('subject', '')
+    for pattern in skip_patterns['subject']:
+        if pattern.lower() in subject.lower():
+            return True, f"Subject matches skip pattern: {pattern}"
+    
+    # Verificar si el key contiene patrones de error
+    key = payload.get('key', '')
+    if 'error' in key.lower() or 'failed' in key.lower():
+        return True, f"Key contains error pattern: {key}"
+    
+    return False, ""
+
+
 def lambda_handler(event, context):
     try:
         print(f"📥 Event recibido: {json.dumps(event)}")
@@ -513,6 +570,17 @@ def lambda_handler(event, context):
                     inner = None
             if isinstance(inner, dict):
                 payload = inner
+        
+        # FILTRO ANTI-LOOP: Detectar y saltar emails de error/notificación del sistema
+        should_skip, skip_reason = should_skip_processing(payload)
+        if should_skip:
+            print(f"⏭️ SKIP: Email de sistema/error detectado. Razón: {skip_reason}")
+            print(f"⏭️ Retornando éxito sin procesar para evitar loop infinito")
+            return {
+                'statusCode': 200,
+                'message': f'Skipped: {skip_reason}',
+                'skipped': True
+            }
         
         # Inicializar clientes
         bq_client = get_bigquery_client()
@@ -601,6 +669,10 @@ def lambda_handler(event, context):
         
         tables_processed = []
         
+        # Columnas de mapeo que NO se guardan en las tablas de hechos
+        # (el mapeo se aplica en tiempo de consulta con JOIN a dim_comercio_mapping)
+        MAPPING_COLUMNS = ['comercio_normalizado', 'comercio_depurado', 'categoria', 'subcategoria']
+        
         # ========================================
         # FLUJO: MERCADO PAGO
         # ========================================
@@ -614,6 +686,10 @@ def lambda_handler(event, context):
             mp_rules = load_mapping_for_flow(bq_client, "mp_data")
             df, unmapped = apply_comercio_mapping(df, mp_rules, "mp_data")
             append_unmapped_queue(bq_client, unmapped, "mp_data")
+            
+            # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
+            df = df.drop(columns=[c for c in MAPPING_COLUMNS if c in df.columns], errors='ignore')
+            
             df['REPORT_ID'] = report_id
             df['REPORT_DATE'] = report_date
             
@@ -754,6 +830,9 @@ def lambda_handler(event, context):
             bank_rules = load_mapping_for_flow(bq_client, "bank_payments")
             df_bank, unmapped = apply_comercio_mapping(df_bank, bank_rules, "bank_payments")
             append_unmapped_queue(bq_client, unmapped, "bank_payments")
+            
+            # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
+            df_bank = df_bank.drop(columns=[c for c in MAPPING_COLUMNS if c in df_bank.columns], errors='ignore')
             
             # Si existe columna MESSAGE_ID, usarla como clave
             key_cols = ['MESSAGE_ID'] if 'MESSAGE_ID' in df_bank.columns else []
