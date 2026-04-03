@@ -2164,7 +2164,7 @@ def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> st
     )
     return "\n".join(lines)
 
-def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str, match_type: str = "contains"):
+def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str, match_type: str = "contains", comercio_raw: str = None):
     """
     Guarda un mapeo en dim_comercio_mapping y marca los pendientes como resueltos.
     
@@ -2180,6 +2180,7 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
         categoria: categoría principal
         subcategoria: subcategoría
         match_type: 'contains' (default), 'exact', 'regex', 'fuzzy', 'fuzzy:85'
+        comercio_raw: texto original del comercio (opcional, para referencia)
     """
     flow = flow.strip()
     match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
@@ -2191,6 +2192,10 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
     is_fuzzy = match_type.startswith("fuzzy")
     if not is_fuzzy and match_type not in valid_types:
         match_type = "contains"
+    
+    # Si no se proporciona comercio_raw, usar match_value original
+    if comercio_raw is None:
+        comercio_raw = match_value
 
     # 1. Guardar/actualizar regla en dim_comercio_mapping
     merge_q = f"""
@@ -2203,6 +2208,7 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
         @dep AS comercio_depurado,
         @cat AS categoria,
         @sub AS subcategoria,
+        @raw AS comercio_raw,
         100 AS prioridad,
         TRUE AS activo
     ) s
@@ -2211,12 +2217,13 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
       comercio_depurado = s.comercio_depurado,
       categoria = s.categoria,
       subcategoria = s.subcategoria,
+      comercio_raw = s.comercio_raw,
       prioridad = s.prioridad,
       activo = s.activo,
       ins_dttm = CURRENT_TIMESTAMP()
     WHEN NOT MATCHED THEN
-      INSERT (flow, match_type, match_value, comercio_depurado, categoria, subcategoria, prioridad, activo, ins_dttm)
-      VALUES (s.flow, s.match_type, s.match_value, s.comercio_depurado, s.categoria, s.subcategoria, s.prioridad, s.activo, CURRENT_TIMESTAMP())
+      INSERT (flow, match_type, match_value, comercio_depurado, categoria, subcategoria, comercio_raw, prioridad, activo, ins_dttm)
+      VALUES (s.flow, s.match_type, s.match_value, s.comercio_depurado, s.categoria, s.subcategoria, s.comercio_raw, s.prioridad, s.activo, CURRENT_TIMESTAMP())
     """
     cfg = bigquery.QueryJobConfig(
         query_parameters=[
@@ -2226,6 +2233,7 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
             bigquery.ScalarQueryParameter("dep", "STRING", comercio_depurado),
             bigquery.ScalarQueryParameter("cat", "STRING", categoria),
             bigquery.ScalarQueryParameter("sub", "STRING", subcategoria),
+            bigquery.ScalarQueryParameter("raw", "STRING", comercio_raw),
         ]
     )
     bq_client.query(merge_q, job_config=cfg).result()
@@ -2498,6 +2506,29 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                 if not flow:
                     raise ValueError("flow debe ser bank/bank_payments/mp/mp_data")
                 
+                # Buscar comercio_raw en unmapped_queue si existe
+                comercio_raw = None
+                try:
+                    match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
+                    raw_q = f"""
+                    SELECT comercio_raw 
+                    FROM {bq_fqn(UNMAPPED_TABLE)}
+                    WHERE flow = @flow
+                      AND comercio_normalizado = @match_norm
+                    LIMIT 1
+                    """
+                    raw_cfg = bigquery.QueryJobConfig(
+                        query_parameters=[
+                            bigquery.ScalarQueryParameter("flow", "STRING", flow),
+                            bigquery.ScalarQueryParameter("match_norm", "STRING", match_norm),
+                        ]
+                    )
+                    raw_result = list(bq_client.query(raw_q, job_config=raw_cfg).result())
+                    if raw_result and raw_result[0].comercio_raw:
+                        comercio_raw = raw_result[0].comercio_raw
+                except Exception as e:
+                    print(f"⚠️ No se pudo obtener comercio_raw de unmapped_queue: {e}")
+                
                 apply_mapping_backfill(
                     bq_client,
                     flow=flow,
@@ -2506,9 +2537,11 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                     categoria=categoria,
                     subcategoria=subcategoria,
                     match_type=match_type,
+                    comercio_raw=comercio_raw,
                 )
                 
                 # Mensaje de confirmación
+                raw_info = f"• comercio_raw: {comercio_raw}\n" if comercio_raw else ""
                 ok = (
                     f"✅ Mapeo guardado en dim_comercio_mapping.\n\n"
                     f"📋 Detalles:\n"
@@ -2517,7 +2550,8 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                     f"• match_type: {match_type}\n"
                     f"• depurado: {depurado}\n"
                     f"• categoria: {categoria}\n"
-                    f"• subcategoria: {subcategoria}\n\n"
+                    f"• subcategoria: {subcategoria}\n"
+                    f"{raw_info}\n"
                     f"ℹ️ El mapeo se aplicará a nuevos registros en el próximo ETL.\n"
                     f"Para consultas históricas, usá JOIN con dim_comercio_mapping."
                 )
