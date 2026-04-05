@@ -26,6 +26,7 @@ except ImportError:
 
 # Configuración inicial
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_ALERT_CHAT_ID = os.environ["TELEGRAM_ALERT_CHAT_ID"]
 
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
