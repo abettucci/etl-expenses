@@ -26,7 +26,6 @@ except ImportError:
 
 # Configuración inicial
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_ALERT_CHAT_ID = os.environ["TELEGRAM_ALERT_CHAT_ID"]
 
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
@@ -2480,6 +2479,14 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                 "bank_payments": "bank_payments",
                 "mp": "mp_data",
                 "mp_data": "mp_data",
+                "transfer": "mp_transfer_data",
+                "mp_transfer": "mp_transfer_data",
+                "mp_transfer_data": "mp_transfer_data",
+                "supermarket": "supermarket_receipts",
+                "super": "supermarket_receipts",
+                "supermarket_receipts": "supermarket_receipts",
+                "carrefour": "carrefour_data",
+                "carrefour_data": "carrefour_data",
             }
             flow = flow_map.get(raw, "all")
             msg = list_unmapped_comercios(bq_client, flow=flow, limit=20)
@@ -2502,10 +2509,18 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                     "bank_payments": "bank_payments",
                     "mp": "mp_data",
                     "mp_data": "mp_data",
+                    "transfer": "mp_transfer_data",
+                    "mp_transfer": "mp_transfer_data",
+                    "mp_transfer_data": "mp_transfer_data",
+                    "supermarket": "supermarket_receipts",
+                    "super": "supermarket_receipts",
+                    "supermarket_receipts": "supermarket_receipts",
+                    "carrefour": "carrefour_data",
+                    "carrefour_data": "carrefour_data",
                 }
                 flow = flow_alias.get(flow_raw.lower())
                 if not flow:
-                    raise ValueError("flow debe ser bank/bank_payments/mp/mp_data")
+                    raise ValueError("flow debe ser bank/mp/transfer/supermarket/carrefour")
                 
                 # Buscar comercio_raw en unmapped_queue si existe
                 comercio_raw = None
