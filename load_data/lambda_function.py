@@ -368,7 +368,7 @@ def upsert_mappings(client, rows):
 
 def load_mapping_for_flow(client, flow_name):
     query = f"""
-    SELECT flow, match_type, match_value, comercio_depurado, categoria, subcategoria, prioridad
+    SELECT flow, match_type, match_value, comercio_depurado, categoria, subcategoria, prioridad, comercio_raw
     FROM `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}`
     WHERE activo = TRUE AND (flow = @flow OR flow = 'all')
     ORDER BY prioridad DESC
@@ -420,9 +420,12 @@ def apply_comercio_mapping(df, mapping_rows, flow_name):
     Tipos de matching soportados:
     - exact: coincidencia exacta del texto normalizado
     - contains: el texto normalizado contiene el patrón (default)
-    - regex: expresión regular
+    - regex: expresión regular (NO se normaliza el patrón)
     - fuzzy: similitud >= threshold usando rapidfuzz (default 80%)
     - fuzzy:90: similitud >= 90% (threshold personalizado)
+    
+    IMPORTANTE: match_value y comercio_raw se normalizan automáticamente antes de comparar
+    (excepto para regex donde se usa el patrón tal cual).
     """
     if "COMERCIO" not in df.columns:
         df["COMERCIO"] = ""
@@ -434,20 +437,37 @@ def apply_comercio_mapping(df, mapping_rows, flow_name):
 
     mapping_rows = sorted(mapping_rows, key=lambda x: x.get("prioridad", 0), reverse=True)
     for m in mapping_rows:
-        mv = (m.get("match_value") or "").strip()
-        if not mv:
+        mv_original = (m.get("match_value") or "").strip()
+        if not mv_original:
             continue
         mt = (m.get("match_type") or "contains").lower()
         
+        # Normalizar match_value (excepto para regex donde se usa el patrón original)
+        if mt == "regex":
+            mv = mv_original
+        else:
+            mv = normalize_text(mv_original)
+        
+        # Preparar comercio_raw normalizado como fallback adicional
+        comercio_raw = m.get("comercio_raw") or ""
+        comercio_raw_norm = normalize_text(comercio_raw) if comercio_raw else ""
+        
         if mt == "exact":
+            # Match exacto: comercio_normalizado == match_value normalizado
             mask = df["comercio_normalizado"] == mv
+            # Fallback con comercio_raw normalizado
+            if not mask.any() and comercio_raw_norm and comercio_raw_norm != mv:
+                mask = df["comercio_normalizado"] == comercio_raw_norm
+        
         elif mt == "regex":
+            # Regex: usar patrón original sin normalizar
             try:
-                mask = df["comercio_normalizado"].str.contains(mv, regex=True, na=False)
+                mask = df["comercio_normalizado"].str.contains(mv_original, regex=True, na=False)
             except Exception:
                 mask = pd.Series([False] * len(df))
+        
         elif mt.startswith("fuzzy"):
-            # Soporta "fuzzy" (default 80%) o "fuzzy:85" (threshold custom)
+            # Fuzzy matching con threshold configurable
             if ":" in mt:
                 try:
                     threshold = int(mt.split(":")[1])
@@ -455,13 +475,27 @@ def apply_comercio_mapping(df, mapping_rows, flow_name):
                     threshold = 80
             else:
                 threshold = 80
-            # Aplicar fuzzy matching a cada fila
+            
+            # Fuzzy match con match_value normalizado
             mask = df["comercio_normalizado"].apply(
                 lambda x: fuzzy_match_comercio(x, mv, threshold)
             )
+            # Fallback con comercio_raw normalizado
+            if not mask.any() and comercio_raw_norm and comercio_raw_norm != mv:
+                mask = df["comercio_normalizado"].apply(
+                    lambda x: fuzzy_match_comercio(x, comercio_raw_norm, threshold)
+                )
+        
         else:
-            # Default: contains
-            mask = df["comercio_normalizado"].str.contains(re.escape(mv), regex=True, na=False)
+            # Default: contains con match_value normalizado
+            if mv:
+                mask = df["comercio_normalizado"].str.contains(re.escape(mv), regex=True, na=False)
+            else:
+                mask = pd.Series([False] * len(df))
+            
+            # Fallback con comercio_raw normalizado
+            if not mask.any() and comercio_raw_norm and comercio_raw_norm != mv:
+                mask = df["comercio_normalizado"].str.contains(re.escape(comercio_raw_norm), regex=True, na=False)
         
         df.loc[mask, "comercio_depurado"] = m.get("comercio_depurado") or df.loc[mask, "comercio_depurado"]
         df.loc[mask, "categoria"] = m.get("categoria") or df.loc[mask, "categoria"]
