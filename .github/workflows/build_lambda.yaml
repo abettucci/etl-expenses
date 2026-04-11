@@ -144,6 +144,7 @@ jobs:
           terraform import aws_s3_bucket.bank_payments bank-payments || true
           terraform import aws_s3_bucket.telegram_receipts telegram-receipts || true
           terraform import aws_s3_bucket.mp_transfers mercadopago-transfers || true
+          terraform import aws_s3_bucket.bank_transfers bank-transfers-santander-etl || true
 
           terraform import aws_s3_bucket_policy.mp_reports_policy mercadopago-reports || true
           terraform import aws_s3_bucket_policy.market_tickets_policy market-tickets || true
