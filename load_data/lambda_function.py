@@ -674,8 +674,11 @@ def lambda_handler(event, context):
             dtype = {}
             table_name = 'mp_data'
         elif etl_flow == 'MP_TRANSFER':
-            dtype = {}
+            dtype = {'nro_cuenta': str}
             table_name = 'mp_transfer_data'
+        elif etl_flow == 'BANK_TRANSFER':
+            dtype = {'cbu_destino': str, 'nro_comprobante': str}
+            table_name = 'bank_transfers'
         elif etl_flow == 'TICKET':
             dtype = {
                 'ean': str,
@@ -756,7 +759,25 @@ def lambda_handler(event, context):
             
             tables_processed = ['mp_transfer_data']
 
-        
+        # ========================================
+        # FLUJO: BANK TRANSFERS (Transferencias bancarias Santander)
+        # ========================================
+        elif etl_flow == 'BANK_TRANSFER':
+            print(f"🏦 Procesando transferencia bancaria: {table_name}")
+            df.columns = [clean_column_name(c) for c in df.columns]
+            df = df.astype({col: "string" for col in df.columns if col != 'importe'})
+            
+            # Cargar a staging
+            staging_table_id, _ = load_to_staging(bq_client, df, 'bank_transfers')
+            
+            # Hacer MERGE a prod (clave: nro_comprobante es único por transferencia)
+            merge_to_prod(bq_client, staging_table_id, 'bank_transfers', ['nro_comprobante'], list(df.columns))
+            
+            # Verificar
+            verify_table_count(bq_client, BQ_DATASET_PROD, 'bank_transfers')
+            
+            tables_processed = ['bank_transfers']
+
         # ========================================
         # FLUJO: TICKETS CARREFOUR
         # ========================================

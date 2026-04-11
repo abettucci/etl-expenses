@@ -152,6 +152,12 @@ resource "aws_s3_bucket" "bank_payments" {
   force_destroy = true
 }
 
+# 1.3.1 Bucket para Transferencias bancarias Santander
+resource "aws_s3_bucket" "bank_transfers" {
+  bucket        = "bank-transfers"
+  force_destroy = true
+}
+
 # 1.4 Bucket para Tickets de Telegram (fotos de recibos)
 resource "aws_s3_bucket" "telegram_receipts" {
   bucket        = "telegram-receipts"
@@ -688,9 +694,11 @@ resource "aws_lambda_function" "extract_data_gmail" {
       MARKET_BUCKET_NAME = aws_s3_bucket.market_tickets.bucket
       BANK_BUCKET_NAME   = aws_s3_bucket.bank_payments.bucket
       MP_TRANSFER_BUCKET_NAME = aws_s3_bucket.mp_transfers.bucket
+      BANK_TRANSFER_BUCKET_NAME = aws_s3_bucket.bank_transfers.bucket
       BANK_STEP_FUNCTION_ARN = aws_sfn_state_machine.bank_payments_etl_flow.arn
       MARKET_STEP_FUNCTION_ARN = aws_sfn_state_machine.pdf_etl_flow.arn
-      MP_TRANSFER_STEP_FUNCTION_ARN =  aws_sfn_state_machine.mp_transfers_etl_flow.arn
+      MP_TRANSFER_STEP_FUNCTION_ARN = aws_sfn_state_machine.mp_transfers_etl_flow.arn
+      BANK_TRANSFER_STEP_FUNCTION_ARN = aws_sfn_state_machine.bank_transfers_etl_flow.arn
       GCP_PROJECT_ID     = var.GCP_PROJECT_ID
       BQ_DATASET_PROD    = "PRD"
     }
@@ -710,6 +718,7 @@ resource "aws_lambda_function" "bank_payments_processor" {
   environment {
     variables = {
       BANK_BUCKET = aws_s3_bucket.bank_payments.bucket
+      BANK_TRANSFER_BUCKET = aws_s3_bucket.bank_transfers.bucket
     }
   }
 }
@@ -1754,7 +1763,9 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
         Type       = "Task",
         Resource   = aws_lambda_function.bank_payments_processor.arn,
         Parameters = {
-          "key.$" = "$.body.key"
+          "key.$"      = "$.body.key",
+          "etl_flow.$" = "$.body.etl_flow",
+          "bucket.$"   = "$.body.bucket"
         },
         Next  = "Load Gmail Bank Payments",
         Catch = [
@@ -1774,6 +1785,85 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
           "etl_flow.$"    = "$.body.etl_flow",
           "bucket.$"      = "$.body.bucket",
           "key.$"         = "$.body.key"
+        },
+        End = true,
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
+          }
+        ]
+      },
+
+      # Step compensatorio
+      "CompensationFlow" = {
+        Type     = "Task",
+        Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        End      = true
+      }
+    }
+  })
+}
+
+# Step Function para Transferencias Bancarias Santander
+resource "aws_sfn_state_machine" "bank_transfers_etl_flow" {
+  name     = "bank-transfers-etl-flow"
+  role_arn = aws_iam_role.step_function_role.arn
+
+  logging_configuration {
+    level                  = "ALL"
+    include_execution_data = true
+    log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
+  }
+
+  definition = jsonencode({
+    StartAt = "Check If Should Process",
+    States = {
+      # Step 1: Choice
+      "Check If Should Process" = {
+        Type = "Choice",
+        Choices = [
+          {
+            Variable      = "$.body.process",
+            BooleanEquals = true,
+            Next          = "Transform Bank Transfer"
+          }
+        ],
+        Default = "SkipProcessing"
+      },
+
+      "SkipProcessing" = {
+        Type = "Succeed"
+      },
+
+      # Step 2: Transform
+      "Transform Bank Transfer" = {
+        Type       = "Task",
+        Resource   = aws_lambda_function.bank_payments_processor.arn,
+        Parameters = {
+          "key.$"      = "$.body.key",
+          "etl_flow.$" = "$.body.etl_flow",
+          "bucket.$"   = "$.body.bucket"
+        },
+        Next  = "Load Bank Transfer",
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
+          }
+        ]
+      },
+
+      # Step 3: Load
+      "Load Bank Transfer" = {
+        Type       = "Task",
+        Resource   = aws_lambda_function.load_report_and_pdf.arn,
+        Parameters = {
+          "etl_flow.$" = "$.body.etl_flow",
+          "bucket.$"   = "$.body.bucket",
+          "key.$"      = "$.body.key"
         },
         End = true,
         Catch = [

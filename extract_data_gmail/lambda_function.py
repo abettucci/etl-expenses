@@ -24,13 +24,16 @@ pd.set_option('display.max_rows', None)
 BANK_BUCKET = os.environ['BANK_BUCKET_NAME']
 MARKET_BUCKET = os.environ['MARKET_BUCKET_NAME']
 MP_TRANSFER_BUCKET = os.environ['MP_TRANSFER_BUCKET_NAME']
+BANK_TRANSFER_BUCKET = os.environ.get('BANK_TRANSFER_BUCKET_NAME', BANK_BUCKET)
 
 BANK_STEP_FUNCTION_ARN = os.environ['BANK_STEP_FUNCTION_ARN']
 MARKET_STEP_FUNCTION_ARN = os.environ['MARKET_STEP_FUNCTION_ARN']
-MP_TRANSFER_STEP_FUNCTION_ARN =  os.environ['MP_TRANSFER_STEP_FUNCTION_ARN']
+MP_TRANSFER_STEP_FUNCTION_ARN = os.environ['MP_TRANSFER_STEP_FUNCTION_ARN']
+BANK_TRANSFER_STEP_FUNCTION_ARN = os.environ.get('BANK_TRANSFER_STEP_FUNCTION_ARN', BANK_STEP_FUNCTION_ARN)
 
 BANK_EMAIL_SENDER = "mensajesyavisos@mails.santander.com.ar"
-BANK_SUBJECTS = ["Pagaste","Aviso de débito automático"]
+BANK_SUBJECTS_PAYMENTS = ["Pagaste", "Aviso de débito automático"]
+BANK_SUBJECT_TRANSFER = "Aviso de transferencia"
 MARKET_EMAIL_SENDERS = ["atencion_clientes@m.contactocarrefour.com.ar", "contacto@m.tarjetacarrefour.com.ar"]
 MARKET_SUBJECT = "Hola, te enviamos el ticket digital de tu compra."
 MP_EMAIL_SENDERS = ['info@mercadopago.com']
@@ -301,7 +304,28 @@ def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s
 def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject):
     """Dispatch basado en subject y sender"""
 
-    if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
+    # Transferencias bancarias Santander (Aviso de transferencia)
+    if (BANK_EMAIL_SENDER in sender and BANK_SUBJECT_TRANSFER in subject):
+        print('Descargando la info del mail de transferencia bancaria Santander...')
+        s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
+        s3_client.put_object(
+            Body=json.dumps(mail_data),
+            Bucket=BANK_TRANSFER_BUCKET,
+            Key=s3_key
+        )        
+        print(f"✅ Archivo subido a S3: {s3_key}")
+
+        return {
+            "statusCode": 200,
+            "body": {
+                "key": s3_key,
+                "process": True,
+                "etl_flow": "BANK_TRANSFER"
+            }
+        }
+
+    # Pagos con tarjeta Santander (Pagaste, Aviso de débito automático)
+    elif (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS_PAYMENTS)):
         print('Descargando la info del mail del gasto de santander')
         s3_key = f"{folder}{mail_data['date'][:10]}-{mail_data['message_id']}.json"
         s3_client.put_object(
@@ -311,7 +335,7 @@ def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client,
         )        
         print(f"✅ Archivo subido a S3: {s3_key}")
 
-        return  {
+        return {
             "statusCode": 200,
             "body": {
                 "key": s3_key,
@@ -451,7 +475,10 @@ def reproceso_historico(table_name):
                     print('date: ', date)
 
                     table_name, pk = None, None
-                    if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
+                    if (BANK_EMAIL_SENDER in sender and BANK_SUBJECT_TRANSFER in subject):
+                        table_name = 'bank_transfers'
+                        pk = 'nro_comprobante'
+                    elif (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS_PAYMENTS)):
                         table_name = 'bank_payments'
                         pk = 'MESSAGE_ID'
                     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
@@ -497,14 +524,19 @@ def reproceso_historico(table_name):
                         print(f"⏭️ Mensaje {msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
                         continue
 
-                    if label['name'] == 'Avisos Gastos Santander':
+                    # Seleccionar Step Function basado en etl_flow del dispatch_processor
+                    etl_flow = response.get('body', {}).get('etl_flow', '')
+                    
+                    if etl_flow == 'BANK':
                         step_function_arn = BANK_STEP_FUNCTION_ARN
-                    elif label['name'] == 'Avisos Compra Carrefour':
+                    elif etl_flow == 'BANK_TRANSFER':
+                        step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN
+                    elif etl_flow == 'TICKET':
                         step_function_arn = MARKET_STEP_FUNCTION_ARN
-                    elif label['name'] == 'Aviso Transferencia MP':
+                    elif etl_flow == 'MP_TRANSFER':
                         step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                     else:
-                        print(f"Label {label['name']} no reconocido - continuamos con el siguiente mail")
+                        print(f"etl_flow '{etl_flow}' no reconocido - continuamos con el siguiente mail")
                         continue
                     
                     status, desc = run_step_function_sync(
@@ -862,7 +894,10 @@ def lambda_handler(event, context):
 
                             # Determinar tabla y PK basado en sender/subject
                             table_name, pk = None, None
-                            if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
+                            if (BANK_EMAIL_SENDER in sender and BANK_SUBJECT_TRANSFER in subject):
+                                table_name = 'bank_transfers'
+                                pk = 'nro_comprobante'
+                            elif (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS_PAYMENTS)):
                                 table_name = 'bank_payments'
                                 pk = 'MESSAGE_ID'
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
@@ -992,7 +1027,10 @@ def lambda_handler(event, context):
 
                             # Determinar tabla y PK
                             table_name, pk = None, None
-                            if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
+                            if (BANK_EMAIL_SENDER in sender and BANK_SUBJECT_TRANSFER in subject):
+                                table_name = 'bank_transfers'
+                                pk = 'nro_comprobante'
+                            elif (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS_PAYMENTS)):
                                 table_name = 'bank_payments'
                                 pk = 'MESSAGE_ID'
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
@@ -1126,7 +1164,10 @@ def lambda_handler(event, context):
 
                             # Determinar tabla y PK basado en sender/subject
                             table_name, pk = None, None
-                            if (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS)):
+                            if (BANK_EMAIL_SENDER in sender and BANK_SUBJECT_TRANSFER in subject):
+                                table_name = 'bank_transfers'
+                                pk = 'nro_comprobante'
+                            elif (BANK_EMAIL_SENDER in sender and any(keyword in subject for keyword in BANK_SUBJECTS_PAYMENTS)):
                                 table_name = 'bank_payments'
                                 pk = 'MESSAGE_ID'
                             elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
