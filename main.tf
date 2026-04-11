@@ -154,7 +154,7 @@ resource "aws_s3_bucket" "bank_payments" {
 
 # 1.3.1 Bucket para Transferencias bancarias Santander
 resource "aws_s3_bucket" "bank_transfers" {
-  bucket        = "bank-transfers"
+  bucket        = "bank-transfers-santander-etl"
   force_destroy = true
 }
 
