@@ -685,6 +685,7 @@ resource "aws_lambda_function" "extract_data_gmail" {
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:extract_data_gmail-latest"
+  publish = false
 
   memory_size = 1024  # Ajustar según necesidades
   timeout     = 900   # Máximo 15 minutos
