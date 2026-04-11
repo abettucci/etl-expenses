@@ -702,7 +702,7 @@ def lambda_handler(event, context):
         # Construir mapa de labels para referencia
         results = gmail_service.users().labels().list(userId="me").execute()
         label_map = {}
-        target_label_names = ['Avisos Gastos Santander', 'Avisos Compra Carrefour', 'Aviso Transferencia MP']
+        target_label_names = ['Avisos Gastos Santander', 'Avisos Compra Carrefour', 'Aviso Transferencia MP', 'Aviso Transferencia Santander']
         target_label_ids = []
         
         for label in results['labels']:
