@@ -1071,7 +1071,9 @@ resource "aws_iam_policy" "lambda_s3_access" {
           "${aws_s3_bucket.mp_transfers.arn}/*",
           aws_s3_bucket.mp_transfers.arn,
           "${aws_s3_bucket.telegram_receipts.arn}/*",
-          aws_s3_bucket.telegram_receipts.arn
+          aws_s3_bucket.telegram_receipts.arn,
+          "${aws_s3_bucket.bank_transfers.arn}/*",
+          aws_s3_bucket.bank_transfers.arn
         ]
       }
     ]
