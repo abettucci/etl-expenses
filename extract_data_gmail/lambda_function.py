@@ -535,7 +535,7 @@ def reproceso_historico(table_name):
                     elif etl_flow == 'TICKET':
                         step_function_arn = MARKET_STEP_FUNCTION_ARN
                     elif etl_flow == 'MP_TRANSFER':
-                        step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
+                        step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN   
                     else:
                         print(f"etl_flow '{etl_flow}' no reconocido - continuamos con el siguiente mail")
                         continue
@@ -947,6 +947,8 @@ def lambda_handler(event, context):
                                 step_function_arn = MARKET_STEP_FUNCTION_ARN
                             elif  'Aviso Transferencia MP' in labels_names:
                                 step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
+                            elif 'Aviso Transferencia Santander' in labels_names:
+                                step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue
@@ -1070,8 +1072,10 @@ def lambda_handler(event, context):
                                 step_function_arn = BANK_STEP_FUNCTION_ARN   
                             elif 'Avisos Compra Carrefour' in all_labels_names:
                                 step_function_arn = MARKET_STEP_FUNCTION_ARN
-                            elif  'Aviso Transferencia MP' in labels_names:
+                            elif  'Aviso Transferencia MP' in all_labels_names:
                                 step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
+                            elif 'Aviso Transferencia Santander' in all_labels_names:
+                                step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN	
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {all_labels_names}")
                                 continue
@@ -1208,6 +1212,8 @@ def lambda_handler(event, context):
                                 step_function_arn = MARKET_STEP_FUNCTION_ARN
                             elif  'Aviso Transferencia MP' in labels_names:
                                 step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
+                            elif 'Aviso Transferencia Santander' in labels_names:
+                                step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue
