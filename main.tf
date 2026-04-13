@@ -1462,16 +1462,19 @@ resource "aws_iam_policy" "lambda_step_function_sync_policy" {
           aws_sfn_state_machine.pdf_etl_flow.arn,
           aws_sfn_state_machine.mp_report_etl_flow.arn,
           aws_sfn_state_machine.mp_transfers_etl_flow.arn,
+          aws_sfn_state_machine.bank_transfers_etl_flow.arn,
           "${aws_sfn_state_machine.telegram_receipt_etl_flow.arn}:*",
           "${aws_sfn_state_machine.bank_payments_etl_flow.arn}:*",
           "${aws_sfn_state_machine.pdf_etl_flow.arn}:*",
           "${aws_sfn_state_machine.mp_report_etl_flow.arn}:*",
           "${aws_sfn_state_machine.mp_transfers_etl_flow.arn}:*",
+          "${aws_sfn_state_machine.bank_transfers_etl_flow.arn}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.telegram_receipt_etl_flow.name}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.bank_payments_etl_flow.name}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.pdf_etl_flow.name}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.mp_report_etl_flow.name}:*",
-          "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.mp_transfers_etl_flow.name}:*"
+          "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.mp_transfers_etl_flow.name}:*",
+          "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.bank_transfers_etl_flow.name}:*"
         ]
       }
     ]
