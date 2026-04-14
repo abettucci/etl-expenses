@@ -555,6 +555,27 @@ resource "aws_dynamodb_table" "gmail_pubsub_dedup" {
   }
 }
 
+resource "aws_dynamodb_table" "gmail_etl_retry_guard" {
+  name           = "gmail-etl-retry-guard"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "message_id"
+
+  attribute {
+    name = "message_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "gmail-etl-retry-guard"
+    Env  = "prod"
+  }
+}
+
 resource "aws_dynamodb_table" "schema_cache" {
   name           = var.dynamodb_table_name
   billing_mode   = "PAY_PER_REQUEST"

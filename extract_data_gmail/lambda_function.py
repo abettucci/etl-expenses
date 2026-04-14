@@ -406,6 +406,36 @@ def save_last_history_id_in_dynamo(table, history_id):
         "historyId": str(history_id)
     })
 
+MAX_ETL_RETRIES = 3
+
+def get_etl_retry_count(message_id):
+    """Retorna cuántas veces falló el ETL para este email. 0 si no hay registro."""
+    try:
+        table = boto3.resource('dynamodb').Table('gmail-etl-retry-guard')
+        resp = table.get_item(Key={"message_id": message_id})
+        return resp.get("Item", {}).get("retry_count", 0)
+    except Exception as e:
+        print(f"⚠️ Error leyendo retry guard para {message_id}: {e}")
+        return 0
+
+def increment_etl_retry(message_id):
+    """Incrementa el contador de reintentos del ETL para este email."""
+    try:
+        table = boto3.resource('dynamodb').Table('gmail-etl-retry-guard')
+        table.update_item(
+            Key={"message_id": message_id},
+            UpdateExpression="SET retry_count = if_not_exists(retry_count, :zero) + :one, last_attempt = :ts, #ttl = :exp",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={
+                ":zero": 0,
+                ":one": 1,
+                ":ts": int(time.time()),
+                ":exp": int(time.time()) + 7 * 86400  # expira en 7 días
+            }
+        )
+    except Exception as e:
+        print(f"⚠️ Error incrementando retry guard para {message_id}: {e}")
+
 def run_step_function_sync(sfn_client, step_function_arn, payload, poll_interval=5):
     response = sfn_client.start_execution(
         stateMachineArn=step_function_arn,
@@ -535,7 +565,7 @@ def reproceso_historico(table_name):
                     elif etl_flow == 'TICKET':
                         step_function_arn = MARKET_STEP_FUNCTION_ARN
                     elif etl_flow == 'MP_TRANSFER':
-                        step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN   
+                        step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                     else:
                         print(f"etl_flow '{etl_flow}' no reconocido - continuamos con el siguiente mail")
                         continue
@@ -922,37 +952,43 @@ def lambda_handler(event, context):
                             if mail_msg_id in ids_existentes:
                                 print(f"⚠️ Mensaje {mail_msg_id} ya existe en BigQuery, se omite procesamiento")
                                 continue
-                            
+
+                            # Guard: saltar emails que fallaron demasiadas veces
+                            retry_count = get_etl_retry_count(mail_msg_id)
+                            if retry_count >= MAX_ETL_RETRIES:
+                                print(f"🚫 Mensaje {mail_msg_id} superó el límite de {MAX_ETL_RETRIES} reintentos del ETL, se omite")
+                                continue
+
                             # Procesar y subir a S3
                             print(f'💾 Extrayendo datos del mail y cargando a S3...')
-                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)    
+                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)
                             print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
-                            
+
                             # Verificar si dispatch_processor marcó el mensaje para procesar
                             payload = response
                             print(f'🚀 Payload para Step Function: {payload}')
-                            
+
                             # Si dispatch_processor retornó process=False, no ejecutar Step Function
                             should_process = response.get('process') if isinstance(response, dict) else False
                             if isinstance(response, dict) and 'body' in response and isinstance(response['body'], dict):
                                 should_process = response['body'].get('process', False)
-                            
+
                             if not should_process:
                                 print(f"⏭️ Mensaje {mail_msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
                                 continue
 
                             if 'Avisos Gastos Santander' in labels_names:
-                                step_function_arn = BANK_STEP_FUNCTION_ARN 
-                            elif 'Avisos Compra Carrefour' in labels_names:
-                                step_function_arn = MARKET_STEP_FUNCTION_ARN
-                            elif  'Aviso Transferencia MP' in labels_names:
-                                step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
+                                step_function_arn = BANK_STEP_FUNCTION_ARN
                             elif 'Aviso Transferencia Santander' in labels_names:
                                 step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN
+                            elif 'Avisos Compra Carrefour' in labels_names:
+                                step_function_arn = MARKET_STEP_FUNCTION_ARN
+                            elif 'Aviso Transferencia MP' in labels_names:
+                                step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue
-                            
+
                             status, desc = run_step_function_sync(
                                 sfn_client,
                                 step_function_arn,
@@ -962,9 +998,10 @@ def lambda_handler(event, context):
 
                             if status != "SUCCEEDED":
                                 print(f"⚠️ Ejecución fallida para mail {mail_msg_id}: {status}")
+                                increment_etl_retry(mail_msg_id)
                             else:
                                 print(f"✅ Step Function completada exitosamente para {mail_msg_id}")
-                    
+
                     # PASO 2: Procesar labels agregados (labelsAdded)
                     # CRÍTICO: Esto captura emails que llegaron en un historyId anterior pero se les
                     # agregó el label objetivo en este historyId
@@ -1069,13 +1106,13 @@ def lambda_handler(event, context):
 
                             # Determinar Step Function basado en labels actuales
                             if 'Avisos Gastos Santander' in all_labels_names:
-                                step_function_arn = BANK_STEP_FUNCTION_ARN   
+                                step_function_arn = BANK_STEP_FUNCTION_ARN
+                            elif 'Aviso Transferencia Santander' in all_labels_names:
+                                step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN
                             elif 'Avisos Compra Carrefour' in all_labels_names:
                                 step_function_arn = MARKET_STEP_FUNCTION_ARN
-                            elif  'Aviso Transferencia MP' in all_labels_names:
+                            elif 'Aviso Transferencia MP' in all_labels_names:
                                 step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
-                            elif 'Aviso Transferencia Santander' in all_labels_names:
-                                step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN	
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {all_labels_names}")
                                 continue
@@ -1212,8 +1249,6 @@ def lambda_handler(event, context):
                                 step_function_arn = MARKET_STEP_FUNCTION_ARN
                             elif  'Aviso Transferencia MP' in labels_names:
                                 step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
-                            elif 'Aviso Transferencia Santander' in labels_names:
-                                step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue

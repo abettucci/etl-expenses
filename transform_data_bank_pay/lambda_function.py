@@ -152,6 +152,7 @@ def transform_bank_transfer_data(s3_key, bucket=None):
         raise Exception("No se pudieron extraer los campos del email de transferencia")
     
     df = pd.DataFrame([records])
+    df['importe'] = pd.to_numeric(df['importe'], errors='coerce')
 
     print(f"📄 Procesando transferencia: {s3_key}")
     csv_buffer = io.StringIO()

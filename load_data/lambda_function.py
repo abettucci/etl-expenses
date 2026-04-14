@@ -766,6 +766,7 @@ def lambda_handler(event, context):
             print(f"🏦 Procesando transferencia bancaria: {table_name}")
             df.columns = [clean_column_name(c) for c in df.columns]
             df = df.astype({col: "string" for col in df.columns if col != 'importe'})
+            df['importe'] = pd.to_numeric(df['importe'], errors='coerce')
             
             # Cargar a staging
             staging_table_id, _ = load_to_staging(bq_client, df, 'bank_transfers')
