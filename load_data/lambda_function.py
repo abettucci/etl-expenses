@@ -746,13 +746,17 @@ def lambda_handler(event, context):
         elif etl_flow == 'MP_TRANSFER':
             df = column_name_mapping(df)
             df.columns = [clean_column_name(c) for c in df.columns]
+            original_columns = set(df.columns)
             resolve_comercio_column(df)
             mp_transfer_rules = load_mapping_for_flow(bq_client, "mp_transfer_data")
             df, unmapped = apply_comercio_mapping(df, mp_transfer_rules, "mp_transfer_data")
             append_unmapped_queue(bq_client, unmapped, "mp_transfer_data")
 
-            # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
-            df = df.drop(columns=[c for c in MAPPING_COLUMNS if c in df.columns], errors='ignore')
+            # Eliminar columnas de mapeo y COMERCIO si fue creada por resolve_comercio_column
+            drop_cols = [c for c in MAPPING_COLUMNS if c in df.columns]
+            if 'COMERCIO' not in original_columns and 'COMERCIO' in df.columns:
+                drop_cols.append('COMERCIO')
+            df = df.drop(columns=drop_cols, errors='ignore')
 
             df = df.astype({col: "string" for col in df.columns})
 
@@ -774,13 +778,17 @@ def lambda_handler(event, context):
             print(f"🏦 Procesando transferencia bancaria: {table_name}")
             df['importe'] = pd.to_numeric(df['importe'], errors='coerce')
             df.columns = [clean_column_name(c) for c in df.columns]
+            original_columns = set(df.columns)
             resolve_comercio_column(df)
             bank_transfer_rules = load_mapping_for_flow(bq_client, "bank_transfers")
             df, unmapped = apply_comercio_mapping(df, bank_transfer_rules, "bank_transfers")
             append_unmapped_queue(bq_client, unmapped, "bank_transfers")
 
-            # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
-            df = df.drop(columns=[c for c in MAPPING_COLUMNS if c in df.columns], errors='ignore')
+            # Eliminar columnas de mapeo y COMERCIO si fue creada por resolve_comercio_column
+            drop_cols = [c for c in MAPPING_COLUMNS if c in df.columns]
+            if 'COMERCIO' not in original_columns and 'COMERCIO' in df.columns:
+                drop_cols.append('COMERCIO')
+            df = df.drop(columns=drop_cols, errors='ignore')
 
             df = df.astype({col: "string" for col in df.columns if col != 'IMPORTE'})
 
