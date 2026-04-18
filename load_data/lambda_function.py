@@ -745,18 +745,26 @@ def lambda_handler(event, context):
 
         elif etl_flow == 'MP_TRANSFER':
             df = column_name_mapping(df)
-            df.columns = [clean_column_name(c) for c in df.columns]         
+            df.columns = [clean_column_name(c) for c in df.columns]
+            resolve_comercio_column(df)
+            mp_transfer_rules = load_mapping_for_flow(bq_client, "mp_transfer_data")
+            df, unmapped = apply_comercio_mapping(df, mp_transfer_rules, "mp_transfer_data")
+            append_unmapped_queue(bq_client, unmapped, "mp_transfer_data")
+
+            # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
+            df = df.drop(columns=[c for c in MAPPING_COLUMNS if c in df.columns], errors='ignore')
+
             df = df.astype({col: "string" for col in df.columns})
 
             # Cargar a staging
             staging_table_id, _ = load_to_staging(bq_client, df, 'mp_transfer_data')
-            
+
             # Hacer MERGE a prod (clave: REPORT_ID)
             merge_to_prod(bq_client, staging_table_id, 'mp_transfer_data', ['message_id'], list(df.columns))
-            
+
             # Verificar
             verify_table_count(bq_client, BQ_DATASET_PROD, 'mp_transfer_data')
-            
+
             tables_processed = ['mp_transfer_data']
 
         # ========================================
@@ -766,17 +774,25 @@ def lambda_handler(event, context):
             print(f"🏦 Procesando transferencia bancaria: {table_name}")
             df['importe'] = pd.to_numeric(df['importe'], errors='coerce')
             df.columns = [clean_column_name(c) for c in df.columns]
+            resolve_comercio_column(df)
+            bank_transfer_rules = load_mapping_for_flow(bq_client, "bank_transfers")
+            df, unmapped = apply_comercio_mapping(df, bank_transfer_rules, "bank_transfers")
+            append_unmapped_queue(bq_client, unmapped, "bank_transfers")
+
+            # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
+            df = df.drop(columns=[c for c in MAPPING_COLUMNS if c in df.columns], errors='ignore')
+
             df = df.astype({col: "string" for col in df.columns if col != 'IMPORTE'})
-            
+
             # Cargar a staging
             staging_table_id, _ = load_to_staging(bq_client, df, 'bank_transfers')
-            
+
             # Hacer MERGE a prod (clave: nro_comprobante es único por transferencia)
-            merge_to_prod(bq_client, staging_table_id, 'bank_transfers', ['nro_comprobante'], list(df.columns))
-            
+            merge_to_prod(bq_client, staging_table_id, 'bank_transfers', ['NRO_COMPROBANTE'], list(df.columns))
+
             # Verificar
             verify_table_count(bq_client, BQ_DATASET_PROD, 'bank_transfers')
-            
+
             tables_processed = ['bank_transfers']
 
         # ========================================
