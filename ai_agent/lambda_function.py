@@ -2507,6 +2507,8 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                 flow_alias = {
                     "bank": "bank_payments",
                     "bank_payments": "bank_payments",
+                    "bank_transfer": "bank_transfers",
+                    "bank_transfers": "bank_transfers",
                     "mp": "mp_data",
                     "mp_data": "mp_data",
                     "transfer": "mp_transfer_data",
@@ -2520,7 +2522,7 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                 }
                 flow = flow_alias.get(flow_raw.lower())
                 if not flow:
-                    raise ValueError("flow debe ser bank/mp/transfer/supermarket/carrefour")
+                    raise ValueError("flow debe ser bank_payments/bank_transfers/mp_data/mp_transfer_data/supermarket_receipts/carrefour_data")
                 
                 # Buscar comercio_raw en unmapped_queue si existe
                 comercio_raw = None
