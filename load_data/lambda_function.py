@@ -747,7 +747,12 @@ def lambda_handler(event, context):
             df = column_name_mapping(df)
             df.columns = [clean_column_name(c) for c in df.columns]
             original_columns = set(df.columns)
-            resolve_comercio_column(df)
+            # El "comercio" en mp_transfer_data es el campo RECEPTOR
+            if 'RECEPTOR' in df.columns:
+                df['COMERCIO'] = df['RECEPTOR'].astype(str)
+            else:
+                df['COMERCIO'] = ''
+                print("⚠️ Columna RECEPTOR no encontrada en mp_transfer_data, COMERCIO queda vacío")
             mp_transfer_rules = load_mapping_for_flow(bq_client, "mp_transfer_data")
             df, unmapped = apply_comercio_mapping(df, mp_transfer_rules, "mp_transfer_data")
             append_unmapped_queue(bq_client, unmapped, "mp_transfer_data")
@@ -779,7 +784,12 @@ def lambda_handler(event, context):
             df['importe'] = pd.to_numeric(df['importe'], errors='coerce')
             df.columns = [clean_column_name(c) for c in df.columns]
             original_columns = set(df.columns)
-            resolve_comercio_column(df)
+            # El "comercio" en bank_transfers es el campo DESTINATARIO
+            if 'DESTINATARIO' in df.columns:
+                df['COMERCIO'] = df['DESTINATARIO'].astype(str)
+            else:
+                df['COMERCIO'] = ''
+                print("⚠️ Columna DESTINATARIO no encontrada en bank_transfers, COMERCIO queda vacío")
             bank_transfer_rules = load_mapping_for_flow(bq_client, "bank_transfers")
             df, unmapped = apply_comercio_mapping(df, bank_transfer_rules, "bank_transfers")
             append_unmapped_queue(bq_client, unmapped, "bank_transfers")
