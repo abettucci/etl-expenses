@@ -1090,16 +1090,22 @@ def lambda_handler(event, context):
 
                             # Verificar si ya existe en BigQuery
                             ids_existentes = get_message_ids_loaded_in_bigquery(bq_client, table_name, pk)
-                            
+
                             if mail_msg_id in ids_existentes:
                                 print(f"⚠️ Mensaje {mail_msg_id} ya existe en BigQuery, se omite procesamiento")
                                 continue
-                            
+
+                            # Guard: saltar emails que fallaron demasiadas veces
+                            retry_count = get_etl_retry_count(mail_msg_id)
+                            if retry_count >= MAX_ETL_RETRIES:
+                                print(f"🚫 Mensaje {mail_msg_id} superó el límite de {MAX_ETL_RETRIES} reintentos del ETL, se omite")
+                                continue
+
                             # Procesar y subir a S3
                             print(f'💾 Extrayendo datos del mail y cargando a S3...')
-                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)    
+                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)
                             print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
-                            
+
                             # Ejecutar Step Function
                             payload = response
                             print(f'🚀 Payload para Step Function: {payload}')
@@ -1116,7 +1122,7 @@ def lambda_handler(event, context):
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {all_labels_names}")
                                 continue
-                            
+
                             status, desc = run_step_function_sync(
                                 sfn_client,
                                 step_function_arn,
@@ -1126,9 +1132,10 @@ def lambda_handler(event, context):
 
                             if status != "SUCCEEDED":
                                 print(f"⚠️ Ejecución fallida para mail {mail_msg_id}: {status}")
+                                increment_etl_retry(mail_msg_id)
                             else:
                                 print(f"✅ Step Function completada exitosamente para {mail_msg_id}")
-                    
+
                     elif 'messages' in record:
                         print(f"📧 Record {record_history_id} tiene {len(record['messages'])} mensajes (campo 'messages', no 'messagesAdded')")
                         for m in record['messages']:
@@ -1229,30 +1236,38 @@ def lambda_handler(event, context):
 
                             # Verificar si ya existe en BigQuery
                             ids_existentes = get_message_ids_loaded_in_bigquery(bq_client, table_name, pk)
-                            
+
                             if mail_msg_id in ids_existentes:
                                 print(f"⚠️ Mensaje {mail_msg_id} ya existe en BigQuery, se omite procesamiento")
                                 continue
-                            
+
+                            # Guard: saltar emails que fallaron demasiadas veces
+                            retry_count = get_etl_retry_count(mail_msg_id)
+                            if retry_count >= MAX_ETL_RETRIES:
+                                print(f"🚫 Mensaje {mail_msg_id} superó el límite de {MAX_ETL_RETRIES} reintentos del ETL, se omite")
+                                continue
+
                             # Procesar y subir a S3
                             print(f'💾 Extrayendo datos del mail y cargando a S3...')
-                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)    
+                            response = dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject)
                             print(f"✅ Mensaje procesado exitosamente: {mail_msg_id}")
-                            
+
                             # Ejecutar Step Function
                             payload = response
                             print(f'🚀 Payload para Step Function: {payload}')
 
                             if 'Avisos Gastos Santander' in labels_names:
-                                step_function_arn = BANK_STEP_FUNCTION_ARN 
+                                step_function_arn = BANK_STEP_FUNCTION_ARN
+                            elif 'Aviso Transferencia Santander' in labels_names:
+                                step_function_arn = BANK_TRANSFER_STEP_FUNCTION_ARN
                             elif 'Avisos Compra Carrefour' in labels_names:
                                 step_function_arn = MARKET_STEP_FUNCTION_ARN
-                            elif  'Aviso Transferencia MP' in labels_names:
+                            elif 'Aviso Transferencia MP' in labels_names:
                                 step_function_arn = MP_TRANSFER_STEP_FUNCTION_ARN
                             else:
                                 print(f"⚠️ No se encontró Step Function para labels: {labels_names}")
                                 continue
-                            
+
                             status, desc = run_step_function_sync(
                                 sfn_client,
                                 step_function_arn,
@@ -1262,6 +1277,7 @@ def lambda_handler(event, context):
 
                             if status != "SUCCEEDED":
                                 print(f"⚠️ Ejecución fallida para mail {mail_msg_id}: {status}")
+                                increment_etl_retry(mail_msg_id)
                             else:
                                 print(f"✅ Step Function completada exitosamente para {mail_msg_id}")
                 
