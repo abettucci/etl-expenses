@@ -81,6 +81,9 @@ _COLUMN_LABELS_ES = {
     "monto_total": "Monto",
     "nro_ticket": "Nº ticket",
     "fecha": "Fecha",
+    "transaction_key": "ID transacción",
+    "extraido_de": "Fuente",
+    "detalles": "Detalle",
 }
 
 def _friendly_column_label(col_name: str) -> str:
@@ -1807,7 +1810,14 @@ def bq_fqn(table_name: str) -> str:
 
 def sql_quick_ultimo_gasto() -> str:
     return f"""
-SELECT COMERCIO, MONTO, FECHA_PAGO, TARJETA, DIVISA
+SELECT
+  COMERCIO,
+  MONTO,
+  FECHA_PAGO,
+  TARJETA,
+  DIVISA,
+  'bank_payments' AS extraido_de,
+  CAST(MESSAGE_ID AS STRING) AS transaction_key
 FROM {bq_fqn("bank_payments")}
 WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) IS NOT NULL
 ORDER BY PARSE_DATE('%d/%m/%Y', FECHA_PAGO) DESC
@@ -1820,7 +1830,9 @@ SELECT
   TIMESTAMP(TRANSACTION_DATE) AS fecha_transaccion,
   CAST(SETTLEMENT_NET_AMOUNT AS FLOAT64) AS monto,
   TRANSACTION_TYPE,
-  PAYMENT_METHOD
+  PAYMENT_METHOD,
+  'mp_data' AS extraido_de,
+  CAST(SOURCE_ID AS STRING) AS transaction_key
 FROM {bq_fqn("mp_data")}
 WHERE TRANSACTION_DATE IS NOT NULL AND CAST(TRANSACTION_DATE AS STRING) != ''
 ORDER BY TIMESTAMP(TRANSACTION_DATE) DESC
@@ -2254,6 +2266,60 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
         # Si falla por streaming buffer, no es crítico - el mapeo ya está guardado
         print(f"⚠️ No se pudo marcar como resuelto en unmapped_queue (streaming buffer?): {e}")
 
+VALID_DETAIL_SOURCES = {
+    "bank_payments",
+    "bank_transfers",
+    "mp_data",
+    "mp_transfer_data",
+    "carrefour_data",
+    "supermarket_receipts",
+}
+
+def apply_transaction_detail(bq_client, extraido_de: str, transaction_key: str, detalles: str, updated_by: str):
+    """
+    Upsert editable en PRD.transaction_details por (extraido_de, transaction_key).
+    Si ya existe, sobrescribe detalles y updated_at.
+    """
+    extraido_de = (extraido_de or "").strip()
+    transaction_key = (transaction_key or "").strip()
+    detalles = (detalles or "").strip()
+    if extraido_de not in VALID_DETAIL_SOURCES:
+        raise ValueError(
+            f"extraido_de inválido. Válidos: {', '.join(sorted(VALID_DETAIL_SOURCES))}"
+        )
+    if not transaction_key:
+        raise ValueError("transaction_key vacío.")
+    if not detalles:
+        raise ValueError("detalles vacío.")
+
+    merge_q = f"""
+    MERGE {bq_fqn("transaction_details")} t
+    USING (
+      SELECT
+        @extraido_de AS extraido_de,
+        @transaction_key AS transaction_key,
+        @detalles AS detalles,
+        @updated_by AS updated_by
+    ) s
+    ON t.extraido_de = s.extraido_de AND t.transaction_key = s.transaction_key
+    WHEN MATCHED THEN UPDATE SET
+      detalles = s.detalles,
+      updated_at = CURRENT_TIMESTAMP(),
+      updated_by = s.updated_by
+    WHEN NOT MATCHED THEN
+      INSERT (extraido_de, transaction_key, detalles, updated_at, updated_by)
+      VALUES (s.extraido_de, s.transaction_key, s.detalles, CURRENT_TIMESTAMP(), s.updated_by)
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("extraido_de", "STRING", extraido_de),
+            bigquery.ScalarQueryParameter("transaction_key", "STRING", transaction_key),
+            bigquery.ScalarQueryParameter("detalles", "STRING", detalles),
+            bigquery.ScalarQueryParameter("updated_by", "STRING", updated_by),
+        ]
+    )
+    bq_client.query(merge_q, job_config=cfg).result()
+
 def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
@@ -2426,6 +2492,11 @@ Enviame una foto clara de un ticket de supermercado y lo proceso automáticament
 • /pendientes\_comercio [bank|mp|all] - Ver comercios sin clasificar
 • /mapear\_comercio flow|match|depurado|cat|subcat|[tipo]
 
+*Detalles manuales por transacción:*
+• /detalle <extraido\_de> <transaction\_key> <texto>
+  Ej: /detalle bank\_payments abc123 compre regalo de cumpleaños
+  Tip: usá /ultimo\_gasto o /ultimo\_mp para ver el ID transacción
+
 *Tipos de matching:*
 • `contains` (default): busca substring
 • `exact`: coincidencia exacta
@@ -2587,6 +2658,46 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                     "Ejemplos:\n"
                     "/mapear_comercio bank|MERPAGO*SHELL|Shell|nafta|combustible\n"
                     "/mapear_comercio bank|SHELL|Shell|nafta|combustible|fuzzy:75\n\n"
+                    f"Detalle: {str(e)}"
+                )
+                send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            return {"statusCode": 200}
+
+        if text.startswith("/detalle"):
+            try:
+                payload = text[len("/detalle"):].strip()
+                # Formato: <extraido_de> <transaction_key> <texto libre con espacios>
+                parts = payload.split(maxsplit=2)
+                if len(parts) < 3:
+                    raise ValueError("Faltan campos. Esperado: <extraido_de> <transaction_key> <texto>")
+                extraido_de_in, transaction_key_in, detalles_in = parts[0], parts[1], parts[2]
+
+                apply_transaction_detail(
+                    bq_client,
+                    extraido_de=extraido_de_in,
+                    transaction_key=transaction_key_in,
+                    detalles=detalles_in,
+                    updated_by=f"telegram:{chat_id}",
+                )
+
+                ok = (
+                    f"✅ Detalle guardado en transaction_details.\n\n"
+                    f"📋 Detalles:\n"
+                    f"• fuente: {extraido_de_in}\n"
+                    f"• ID transacción: {transaction_key_in}\n"
+                    f"• detalle: {detalles_in}\n\n"
+                    f"ℹ️ Aparecerá en la columna `detalles` de la vista gastos_totales."
+                )
+                send_telegram_message(chat_id, ok, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            except Exception as e:
+                err = (
+                    "❌ No pude guardar el detalle.\n\n"
+                    "Formato:\n"
+                    "/detalle <extraido_de> <transaction_key> <texto libre>\n\n"
+                    "Fuentes válidas:\n"
+                    "• bank_payments, bank_transfers, mp_data,\n"
+                    "  mp_transfer_data, carrefour_data, supermarket_receipts\n\n"
+                    "Tip: usá /ultimo_gasto o /ultimo_mp para ver el transaction_key.\n\n"
                     f"Detalle: {str(e)}"
                 )
                 send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
