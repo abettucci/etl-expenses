@@ -254,17 +254,26 @@ TABLE_METADATA = {
         }
     },
     "carrefour_data": {
-        "description": "Compras en supermercado Carrefour con detalle de productos",
+        "description": "Compras en supermercado Carrefour con detalle de productos (1 fila = 1 producto de 1 ticket)",
         "semantic_hints": [
             "Usar cuando pregunten por 'carrefour', 'supermercado', 'compras de comida'",
-            "Tiene detalle a nivel de producto individual",
-            "Cuando se pregunte por fechas, siempre convertir el campo FECHA con la funcion PARSE_DATE(%d/%m/%Y', FECHA)",
+            "Tiene detalle a nivel de producto individual: 1 ticket genera N filas (una por producto)",
+            "IMPORTANTE: esta tabla NO tiene columna COMERCIO/COMERCIO. TODAS las filas son de Carrefour - NO filtrar por comercio en esta tabla",
+            "Para sumar el gasto total: usar SUM(monto_total) (suma por producto). NO usar SUM(total_ticket_bruto) porque está repetido en cada producto del ticket y daría double-counting",
+            "Para contar tickets distintos: COUNT(DISTINCT nro_ticket)",
+            "El campo fecha es STRING en formato dd/mm/yyyy. SIEMPRE convertir con PARSE_DATE('%d/%m/%Y', fecha). NO usar SAFE_CAST(fecha AS DATE) - falla con este formato",
         ],
         "columns": {
             "fecha": {
                 "type": "STRING",
-                "description": "Fecha de la compra",
-                "example": "2024-11-15"
+                "format": "dd/mm/yyyy",
+                "description": "Fecha de la compra. Convertir con PARSE_DATE('%d/%m/%Y', fecha)",
+                "example": "14/05/2026"
+            },
+            "nro_ticket": {
+                "type": "STRING",
+                "description": "Número de ticket. Útil para COUNT(DISTINCT nro_ticket) cuando se quiere contar compras (no productos).",
+                "example": "0123-456789"
             },
             "producto": {
                 "type": "STRING",
@@ -384,6 +393,53 @@ TABLE_METADATA = {
                 "example" : "3950.0"
             }
         }
+    },
+    "dim_comercio_mapping": {
+        "description": "Tabla de mapeo de nombres CRUDOS de comercios (como aparecen en bank_payments.COMERCIO o mp_data) a nombres LIMPIOS y categorías. USAR SIEMPRE para filtrar por comercio.",
+        "semantic_hints": [
+            "CRÍTICO: cuando el usuario pregunte por un comercio específico (ej: 'carrefour', 'cabify', 'rappi', 'mcdonalds') NUNCA filtres con WHERE COMERCIO = 'X' o LIKE '%X%' sobre bank_payments. El nombre crudo del banco es algo como 'CABIFY*RIDE' o 'HIPER CARREFOU 0123' y nunca matchea.",
+            "En cambio, hacer JOIN con dim_comercio_mapping y filtrar por comercio_depurado",
+            "El campo match_value está NORMALIZADO (mayúsculas, sin caracteres especiales). Para joinearlo usar: REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%')",
+            "Filtrar siempre por activo = TRUE",
+            "El campo flow indica de qué tabla viene el mapping: 'bank' para bank_payments, 'mp' para mp_data"
+        ],
+        "columns": {
+            "flow": {
+                "type": "STRING",
+                "description": "Origen del mapeo: 'bank' | 'mp' | 'carrefour'",
+                "example": "bank"
+            },
+            "match_type": {
+                "type": "STRING",
+                "description": "Tipo de match: 'contains' (substring) o 'exact'",
+                "example": "contains"
+            },
+            "match_value": {
+                "type": "STRING",
+                "description": "Patrón normalizado (mayúsculas, sin espacios ni símbolos) a buscar dentro del nombre crudo del comercio",
+                "example": "CARREFOUR"
+            },
+            "comercio_depurado": {
+                "type": "STRING",
+                "description": "Nombre LIMPIO del comercio. Filtrar por este campo cuando el usuario menciona un comercio.",
+                "example": "Carrefour"
+            },
+            "categoria": {
+                "type": "STRING",
+                "description": "Categoría de gasto",
+                "example": "Supermercado"
+            },
+            "subcategoria": {
+                "type": "STRING",
+                "description": "Subcategoría",
+                "example": "Comida"
+            },
+            "activo": {
+                "type": "BOOL",
+                "description": "Si la regla está activa. Filtrar siempre por TRUE.",
+                "example": "TRUE"
+            }
+        }
     }
 }
 
@@ -413,6 +469,35 @@ SQL_EXAMPLES = """
     GROUP BY COMERCIO
     ORDER BY total DESC
     LIMIT 20
+
+    4. Pregunta: "¿Cuánto gasté este mes en Cabify?" (o cualquier comercio específico que NO sea Carrefour)
+    SQL:
+    SELECT SUM(CAST(b.MONTO AS FLOAT64)) AS total_gasto
+    FROM `{project}.{dataset}.bank_payments` b
+    JOIN `{project}.{dataset}.dim_comercio_mapping` m
+      ON m.flow = 'bank'
+     AND m.activo = TRUE
+     AND REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%')
+    WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
+      AND PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+
+    5. Pregunta: "Dame el detalle de mis últimos gastos en Cabify"
+    SQL:
+    SELECT b.FECHA_PAGO, b.COMERCIO, CAST(b.MONTO AS FLOAT64) AS monto, m.comercio_depurado
+    FROM `{project}.{dataset}.bank_payments` b
+    JOIN `{project}.{dataset}.dim_comercio_mapping` m
+      ON m.flow = 'bank'
+     AND m.activo = TRUE
+     AND REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%')
+    WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
+    ORDER BY PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) DESC
+    LIMIT 20
+
+    6. Pregunta: "¿Cuánto gasté este mes en Carrefour?" (Carrefour es CASO ESPECIAL: tiene su propia tabla con detalle de productos)
+    SQL:
+    SELECT ROUND(SUM(monto_total), 2) AS total_gasto, COUNT(DISTINCT nro_ticket) AS tickets
+    FROM `{project}.{dataset}.carrefour_data`
+    WHERE PARSE_DATE('%d/%m/%Y', fecha) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
 """
 
 # --- Clientes AWS/GCP ---
@@ -1548,7 +1633,14 @@ REGLAS CRÍTICAS:
 4. Para campos MONTO tipo STRING, SIEMPRE usar: CAST(MONTO AS FLOAT64)
 5. Usa fechas relativas (CURRENT_DATE(), DATE_SUB, DATE_TRUNC)
 6. LIMIT 20 siempre
-7. Devuelve SOLO el SQL, sin explicaciones ni markdown"""
+
+FILTRADO POR COMERCIO (MUY IMPORTANTE):
+7. NUNCA filtres por nombre de comercio con `WHERE COMERCIO = 'X'` ni con `LIKE '%X%'` directo sobre bank_payments o mp_data. Los nombres crudos del banco son raros (ej: 'CABIFY*RIDE', 'DLOCAL*RAPPI', 'HIPER CARREFOU 0123') y nunca matchean con lo que escribe el usuario.
+8. Cuando el usuario mencione un comercio específico (Cabify, Rappi, McDonalds, Uber, etc.) SIEMPRE hacé JOIN con dim_comercio_mapping y filtrá por comercio_depurado. Ver ejemplos 4 y 5.
+9. EXCEPCIÓN: si el comercio es "Carrefour" o "supermercado Carrefour", usar la tabla carrefour_data directamente (NO hace falta JOIN ni filtro por comercio porque toda la tabla es Carrefour). Ver ejemplo 6.
+10. carrefour_data NO tiene columna COMERCIO. Para sumar gasto usar SUM(monto_total). El campo fecha es dd/mm/yyyy → usar PARSE_DATE('%d/%m/%Y', fecha), NUNCA SAFE_CAST(fecha AS DATE).
+
+11. Devuelve SOLO el SQL, sin explicaciones ni markdown"""
 
         user_prompt = f"""
 ESQUEMA DETALLADO DE LAS TABLAS:
@@ -1612,8 +1704,9 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
             3. Las tablas deben referenciarse como: `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.nombre_tabla`
             4. Si la pregunta es sobre gastos del banco/santander, usa la tabla bank_payments.
             5. Si la pregunta es sobre transacciones/pagos a través de mercado pago, usa la tabla mp_data.
-            6. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data.
+            6. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data (esta tabla NO tiene columna COMERCIO; toda la tabla es Carrefour; el campo fecha es dd/mm/yyyy, usar PARSE_DATE('%d/%m/%Y', fecha)).
             7. Para información de productos, usa dim_producto y haz JOIN con carrefour_data si es necesario.
+            7b. Cuando el usuario filtre por un comercio específico (NO Carrefour) - ej: Cabify, Rappi, McDonalds - hacer JOIN bank_payments con dim_comercio_mapping ON REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%') AND m.flow = 'bank' AND m.activo = TRUE, y filtrar por m.comercio_depurado = 'X'. NUNCA usar WHERE COMERCIO = 'X' directo.
             8. Limita los resultados a máximo 20 filas con LIMIT 20.
             9. Para filtros de fecha, usa funciones de BigQuery como DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH).
             10. No uses fechas hardcodeadas, usa funciones relativas (CURRENT_DATE(), DATE_SUB, etc).
@@ -1810,17 +1903,47 @@ def bq_fqn(table_name: str) -> str:
 
 def sql_quick_ultimo_gasto() -> str:
     return f"""
+WITH ultimos AS (
+  SELECT
+    PARSE_DATE('%d/%m/%Y', FECHA_PAGO) AS fecha,
+    COMERCIO AS comercio,
+    CAST(MONTO AS FLOAT64) AS monto,
+    DIVISA AS divisa,
+    'bank_payments' AS extraido_de
+  FROM {bq_fqn("bank_payments")}
+  WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) IS NOT NULL
+
+  UNION ALL
+
+  SELECT
+    DATE(TIMESTAMP(TRANSACTION_DATE)) AS fecha,
+    COALESCE(PAYMENT_METHOD, TRANSACTION_TYPE) AS comercio,
+    CAST(SETTLEMENT_NET_AMOUNT AS FLOAT64) AS monto,
+    'ARS' AS divisa,
+    'mp_data' AS extraido_de
+  FROM {bq_fqn("mp_data")}
+  WHERE TRANSACTION_DATE IS NOT NULL AND CAST(TRANSACTION_DATE AS STRING) != ''
+
+  UNION ALL
+
+  SELECT
+    PARSE_DATE('%d/%m/%Y', fecha) AS fecha,
+    'Carrefour' AS comercio,
+    ROUND(SUM(monto_total), 2) AS monto,
+    'ARS' AS divisa,
+    'carrefour_data' AS extraido_de
+  FROM {bq_fqn("carrefour_data")}
+  WHERE PARSE_DATE('%d/%m/%Y', fecha) IS NOT NULL
+  GROUP BY fecha, nro_ticket
+)
 SELECT
-  COMERCIO,
-  MONTO,
-  FECHA_PAGO,
-  TARJETA,
-  DIVISA,
-  'bank_payments' AS extraido_de,
-  CAST(MESSAGE_ID AS STRING) AS transaction_key
-FROM {bq_fqn("bank_payments")}
-WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) IS NOT NULL
-ORDER BY PARSE_DATE('%d/%m/%Y', FECHA_PAGO) DESC
+  FORMAT_DATE('%d/%m/%Y', fecha) AS FECHA_PAGO,
+  comercio AS COMERCIO,
+  monto AS MONTO,
+  divisa AS DIVISA,
+  extraido_de
+FROM ultimos
+ORDER BY fecha DESC, monto DESC
 LIMIT 1
 """
 
@@ -1849,9 +1972,9 @@ WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
 UNION ALL
 SELECT 'Carrefour (detalle productos)' AS fuente,
   ROUND(SUM(monto_total), 2) AS total_ars,
-  COUNT(*) AS movimientos
+  COUNT(DISTINCT nro_ticket) AS movimientos
 FROM {bq_fqn("carrefour_data")}
-WHERE SAFE_CAST(fecha AS DATE) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+WHERE PARSE_DATE('%d/%m/%Y', fecha) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
 """
 
 def sql_quick_ultimos5_banco() -> str:
@@ -1869,7 +1992,7 @@ SELECT
   COUNT(DISTINCT nro_ticket) AS tickets_distintos,
   ROUND(SUM(monto_total), 2) AS total_mes_ars
 FROM {bq_fqn("carrefour_data")}
-WHERE SAFE_CAST(fecha AS DATE) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+WHERE PARSE_DATE('%d/%m/%Y', fecha) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
 """
 
 QUICK_SQL = {
@@ -2296,10 +2419,10 @@ def apply_transaction_detail(bq_client, extraido_de: str, transaction_key: str, 
     MERGE {bq_fqn("transaction_details")} t
     USING (
       SELECT
-        @extraido_de AS extraido_de,
-        @transaction_key AS transaction_key,
-        @detalles AS detalles,
-        @updated_by AS updated_by
+        CAST(@extraido_de AS STRING) AS extraido_de,
+        CAST(@transaction_key AS STRING) AS transaction_key,
+        CAST(@detalles AS STRING) AS detalles,
+        CAST(@updated_by AS STRING) AS updated_by
     ) s
     ON t.extraido_de = s.extraido_de AND t.transaction_key = s.transaction_key
     WHEN MATCHED THEN UPDATE SET
