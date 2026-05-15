@@ -341,7 +341,8 @@ def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client,
             "body": {
                 "key": s3_key,
                 "process": True,
-                "etl_flow": "BANK"
+                "etl_flow": "BANK",
+                "bucket": BANK_BUCKET
             }
         }
 
