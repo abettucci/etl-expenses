@@ -475,20 +475,18 @@ SQL_EXAMPLES = """
     SELECT SUM(CAST(b.MONTO AS FLOAT64)) AS total_gasto
     FROM `{project}.{dataset}.bank_payments` b
     JOIN `{project}.{dataset}.dim_comercio_mapping` m
-      ON m.flow = 'bank'
-     AND m.activo = TRUE
-     AND REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%')
+      ON m.flow = 'bank_payments'
+     AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
     WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
-      AND PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+        AND PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) >= DATE_ADD(DATE_TRUNC(CURRENT_DATE(), MONTH),INTERVAL 0 MONTH)
 
     5. Pregunta: "Dame el detalle de mis últimos gastos en Cabify"
     SQL:
     SELECT b.FECHA_PAGO, b.COMERCIO, CAST(b.MONTO AS FLOAT64) AS monto, m.comercio_depurado
     FROM `{project}.{dataset}.bank_payments` b
     JOIN `{project}.{dataset}.dim_comercio_mapping` m
-      ON m.flow = 'bank'
-     AND m.activo = TRUE
-     AND REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%')
+      ON m.flow = 'bank_payments'
+     AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
     WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
     ORDER BY PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) DESC
     LIMIT 20
