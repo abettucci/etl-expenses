@@ -397,47 +397,37 @@ TABLE_METADATA = {
     "dim_comercio_mapping": {
         "description": "Tabla de mapeo de nombres CRUDOS de comercios (como aparecen en bank_payments.COMERCIO o mp_data) a nombres LIMPIOS y categorías. USAR SIEMPRE para filtrar por comercio.",
         "semantic_hints": [
-            "CRÍTICO: cuando el usuario pregunte por un comercio específico (ej: 'carrefour', 'cabify', 'rappi', 'mcdonalds') NUNCA filtres con WHERE COMERCIO = 'X' o LIKE '%X%' sobre bank_payments. El nombre crudo del banco es algo como 'CABIFY*RIDE' o 'HIPER CARREFOU 0123' y nunca matchea.",
-            "En cambio, hacer JOIN con dim_comercio_mapping y filtrar por comercio_depurado",
-            "El campo match_value está NORMALIZADO (mayúsculas, sin caracteres especiales). Para joinearlo usar: REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%')",
-            "Filtrar siempre por activo = TRUE",
-            "El campo flow indica de qué tabla viene el mapping: 'bank' para bank_payments, 'mp' para mp_data"
+            "CRÍTICO: cuando el usuario pregunte por un comercio específico (ej: 'cabify', 'rappi', 'mcdonalds') NUNCA filtres con WHERE COMERCIO = 'X' o LIKE '%X%' sobre bank_payments directamente. El nombre crudo del banco es algo como 'CABIFY*RIDE' o 'HIPER CARREFOU 0123' y nunca matchea.",
+            "En cambio, hacer JOIN con dim_comercio_mapping usando: ON m.flow = 'bank_payments' AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')",
+            "Luego filtrar: WHERE UPPER(m.comercio_depurado) = UPPER('NombreComercio')",
+            "Valores válidos de flow: 'bank_payments', 'bank_transfers', 'mp_data', 'mp_transfer_data', 'carrefour_data', 'supermarket_receipts'. NUNCA usar 'bank' ni 'mp'.",
+            "NUNCA usar m.match_value ni REGEXP_REPLACE en el JOIN — usar UPPER(m.comercio_raw)"
         ],
         "columns": {
             "flow": {
                 "type": "STRING",
-                "description": "Origen del mapeo: 'bank' | 'mp' | 'carrefour'",
-                "example": "bank"
+                "description": "Origen del mapeo. Valores válidos: 'bank_payments' | 'bank_transfers' | 'mp_data' | 'mp_transfer_data' | 'carrefour_data' | 'supermarket_receipts'",
+                "example": "bank_payments"
             },
-            "match_type": {
+            "comercio_raw": {
                 "type": "STRING",
-                "description": "Tipo de match: 'contains' (substring) o 'exact'",
-                "example": "contains"
-            },
-            "match_value": {
-                "type": "STRING",
-                "description": "Patrón normalizado (mayúsculas, sin espacios ni símbolos) a buscar dentro del nombre crudo del comercio",
-                "example": "CARREFOUR"
+                "description": "Fragmento del nombre crudo del comercio a buscar. Usar con: UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')",
+                "example": "CABIFY"
             },
             "comercio_depurado": {
                 "type": "STRING",
                 "description": "Nombre LIMPIO del comercio. Filtrar por este campo cuando el usuario menciona un comercio.",
-                "example": "Carrefour"
+                "example": "Cabify"
             },
             "categoria": {
                 "type": "STRING",
                 "description": "Categoría de gasto",
-                "example": "Supermercado"
+                "example": "Transporte"
             },
             "subcategoria": {
                 "type": "STRING",
                 "description": "Subcategoría",
-                "example": "Comida"
-            },
-            "activo": {
-                "type": "BOOL",
-                "description": "Si la regla está activa. Filtrar siempre por TRUE.",
-                "example": "TRUE"
+                "example": "Ride"
             }
         }
     }
@@ -478,7 +468,7 @@ SQL_EXAMPLES = """
       ON m.flow = 'bank_payments'
      AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
     WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
-        AND PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) >= DATE_ADD(DATE_TRUNC(CURRENT_DATE(), MONTH),INTERVAL 0 MONTH)
+      AND PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) >= DATE_ADD(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 0 MONTH)
 
     5. Pregunta: "Dame el detalle de mis últimos gastos en Cabify"
     SQL:
@@ -1634,7 +1624,11 @@ REGLAS CRÍTICAS:
 
 FILTRADO POR COMERCIO (MUY IMPORTANTE):
 7. NUNCA filtres por nombre de comercio con `WHERE COMERCIO = 'X'` ni con `LIKE '%X%'` directo sobre bank_payments o mp_data. Los nombres crudos del banco son raros (ej: 'CABIFY*RIDE', 'DLOCAL*RAPPI', 'HIPER CARREFOU 0123') y nunca matchean con lo que escribe el usuario.
-8. Cuando el usuario mencione un comercio específico (Cabify, Rappi, McDonalds, Uber, etc.) SIEMPRE hacé JOIN con dim_comercio_mapping y filtrá por comercio_depurado. Ver ejemplos 4 y 5.
+8. Cuando el usuario mencione un comercio específico (Cabify, Rappi, McDonalds, Uber, etc.) SIEMPRE hacé JOIN con dim_comercio_mapping usando ESTE patrón exacto:
+   JOIN dim_comercio_mapping m ON m.flow = 'bank_payments' AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
+   Luego filtrá: WHERE UPPER(m.comercio_depurado) = UPPER('NombreComercio')
+   Valores válidos de flow: 'bank_payments', 'bank_transfers', 'mp_data', 'mp_transfer_data', 'carrefour_data', 'supermarket_receipts'
+   NUNCA uses flow = 'bank' ni flow = 'mp'. NUNCA uses m.match_value ni REGEXP_REPLACE. Ver ejemplos 4 y 5.
 9. EXCEPCIÓN: si el comercio es "Carrefour" o "supermercado Carrefour", usar la tabla carrefour_data directamente (NO hace falta JOIN ni filtro por comercio porque toda la tabla es Carrefour). Ver ejemplo 6.
 10. carrefour_data NO tiene columna COMERCIO. Para sumar gasto usar SUM(monto_total). El campo fecha es dd/mm/yyyy → usar PARSE_DATE('%d/%m/%Y', fecha), NUNCA SAFE_CAST(fecha AS DATE).
 
@@ -1704,7 +1698,7 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
             5. Si la pregunta es sobre transacciones/pagos a través de mercado pago, usa la tabla mp_data.
             6. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data (esta tabla NO tiene columna COMERCIO; toda la tabla es Carrefour; el campo fecha es dd/mm/yyyy, usar PARSE_DATE('%d/%m/%Y', fecha)).
             7. Para información de productos, usa dim_producto y haz JOIN con carrefour_data si es necesario.
-            7b. Cuando el usuario filtre por un comercio específico (NO Carrefour) - ej: Cabify, Rappi, McDonalds - hacer JOIN bank_payments con dim_comercio_mapping ON REGEXP_REPLACE(UPPER(b.COMERCIO), r'[^A-Z0-9]+', '') LIKE CONCAT('%', m.match_value, '%') AND m.flow = 'bank' AND m.activo = TRUE, y filtrar por m.comercio_depurado = 'X'. NUNCA usar WHERE COMERCIO = 'X' directo.
+            7b. Cuando el usuario filtre por un comercio específico (NO Carrefour) - ej: Cabify, Rappi, McDonalds - hacer JOIN bank_payments con dim_comercio_mapping ON m.flow = 'bank_payments' AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%'), y filtrar por UPPER(m.comercio_depurado) = UPPER('X'). Valores válidos de flow: 'bank_payments', 'bank_transfers', 'mp_data', 'mp_transfer_data', 'carrefour_data', 'supermarket_receipts'. NUNCA usar flow = 'bank' ni m.match_value ni REGEXP_REPLACE. NUNCA usar WHERE COMERCIO = 'X' directo.
             8. Limita los resultados a máximo 20 filas con LIMIT 20.
             9. Para filtros de fecha, usa funciones de BigQuery como DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH).
             10. No uses fechas hardcodeadas, usa funciones relativas (CURRENT_DATE(), DATE_SUB, etc).
