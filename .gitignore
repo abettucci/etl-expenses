@@ -36,3 +36,4 @@ load_data/mapeo_comercios_bank.txt
 scripts/detectar_comercios_sin_mapear.py
 scripts/cargar_mapeos_inicial.py
 scripts/leer_resumen_tarjeta.py
+scripts/backfill_comercio_mapping.py

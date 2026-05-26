@@ -10,6 +10,12 @@ from rapidfuzz import fuzz
 from datetime import datetime
 from google.cloud import bigquery
 from google.oauth2 import service_account
+
+try:
+    import openai as _openai
+except ImportError:
+    _openai = None
+
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
@@ -18,10 +24,13 @@ GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET_STAGING = os.environ.get("BQ_DATASET_STAGING", "STG")
 BQ_DATASET_PROD = os.environ.get("BQ_DATASET_PROD", "PRD")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
-MP_REPORTS_BUCKET = os.environ.get("MP_REPORTS_BUCKET") 
+MP_REPORTS_BUCKET = os.environ.get("MP_REPORTS_BUCKET")
 PARAMETER_NAME = "/mercado_pago/token"
 MAPPING_TABLE = "dim_comercio_mapping"
 UNMAPPED_TABLE = "comercio_unmapped_queue"
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+_openai_client = _openai.OpenAI(api_key=OPENAI_API_KEY) if (_openai and OPENAI_API_KEY) else None
 
 # --------------------------
 # Inicialización de BigQuery Client
@@ -504,25 +513,142 @@ def apply_comercio_mapping(df, mapping_rows, flow_name):
     unmapped = df[df["categoria"] == "sin_clasificar"][["COMERCIO", "comercio_normalizado"]].drop_duplicates()
     return df, unmapped
 
+def auto_classify_with_llm(comercio_raw: str, flow: str) -> dict | None:
+    """
+    Usa GPT-4o-mini para extraer un match_value genérico, nombre limpio,
+    categoría y subcategoría a partir de un nombre crudo de comercio bancario.
+    Ejemplo: "CABIFY AR 234541NDAOMFO" → {match_value:"CABIFY", comercio_depurado:"Cabify", ...}
+    Retorna None si OpenAI no está disponible o falla.
+    """
+    if not _openai_client or not comercio_raw:
+        return None
+
+    prompt = f"""Raw bank merchant name: "{comercio_raw}"
+Flow: "{flow}" (bank_payments = tarjeta/débito Santander, mp_data = Mercado Pago, etc.)
+
+Extract:
+1. match_value: UPPERCASE prefix without spaces/symbols/IDs that matches ALL transactions from this merchant via LIKE '%match_value%'.
+   Examples: "CABIFY AR 234541NDAOMFO" → "CABIFY", "MERPAGO*RAPPI*12345" → "RAPPI", "DLOCAL*NETFLIX" → "NETFLIX"
+2. comercio_depurado: clean readable Spanish name. Examples: "Cabify", "Rappi", "Netflix"
+3. categoria: spending category in Spanish. Examples: "Transporte", "Comida", "Entretenimiento", "Salud", "Servicios"
+4. subcategoria: subcategory. Examples: "Ride", "Delivery", "Streaming", "Supermercado"
+
+Return ONLY valid JSON: {{"match_value": "...", "comercio_depurado": "...", "categoria": "...", "subcategoria": "..."}}"""
+
+    try:
+        resp = _openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=100,
+        )
+        raw = resp.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.replace("```json", "").replace("```", "").strip()
+        return json.loads(raw)
+    except Exception as e:
+        print(f"⚠️ LLM auto-classify falló para '{comercio_raw}': {e}")
+        return None
+
+
+def auto_insert_mapping(client, suggestion: dict, flow: str) -> bool:
+    """
+    Inserta una nueva regla en dim_comercio_mapping si no existe ya para ese flow + match_value.
+    Retorna True si insertó, False si la regla ya existía (no duplica).
+    """
+    match_value = normalize_text(suggestion.get("match_value", ""))
+    if not match_value:
+        return False
+
+    check_q = f"""
+    SELECT COUNT(*) AS n
+    FROM `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}`
+    WHERE flow = @flow AND match_value = @mv AND activo = TRUE
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("flow", "STRING", flow),
+        bigquery.ScalarQueryParameter("mv",   "STRING", match_value),
+    ])
+    try:
+        count = list(client.query(check_q, job_config=cfg).result())[0]["n"]
+        if count > 0:
+            print(f"ℹ️ Mapping ya existe: {flow} | {match_value}")
+            return False
+    except Exception as e:
+        print(f"⚠️ Error verificando mapping existente: {e}")
+        return False
+
+    row = {
+        "flow":              flow,
+        "match_type":        "contains",
+        "match_value":       match_value,
+        "comercio_raw":      suggestion.get("match_value", ""),
+        "comercio_depurado": suggestion.get("comercio_depurado", ""),
+        "categoria":         suggestion.get("categoria", "sin_clasificar"),
+        "subcategoria":      suggestion.get("subcategoria", ""),
+        "prioridad":         0,
+        "activo":            True,
+        "ins_dttm":          datetime.utcnow(),
+    }
+    try:
+        table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}"
+        cfg2 = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", autodetect=True)
+        client.load_table_from_dataframe(pd.DataFrame([row]), table_id, job_config=cfg2).result()
+        print(f"✅ Auto-mapping insertado: {flow} | {match_value} → {suggestion.get('comercio_depurado')} ({suggestion.get('categoria')})")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error insertando auto-mapping '{match_value}': {e}")
+        return False
+
+
 def append_unmapped_queue(client, unmapped_df, flow_name):
+    """
+    Inserta comercios no mapeados en comercio_unmapped_queue para auditoría.
+    Para cada comercio sin mapear llama al LLM para auto-clasificarlo e insertarlo
+    en dim_comercio_mapping. Retorna la lista de nuevas reglas creadas (para
+    re-aplicar al batch actual).
+    """
     if unmapped_df.empty:
-        return
+        return []
+
+    new_rules = []
     rows = []
     for _, r in unmapped_df.iterrows():
-        rows.append(
-            {
-                "flow": flow_name,
-                "comercio_raw": str(r.get("COMERCIO", "")),
-                "comercio_normalizado": str(r.get("comercio_normalizado", "")),
-                "sample_record": json.dumps({"comercio": str(r.get("COMERCIO", ""))}, ensure_ascii=False),
-                "ins_dttm": datetime.utcnow(),
-                "resolved": False,
-            }
-        )
+        comercio_raw = str(r.get("COMERCIO", ""))
+        comercio_norm = str(r.get("comercio_normalizado", ""))
+
+        # Auto-clasificar con LLM e insertar en dim_comercio_mapping si es nuevo
+        suggestion = auto_classify_with_llm(comercio_raw, flow_name)
+        if suggestion:
+            inserted = auto_insert_mapping(client, suggestion, flow_name)
+            if inserted:
+                # Convertir a formato de mapping_row compatible con apply_comercio_mapping
+                new_rules.append({
+                    "flow":              flow_name,
+                    "match_type":        "contains",
+                    "match_value":       normalize_text(suggestion.get("match_value", "")),
+                    "comercio_raw":      suggestion.get("match_value", ""),
+                    "comercio_depurado": suggestion.get("comercio_depurado", ""),
+                    "categoria":         suggestion.get("categoria", "sin_clasificar"),
+                    "subcategoria":      suggestion.get("subcategoria", ""),
+                    "prioridad":         0,
+                })
+
+        rows.append({
+            "flow":                flow_name,
+            "comercio_raw":        comercio_raw,
+            "comercio_normalizado": comercio_norm,
+            "sample_record":       json.dumps({"comercio": comercio_raw}, ensure_ascii=False),
+            "ins_dttm":            datetime.utcnow(),
+            "resolved":            False,
+        })
+
     dfq = pd.DataFrame(rows)
     table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{UNMAPPED_TABLE}"
     cfg = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", autodetect=True)
     client.load_table_from_dataframe(dfq, table_id, job_config=cfg).result()
+
+    return new_rules
 
 def should_skip_processing(payload):
     """
@@ -722,7 +848,9 @@ def lambda_handler(event, context):
             resolve_comercio_column(df)
             mp_rules = load_mapping_for_flow(bq_client, "mp_data")
             df, unmapped = apply_comercio_mapping(df, mp_rules, "mp_data")
-            append_unmapped_queue(bq_client, unmapped, "mp_data")
+            new_rules = append_unmapped_queue(bq_client, unmapped, "mp_data")
+            if new_rules:
+                df, _ = apply_comercio_mapping(df, new_rules, "mp_data")
             
             # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
             df = df.drop(columns=[c for c in MAPPING_COLUMNS if c in df.columns], errors='ignore')
@@ -755,7 +883,9 @@ def lambda_handler(event, context):
                 print("⚠️ Columna RECEPTOR no encontrada en mp_transfer_data, COMERCIO queda vacío")
             mp_transfer_rules = load_mapping_for_flow(bq_client, "mp_transfer_data")
             df, unmapped = apply_comercio_mapping(df, mp_transfer_rules, "mp_transfer_data")
-            append_unmapped_queue(bq_client, unmapped, "mp_transfer_data")
+            new_rules = append_unmapped_queue(bq_client, unmapped, "mp_transfer_data")
+            if new_rules:
+                df, _ = apply_comercio_mapping(df, new_rules, "mp_transfer_data")
 
             # Eliminar columnas de mapeo y COMERCIO si fue creada por resolve_comercio_column
             drop_cols = [c for c in MAPPING_COLUMNS if c in df.columns]
@@ -792,7 +922,9 @@ def lambda_handler(event, context):
                 print("⚠️ Columna DESTINATARIO no encontrada en bank_transfers, COMERCIO queda vacío")
             bank_transfer_rules = load_mapping_for_flow(bq_client, "bank_transfers")
             df, unmapped = apply_comercio_mapping(df, bank_transfer_rules, "bank_transfers")
-            append_unmapped_queue(bq_client, unmapped, "bank_transfers")
+            new_rules = append_unmapped_queue(bq_client, unmapped, "bank_transfers")
+            if new_rules:
+                df, _ = apply_comercio_mapping(df, new_rules, "bank_transfers")
 
             # Eliminar columnas de mapeo y COMERCIO si fue creada por resolve_comercio_column
             drop_cols = [c for c in MAPPING_COLUMNS if c in df.columns]
@@ -919,7 +1051,9 @@ def lambda_handler(event, context):
             resolve_comercio_column(df_bank)
             bank_rules = load_mapping_for_flow(bq_client, "bank_payments")
             df_bank, unmapped = apply_comercio_mapping(df_bank, bank_rules, "bank_payments")
-            append_unmapped_queue(bq_client, unmapped, "bank_payments")
+            new_rules = append_unmapped_queue(bq_client, unmapped, "bank_payments")
+            if new_rules:
+                df_bank, _ = apply_comercio_mapping(df_bank, new_rules, "bank_payments")
             
             # Eliminar columnas de mapeo antes de guardar (no existen en tabla destino)
             df_bank = df_bank.drop(columns=[c for c in MAPPING_COLUMNS if c in df_bank.columns], errors='ignore')
