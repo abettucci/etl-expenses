@@ -246,7 +246,8 @@ jobs:
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
           terraform import aws_iam_role.glue_service_role glue_service_role || true
-          terraform import aws_iam_role.api_gateway_role api_gateway_step_function_role || true       
+          terraform import aws_iam_role.api_gateway_role api_gateway_step_function_role || true     
+          # terraform import aws_iam_role.redshift_iam_role redshift_iam_role || true  
 
           terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
