@@ -243,6 +243,10 @@ jobs:
           terraform import aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor || true
           terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge || true
 
+          terraform import aws_lambda_permission.allow_api_gateway_ai_agent ai_agent/AllowAPIGatewayInvokeAiAgent || true
+          terraform import aws_lambda_permission.allow_api_gateway_market_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeMarketMailDataExtractor || true
+          terraform import aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor || true
+
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
           terraform import aws_iam_role.glue_service_role glue_service_role || true
