@@ -211,6 +211,7 @@ jobs:
           terraform import aws_dynamodb_table.telegram_processed_messages telegram_processed_messages || true
           terraform import aws_dynamodb_table.telegram_pending_tickets telegram_pending_tickets || true
           terraform import aws_dynamodb_table.gmail_pubsub_dedup gmail-pubsub-dedup || true
+          terraform import aws_dynamodb_table.gmail_etl_retry_guard gmail-etl-retry-guard || true
 
           # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
           # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
