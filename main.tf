@@ -555,6 +555,7 @@ resource "aws_dynamodb_table" "gmail_pubsub_dedup" {
   }
 }
 
+# Tabla para prevenir loops de ETL: trackea cuántas veces falló el procesamiento de un email
 resource "aws_dynamodb_table" "gmail_etl_retry_guard" {
   name           = "gmail-etl-retry-guard"
   billing_mode   = "PAY_PER_REQUEST"
@@ -765,6 +766,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
       BQ_DATASET_PROD    = "PRD"
       BQ_LOCATION        = "US"
       MP_REPORTS_BUCKET  = aws_s3_bucket.mp_reports.bucket
+      OPENAI_API_KEY     = var.OPENAI_API_KEY
     }
   }
 }
@@ -1120,6 +1122,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
         Resource = [
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-pubsub-dedup",
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-etl-retry-guard",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",
@@ -1671,6 +1674,12 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "TICKET",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
         End      = true
       }
     }
@@ -1751,6 +1760,10 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"    = "MP_REPORT",
+          "input.$"     = "$"
+        },
         End      = true
       }
     }
@@ -1830,6 +1843,12 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "BANK",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
         End      = true
       }
     }
@@ -1909,6 +1928,12 @@ resource "aws_sfn_state_machine" "bank_transfers_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "BANK_TRANSFER",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
         End      = true
       }
     }
@@ -1985,6 +2010,12 @@ resource "aws_sfn_state_machine" "mp_transfers_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "MP_TRANSFER",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
         End      = true
       }
     }
