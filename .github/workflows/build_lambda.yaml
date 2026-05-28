@@ -17,7 +17,6 @@ env:
   TF_VAR_SNS_TOPIC: ${{ secrets.SNS_TOPIC }}
   TF_VAR_GCP_PROJECT_ID : ${{ secrets.GCP_PROJECT_ID }}
   TF_VAR_TABSCANNER_API_KEY : ${{ secrets.TABSCANNER_API_KEY }}
-  TF_VAR_TELEGRAM_ALERT_CHAT_ID : ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
   
 jobs:
   build-lambda-images:
@@ -142,9 +141,9 @@ jobs:
           terraform import aws_s3_bucket.market_tickets market-tickets || true
           terraform import aws_s3_bucket.mp_reports mercadopago-reports || true
           terraform import aws_s3_bucket.bank_payments bank-payments || true
+          terraform import aws_s3_bucket.bank_transfers bank-transfers-santander-etl || true
           terraform import aws_s3_bucket.telegram_receipts telegram-receipts || true
           terraform import aws_s3_bucket.mp_transfers mercadopago-transfers || true
-          terraform import aws_s3_bucket.bank_transfers bank-transfers-santander-etl || true
 
           terraform import aws_s3_bucket_policy.mp_reports_policy mercadopago-reports || true
           terraform import aws_s3_bucket_policy.market_tickets_policy market-tickets || true
@@ -212,7 +211,6 @@ jobs:
           terraform import aws_dynamodb_table.telegram_processed_messages telegram_processed_messages || true
           terraform import aws_dynamodb_table.telegram_pending_tickets telegram_pending_tickets || true
           terraform import aws_dynamodb_table.gmail_pubsub_dedup gmail-pubsub-dedup || true
-          terraform import aws_dynamodb_table.gmail_etl_retry_guard gmail-etl-retry-guard || true
 
           # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
           # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
@@ -243,19 +241,15 @@ jobs:
           terraform import aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor || true
           terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge || true
 
-          terraform import aws_lambda_permission.allow_api_gateway_ai_agent ai_agent/AllowAPIGatewayInvokeAiAgent || true
-          terraform import aws_lambda_permission.allow_api_gateway_market_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeMarketMailDataExtractor || true
-          terraform import aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor || true
-
           terraform import aws_iam_role.lambda_exec lambda_exec_role || true
           terraform import aws_iam_role.step_function_role step_function_role || true
           terraform import aws_iam_role.glue_service_role glue_service_role || true
-          terraform import aws_iam_role.api_gateway_role api_gateway_step_function_role || true     
-          # terraform import aws_iam_role.redshift_iam_role redshift_iam_role || true  
+          terraform import aws_iam_role.api_gateway_role api_gateway_step_function_role || true       
 
           terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
           terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
           terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
+          terraform import aws_sfn_state_machine.bank_transfers_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-transfers-etl-flow || true
           terraform import aws_sfn_state_machine.telegram_receipt_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:telegram-receipt-etl-flow || true
           terraform import aws_sfn_state_machine.mp_transfers_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-transfers-etl-flow || true
 
