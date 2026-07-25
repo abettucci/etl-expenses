@@ -1,0 +1,337 @@
+name: Build and Push Lambda Docker Images Optimized
+
+on:
+  push:
+    branches: [main,fix-version-rollback-n3]
+  workflow_dispatch:
+
+env:
+  TF_VAR_AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_VAR_AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  TF_VAR_ECR_REPO: ${{ secrets.ECR_REPO }}
+  ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPO }}"
+  TF_VAR_EMAIL: ${{ secrets.EMAIL }}
+  TF_VAR_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TF_VAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  TF_VAR_CIFRADO_SECRET_MP: ${{ secrets.CIFRADO_SECRET_MP }}
+  TF_VAR_SNS_TOPIC: ${{ secrets.SNS_TOPIC }}
+  TF_VAR_GCP_PROJECT_ID : ${{ secrets.GCP_PROJECT_ID }}
+  TF_VAR_TABSCANNER_API_KEY : ${{ secrets.TABSCANNER_API_KEY }}
+  
+jobs:
+  build-lambda-images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ["pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "extract_data_gmail-latest|extract_data_gmail/extract_data_gmail.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile", "ai_agent-latest|ai_agent/ai_agent.dockerfile", "gmail_watcher-latest|gmail_watcher/gmail_watcher.dockerfile", "process_telegram_img-latest|process_telegram_img/process_telegram_img.dockerfile", "load_receipt_to_bq-latest|load_receipt_to_bq/load_receipt_to_bq.dockerfile","mp_transfers_processor-latest|transform_data_mp_transfers/transform_data_mp_transfers.dockerfile"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{env.TF_VAR_AWS_REGION}} 
+          aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
+          aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v1
+        
+      - name: Extract tag and dockerfile
+        id: extract
+        run: |
+          IFS='|' read -r IMAGE_TAG DOCKERFILE <<< "${{ matrix.image }}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "DOCKERFILE=$DOCKERFILE" >> $GITHUB_ENV
+
+      - name: Pull remote image
+        run: |
+          ECR_REPO="${{ env.ECR_REPO }}"
+          docker pull $ECR_REPO:$IMAGE_TAG || echo "No previous image"
+
+      - name: Build Docker image
+        run: |
+          ECR_REPO="${{ env.ECR_REPO }}"
+          docker build \
+            -t local-build:$IMAGE_TAG \
+            -f $DOCKERFILE \
+            ./$(dirname $DOCKERFILE)
+        
+      - name: Get local image ID
+        id: local_image
+        run: |
+          IMAGE_ID=$(docker images --no-trunc --quiet local-build:$IMAGE_TAG)
+          echo "LOCAL_IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
+
+      - name: Check remote image
+        run: |
+          ECR_REPO="${{ env.ECR_REPO }}"
+          REMOTE_ID=$(docker inspect --format='{{.Id}}' $ECR_REPO:$IMAGE_TAG 2>/dev/null || true)
+      
+          if [ -z "$REMOTE_ID" ]; then
+            echo "No remote image found for $IMAGE_TAG"
+          else
+            echo "REMOTE_IMAGE_ID=$REMOTE_ID" >> $GITHUB_ENV
+          fi
+
+      - name: Compare and push if different
+        if: env.LOCAL_IMAGE_ID != env.REMOTE_IMAGE_ID
+        run: |
+          ECR_REPO="${{ env.ECR_REPO }}"
+          docker tag local-build:$IMAGE_TAG $ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REPO:$IMAGE_TAG
+      
+      - name: Update de imagen de funcion lambda
+        run: |
+          # Extraer el nombre base (ej: "pdf_extractor-latest" -> "pdf_extractor")
+          LAMBDA_NAME=$(echo "$IMAGE_TAG" | cut -d'-' -f1)
+          IMAGE_LOGICAL_URI="$ECR_REPO:$IMAGE_TAG"
+
+          # (Opcional) Actualizar Lambda directamente
+          if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
+            echo "🔄 Actualizando Lambda: $LAMBDA_NAME"
+            aws lambda update-function-code \
+              --function-name "$LAMBDA_NAME" \
+              --image-uri "$IMAGE_LOGICAL_URI"
+          else
+            echo "⚠️  Lambda $LAMBDA_NAME no existe, se omite update."
+          fi
+                  
+  terraform-deploy:
+    needs: [build-lambda-images]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.TF_VAR_AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.6
+      
+      # - name: Configure GCP Credentials
+      #   run: echo "${{ secrets.GCP_CREDENTIALS }}" > gcp-creds.json
+          
+      - name: Terraform Init
+        run: |
+          set -x
+          terraform init
+
+          # Importar dataset STG
+          terraform import google_bigquery_dataset.staging $TF_VAR_GCP_PROJECT_ID/STG || true
+
+          # Importar dataset PRD
+          terraform import google_bigquery_dataset.production $TF_VAR_GCP_PROJECT_ID/PRD || true
+          
+          terraform import aws_ecr_repository.lambda_images etl-expenses || true
+          terraform import aws_ecr_lifecycle_policy.delete_unwanted_images etl-expenses || true
+
+          terraform import aws_s3_bucket.market_tickets market-tickets || true
+          terraform import aws_s3_bucket.mp_reports mercadopago-reports || true
+          terraform import aws_s3_bucket.bank_payments bank-payments || true
+          terraform import aws_s3_bucket.telegram_receipts telegram-receipts || true
+          terraform import aws_s3_bucket.mp_transfers mercadopago-transfers || true
+
+          terraform import aws_s3_bucket_policy.mp_reports_policy mercadopago-reports || true
+          terraform import aws_s3_bucket_policy.market_tickets_policy market-tickets || true
+          terraform import aws_s3_bucket_policy.mp_transfers_policy mercadopago-transfers || true
+
+          API_ID=$(aws apigateway get-rest-apis --query "items[?name=='main-api'].id" --output text)
+
+          
+          if [ ! -z "$API_ID" ]; then
+
+            terraform import aws_api_gateway_stage.main_api_stage $API_ID/prod
+
+            terraform import aws_api_gateway_rest_api.main_api $API_ID || true
+            import_api_resource() {
+              local path_part="$1"
+              local terraform_resource_name="$2"
+              local resource_id=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/$path_part'].id" --output text)     
+              if [ ! -z "$resource_id" ]; then
+                terraform import aws_api_gateway_resource.${terraform_resource_name}_resource $API_ID/$resource_id || true
+                terraform import aws_api_gateway_method.${terraform_resource_name}_method $API_ID/$resource_id/POST || true
+                terraform import aws_api_gateway_integration.${terraform_resource_name}_integration $API_ID/$resource_id/POST || true
+              else
+                echo "  ⚠️ Resource /$path_part not found"
+              fi
+            }
+            import_api_resource "telegram_bot" "telegram_bot"
+            import_api_resource "mp_webhook" "mp_webhook"            
+          else
+            echo "⚠️ API Gateway 'main-api' not found"
+          fi
+
+          if [ ! -z "$API_ID" ]; then
+            import_api_resource() {
+              local path_part="$1"
+              local terraform_resource_name="$2"
+              local resource_id=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/$path_part'].id" --output text)   
+              if [ ! -z "$resource_id" ]; then
+                terraform import aws_api_gateway_resource.${terraform_resource_name}_resource $API_ID/$resource_id || true
+                terraform import aws_api_gateway_method.${terraform_resource_name}_method $API_ID/$resource_id/POST || true
+                terraform import aws_api_gateway_integration.${terraform_resource_name}_integration $API_ID/$resource_id/POST || true
+                terraform import aws_api_gateway_method_response.${terraform_resource_name}_response $API_ID/$resource_id/POST/200 || true
+                terraform import aws_api_gateway_integration_response.${terraform_resource_name}_integration_response $API_ID/$resource_id/POST/200 || true
+              else
+                echo "  ⚠️ Resource /$path_part not found"
+              fi
+            }
+            import_api_resource "market_pdf" "market_pdf"
+            import_api_resource "bank_pdf" "bank_pdf_extractor"
+          else
+            echo "⚠️ API Gateway 'main-api' not found"
+          fi
+          
+          terraform import aws_iam_policy.step_function_lambda_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_lambda_policy || true
+          terraform import aws_iam_policy.step_function_start_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_start_policy || true
+          terraform import aws_iam_policy.lambda_step_function_sync_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_step_function_sync_policy || true
+          terraform import aws_iam_policy.step_function_glue_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/step_function_glue_policy || true
+          terraform import aws_iam_policy.lambda_ecr_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_ecr_access || true
+          terraform import aws_iam_policy.lambda_bedrock_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_bedrock_access || true
+          terraform import aws_iam_policy.lambda_s3_access arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda_s3_access || true
+          terraform import aws_iam_policy.lambda_dynamo_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda-dynamo-gmail || true
+          terraform import aws_iam_policy.lambda_kms_policy arn:aws:iam::$TF_VAR_AWS_ACCOUNT_ID:policy/lambda-kms-access || true
+
+          terraform import aws_dynamodb_table.gmail_history gmail-history-tracker || true
+          terraform import aws_dynamodb_table.schema_cache schema_cache || true
+          terraform import aws_dynamodb_table.telegram_processed_messages telegram_processed_messages || true
+          terraform import aws_dynamodb_table.telegram_pending_tickets telegram_pending_tickets || true
+
+          # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
+          # terraform import aws_iam_role_policy.step_function_logging step_function_role:step_function_logging || true
+
+          # terraform import aws_iam_role_policy_attachment.lambda_s3 lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_s3_access || true
+          # terraform import aws_iam_role_policy_attachment.lambda_redshift lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_redshift_access || true
+          terraform import aws_iam_role_policy_attachment.lambda_bedrock lambda_exec/arn:aws:iam::${TF_VAR_AWS_ACCOUNT_ID}:policy/lambda_bedrock_access || true
+          # terraform import aws_iam_role_policy_attachment.lambda_basic lambda_exec/arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || true
+
+          terraform import aws_lambda_function.webhook_mp_report webhook_mp_report || true
+          terraform import aws_lambda_function.compensation_flow compensation_flow || true
+          terraform import aws_lambda_function.pdf_processor pdf_processor || true
+          terraform import aws_lambda_function.mp_report_extractor mp_report_extractor || true
+          terraform import aws_lambda_function.mp_report_processor mp_report_processor || true
+          terraform import aws_lambda_function.bank_payments_processor bank_payments_processor || true
+          terraform import aws_lambda_function.ai_agent ai_agent || true
+          terraform import aws_lambda_function.load_report_and_pdf load_report_and_pdf || true
+          terraform import aws_lambda_function.extract_data_gmail extract_data_gmail || true
+          terraform import aws_lambda_function.gmail_watcher gmail-watcher-renewer || true
+          terraform import aws_lambda_function.process_telegram_img process_telegram_img || true
+          terraform import aws_lambda_function.load_receipt_to_bq load_receipt_to_bq || true
+          terraform import aws_lambda_function.mp_transfers_processor mp_transfers_processor || true
+
+          # Lambda Permissions
+          terraform import aws_lambda_permission.allow_api_gateway_ai_agent ai_agent/AllowAPIGatewayInvokeAiAgent || true
+          terraform import aws_lambda_permission.allow_api_gateway_mp_webhook webhook_mp_report/AllowAPIGatewayInvokeMercadoPagoWebhook || true
+          terraform import aws_lambda_permission.allow_api_gateway_market_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeMarketMailDataExtractor || true
+          terraform import aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor || true
+          terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge || true
+
+          terraform import aws_iam_role.lambda_exec lambda_exec_role || true
+          terraform import aws_iam_role.step_function_role step_function_role || true
+          terraform import aws_iam_role.glue_service_role glue_service_role || true
+          terraform import aws_iam_role.api_gateway_role api_gateway_step_function_role || true       
+
+          terraform import aws_sfn_state_machine.pdf_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:pdf-etl-flow || true
+          terraform import aws_sfn_state_machine.mp_report_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-report-etl-flow || true
+          terraform import aws_sfn_state_machine.bank_payments_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:bank-payments-etl-flow || true
+          terraform import aws_sfn_state_machine.telegram_receipt_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:telegram-receipt-etl-flow || true
+          terraform import aws_sfn_state_machine.mp_transfers_etl_flow arn:aws:states:$TF_VAR_AWS_REGION:$TF_VAR_AWS_ACCOUNT_ID:stateMachine:mp-transfers-etl-flow || true
+
+          terraform import aws_glue_catalog_database.etl_database "$TF_VAR_AWS_ACCOUNT_ID:etl_database" || true
+          terraform import aws_glue_crawler.market_tickets_crawler market-tickets-crawler || true
+          terraform import aws_glue_crawler.mp_reports_crawler mp-reports-crawler || true
+          terraform import aws_glue_crawler.bank_payments_crawler bank-payments-crawler || true
+          terraform import aws_glue_crawler.mp_transfers_crawler mp-transfers-crawler || true
+
+          terraform import aws_glue_classifier.csv_classifier mercadopago_csv_classifier || true
+
+          terraform import aws_cloudwatch_log_group.etl_logs /aws/vendedlogs/states/etl-logs || true  
+          # terraform import aws_cloudwatch_metric_alarm.etl_step_function_pdf_failure etl-step-function-pdf-failure || true
+                    
+          terraform import aws_sns_topic.stepfunction_alerts arn:aws:sns:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stepfunction-alerts || true
+          SUB_ARN=$(aws sns list-subscriptions-by-topic \
+            --topic-arn arn:aws:sns:${TF_VAR_AWS_REGION}:${TF_VAR_AWS_ACCOUNT_ID}:stepfunction-alerts \
+            --query "Subscriptions[?Endpoint=='${TF_VAR_EMAIL}'].SubscriptionArn" \
+            --output text)
+
+          if [ -n "$SUB_ARN" ] && [ "$SUB_ARN" != "None" ]; then
+            echo "🔄 Importando suscripción SNS: $SUB_ARN"
+            terraform import aws_sns_topic_subscription.email_subscription $SUB_ARN || true
+          else
+            echo "⚠️ No se encontró suscripción SNS para ${TF_VAR_EMAIL}"
+          fi
+          
+          # Importar Service Account existente
+          terraform import google_service_account.pubsub_sa projects/$TF_VAR_GCP_PROJECT_ID/serviceAccounts/terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com || true
+
+          # Importar Topic existente
+          terraform import google_pubsub_topic.gmail_events projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events || true
+
+          # Importar Subscription existente
+          terraform import google_pubsub_subscription.gmail_subscription_market_tickets projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/market-tickets-sub-to-api-gateway || true
+          terraform import google_pubsub_subscription.gmail_subscription_bank_payments projects/$TF_VAR_GCP_PROJECT_ID/subscriptions/bank-payments-sub-to-api-gateway || true
+
+          # Importar IAM Binding del topic
+          terraform import google_pubsub_topic_iam_member.sa_publisher \
+          "projects/$TF_VAR_GCP_PROJECT_ID/topics/gmail-events roles/pubsub.publisher serviceAccount:terraform-sa@$TF_VAR_GCP_PROJECT_ID.iam.gserviceaccount.com" || true
+      
+      - name: Check GCP identity
+        run: gcloud auth list
+
+      - name: Terraform Apply
+        run: |
+          set -x
+          terraform apply -auto-approve
+
+      - name: Get Webhook URL
+        id: webhook
+        run: |
+          echo "🔍 Obteniendo URL del webhook..."
+          
+          # Usar terraform output -raw para obtener solo el valor
+          WEBHOOK_URL=$(terraform output -raw telegram_webhook_url 2>/dev/null)
+          echo "🔍 Raw: $WEBHOOK_URL"
+          
+          # 🛠️ FIX: Insertar /prod/ si falta (com// → com/prod/)
+          WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's|\.amazonaws\.com//|\.amazonaws\.com/prod/|')
+          
+          # ✅ Validate
+          if [[ ! "$WEBHOOK_URL" =~ ^https://.+telegram_bot$ ]]; then
+            echo "❌ FALLO: $WEBHOOK_URL"
+            exit 1
+          fi
+          
+          echo "✅ PERFECTA: $WEBHOOK_URL"
+          echo "webhook_url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
+
+      - name: Configure Telegram Webhook
+        run: |
+          set -x
+          URL="${{ steps.webhook.outputs.webhook_url }}"
+          TOKEN="${{ env.TF_VAR_TELEGRAM_BOT_TOKEN }}"
+          
+          echo "Setting Telegram webhook to: $URL"
+          
+          curl -X POST \
+            "https://api.telegram.org/bot$TOKEN/setWebhook" \
+            -H "Content-Type: application/json" \
+            -d "{\"url\": \"$URL\"}"
+          
+          echo "Webhook setup completed"
+              
+      - name: Verify Webhook
+        run: |
+          set -x
+          curl -X GET "https://api.telegram.org/bot${{ env.TF_VAR_TELEGRAM_BOT_TOKEN }}/getWebhookInfo" | jq .

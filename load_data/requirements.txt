@@ -1,0 +1,6 @@
+numpy==1.24.3
+pandas==2.0.3
+rapidfuzz==3.5.2
+google-cloud-bigquery==3.14.0
+google-auth==2.25.2
+pyarrow==14.0.1

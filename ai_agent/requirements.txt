@@ -1,0 +1,8 @@
+python-telegram-bot==20.3
+openai
+requests
+google-cloud-bigquery
+google-auth
+pandas==2.0.3
+pyarrow==14.0.1
+db-dtypes
