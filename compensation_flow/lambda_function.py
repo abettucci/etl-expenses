@@ -59,14 +59,49 @@ def cleanup_s3_temp_files(bucket_name, prefix):
 def lambda_handler(event, context):
     print(event)
     logger.info("Compensation flow triggered due to failure in ETL process.")
-    error_detail = json.dumps(event.get('error-info', {}))
-    logger.error(f"Compensation triggered due to: {error_detail}")
+    
+    # Extraer información del contexto
+    body = event.get('body', {})
+    etl_flow = body.get('etl_flow', event.get('etl_flow', 'UNKNOWN'))
+    bucket = body.get('bucket', event.get('bucket', 'N/A'))
+    key = body.get('key', event.get('key', 'N/A'))
+    
+    # Para MP Reports que tienen estructura diferente
+    file_name = event.get('file_name', key)
+    
+    error_info = event.get('error-info', {})
+    error_type = error_info.get('Error', 'Unknown Error')
+    error_cause = error_info.get('Cause', 'No details available')
+    
+    # Parsear el Cause si es JSON
+    try:
+        cause_parsed = json.loads(error_cause)
+        error_message = cause_parsed.get('errorMessage', error_cause)
+    except (json.JSONDecodeError, TypeError):
+        error_message = error_cause
+    
+    logger.error(f"Compensation triggered - ETL: {etl_flow}, File: {file_name}, Error: {error_type}")
+    
+    # Construir mensaje descriptivo
+    subject = f"ETL {etl_flow} Failed - {error_type}"
+    message = f"""🚨 Fallo en proceso ETL
+
+📋 ETL Flow: {etl_flow}
+📁 Archivo: {file_name}
+🪣 Bucket: {bucket}
+
+❌ Error: {error_type}
+📝 Detalle: {error_message}
+
+---
+Evento completo: {json.dumps(event, indent=2, default=str)[:1500]}
+"""
     
     # Enviar alerta SNS con detalle del error
     sns_client.publish(
         TopicArn=SNS_TOPIC_ARN,
-        Subject="ETL PDF Process Failed - Compensation Executed",
-        Message=f"Fallo en proceso ETL. Detalle: {error_detail}"
+        Subject=subject[:100],  # SNS subject max 100 chars
+        Message=message
     )
     
     # # Segun el tipo de error ejecutamos una funcion especifica de compensacion

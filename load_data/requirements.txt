@@ -4,3 +4,4 @@ rapidfuzz==3.5.2
 google-cloud-bigquery==3.14.0
 google-auth==2.25.2
 pyarrow==14.0.1
+openai>=1.0.0

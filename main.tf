@@ -65,6 +65,18 @@ variable "TELEGRAM_BOT_TOKEN" {
   sensitive   = true
 }
 
+variable "TELEGRAM_ALERT_CHAT_ID" {
+  description = "Chat ID de Telegram para alertas de presupuesto (opcional)"
+  type        = string
+  default     = ""
+}
+
+variable "ALERT_BUDGET_ARS" {
+  description = "Tope mensual en ARS para alerta (opcional; vacío desactiva el chequeo útil)"
+  type        = string
+  default     = ""
+}
+
 variable "OPENAI_API_KEY" {
   description = "OpenAI API Key"
   type        = string
@@ -137,6 +149,12 @@ resource "aws_s3_bucket" "mp_reports" {
 # 1.3 Bucket para Gastos con tarjetas del banco
 resource "aws_s3_bucket" "bank_payments" {
   bucket        = "bank-payments"
+  force_destroy = true
+}
+
+# 1.3.1 Bucket para Transferencias bancarias Santander
+resource "aws_s3_bucket" "bank_transfers" {
+  bucket        = "bank-transfers-santander-etl"
   force_destroy = true
 }
 
@@ -537,6 +555,28 @@ resource "aws_dynamodb_table" "gmail_pubsub_dedup" {
   }
 }
 
+# Tabla para prevenir loops de ETL: trackea cuántas veces falló el procesamiento de un email
+resource "aws_dynamodb_table" "gmail_etl_retry_guard" {
+  name           = "gmail-etl-retry-guard"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "message_id"
+
+  attribute {
+    name = "message_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "gmail-etl-retry-guard"
+    Env  = "prod"
+  }
+}
+
 resource "aws_dynamodb_table" "schema_cache" {
   name           = var.dynamodb_table_name
   billing_mode   = "PAY_PER_REQUEST"
@@ -620,7 +660,7 @@ resource "aws_lambda_function" "pdf_processor" {
 
   environment {
     variables = {
-      MARKET_BUCKET = aws_s3_bucket.market_tickets.bucket
+      MARKET_BUCKET_NAME = aws_s3_bucket.market_tickets.bucket
     }
   }
 }
@@ -676,12 +716,18 @@ resource "aws_lambda_function" "extract_data_gmail" {
       MARKET_BUCKET_NAME = aws_s3_bucket.market_tickets.bucket
       BANK_BUCKET_NAME   = aws_s3_bucket.bank_payments.bucket
       MP_TRANSFER_BUCKET_NAME = aws_s3_bucket.mp_transfers.bucket
+      BANK_TRANSFER_BUCKET_NAME = aws_s3_bucket.bank_transfers.bucket
       BANK_STEP_FUNCTION_ARN = aws_sfn_state_machine.bank_payments_etl_flow.arn
       MARKET_STEP_FUNCTION_ARN = aws_sfn_state_machine.pdf_etl_flow.arn
-      MP_TRANSFER_STEP_FUNCTION_ARN =  aws_sfn_state_machine.mp_transfers_etl_flow.arn
+      MP_TRANSFER_STEP_FUNCTION_ARN = aws_sfn_state_machine.mp_transfers_etl_flow.arn
+      BANK_TRANSFER_STEP_FUNCTION_ARN = aws_sfn_state_machine.bank_transfers_etl_flow.arn
       GCP_PROJECT_ID     = var.GCP_PROJECT_ID
       BQ_DATASET_PROD    = "PRD"
     }
+  }
+
+  lifecycle {
+    ignore_changes = [publish]
   }
 }
 
@@ -698,6 +744,7 @@ resource "aws_lambda_function" "bank_payments_processor" {
   environment {
     variables = {
       BANK_BUCKET = aws_s3_bucket.bank_payments.bucket
+      BANK_TRANSFER_BUCKET = aws_s3_bucket.bank_transfers.bucket
     }
   }
 }
@@ -719,6 +766,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
       BQ_DATASET_PROD    = "PRD"
       BQ_LOCATION        = "US"
       MP_REPORTS_BUCKET  = aws_s3_bucket.mp_reports.bucket
+      OPENAI_API_KEY     = var.OPENAI_API_KEY
     }
   }
 }
@@ -782,8 +830,55 @@ resource "aws_lambda_function" "ai_agent" {
       S3_BUCKET_TICKETS           = aws_s3_bucket.telegram_receipts.bucket
       S3_PREFIX_TICKETS           = "receipts/"
       RECEIPT_ETL_STATE_MACHINE   = aws_sfn_state_machine.telegram_receipt_etl_flow.arn
+      TELEGRAM_ALERT_CHAT_ID      = var.TELEGRAM_ALERT_CHAT_ID
+      ALERT_BUDGET_ARS            = var.ALERT_BUDGET_ARS
+      S3_PREFIX_EXPORTS           = "exports/"
+      EXPORT_MAX_ROWS             = "3000"
     }
   }
+}
+
+resource "aws_cloudwatch_event_rule" "ai_agent_budget_alert" {
+  name                = "ai-agent-budget-daily"
+  description         = "Chequeo diario de presupuesto mensual (gasto banco vs ALERT_BUDGET_ARS)"
+  schedule_expression = "cron(0 13 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "ai_agent_budget_alert" {
+  rule      = aws_cloudwatch_event_rule.ai_agent_budget_alert.name
+  target_id = "aiAgentBudget"
+  arn       = aws_lambda_function.ai_agent.arn
+  input     = jsonencode({ action = "alert_budget" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ai_agent_budget" {
+  statement_id  = "AllowExecutionFromEventBridgeBudget"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ai_agent_budget_alert.arn
+}
+
+# EventBridge rule para notificación diaria de comercios no mapeados (10:30 AR = 13:30 UTC)
+resource "aws_cloudwatch_event_rule" "ai_agent_unmapped_alert" {
+  name                = "ai-agent-unmapped-daily"
+  description         = "Notificación diaria de comercios pendientes de mapear"
+  schedule_expression = "cron(30 13 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "ai_agent_unmapped_alert" {
+  rule      = aws_cloudwatch_event_rule.ai_agent_unmapped_alert.name
+  target_id = "aiAgentUnmapped"
+  arn       = aws_lambda_function.ai_agent.arn
+  input     = jsonencode({ action = "alert_unmapped" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ai_agent_unmapped" {
+  statement_id  = "AllowExecutionFromEventBridgeUnmapped"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ai_agent_unmapped_alert.arn
 }
 
 # 4.11 Lambda para extraer datos de tickets con OCR (OpenAI Vision + TabScanner fallback)
@@ -999,7 +1094,9 @@ resource "aws_iam_policy" "lambda_s3_access" {
           "${aws_s3_bucket.mp_transfers.arn}/*",
           aws_s3_bucket.mp_transfers.arn,
           "${aws_s3_bucket.telegram_receipts.arn}/*",
-          aws_s3_bucket.telegram_receipts.arn
+          aws_s3_bucket.telegram_receipts.arn,
+          "${aws_s3_bucket.bank_transfers.arn}/*",
+          aws_s3_bucket.bank_transfers.arn
         ]
       }
     ]
@@ -1025,6 +1122,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
         Resource = [
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-history-tracker",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-pubsub-dedup",
+          "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/gmail-etl-retry-guard",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",
@@ -1388,16 +1486,19 @@ resource "aws_iam_policy" "lambda_step_function_sync_policy" {
           aws_sfn_state_machine.pdf_etl_flow.arn,
           aws_sfn_state_machine.mp_report_etl_flow.arn,
           aws_sfn_state_machine.mp_transfers_etl_flow.arn,
+          aws_sfn_state_machine.bank_transfers_etl_flow.arn,
           "${aws_sfn_state_machine.telegram_receipt_etl_flow.arn}:*",
           "${aws_sfn_state_machine.bank_payments_etl_flow.arn}:*",
           "${aws_sfn_state_machine.pdf_etl_flow.arn}:*",
           "${aws_sfn_state_machine.mp_report_etl_flow.arn}:*",
           "${aws_sfn_state_machine.mp_transfers_etl_flow.arn}:*",
+          "${aws_sfn_state_machine.bank_transfers_etl_flow.arn}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.telegram_receipt_etl_flow.name}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.bank_payments_etl_flow.name}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.pdf_etl_flow.name}:*",
           "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.mp_report_etl_flow.name}:*",
-          "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.mp_transfers_etl_flow.name}:*"
+          "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.mp_transfers_etl_flow.name}:*",
+          "arn:aws:states:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:execution:${aws_sfn_state_machine.bank_transfers_etl_flow.name}:*"
         ]
       }
     ]
@@ -1573,6 +1674,12 @@ resource "aws_sfn_state_machine" "pdf_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "TICKET",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
         End      = true
       }
     }
@@ -1653,6 +1760,10 @@ resource "aws_sfn_state_machine" "mp_report_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"    = "MP_REPORT",
+          "input.$"     = "$"
+        },
         End      = true
       }
     }
@@ -1695,7 +1806,9 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
         Type       = "Task",
         Resource   = aws_lambda_function.bank_payments_processor.arn,
         Parameters = {
-          "key.$" = "$.body.key"
+          "key.$"      = "$.body.key",
+          "etl_flow.$" = "$.body.etl_flow",
+          "bucket.$"   = "$.body.bucket"
         },
         Next  = "Load Gmail Bank Payments",
         Catch = [
@@ -1730,6 +1843,97 @@ resource "aws_sfn_state_machine" "bank_payments_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "BANK",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
+        End      = true
+      }
+    }
+  })
+}
+
+# Step Function para Transferencias Bancarias Santander
+resource "aws_sfn_state_machine" "bank_transfers_etl_flow" {
+  name     = "bank-transfers-etl-flow"
+  role_arn = aws_iam_role.step_function_role.arn
+
+  logging_configuration {
+    level                  = "ALL"
+    include_execution_data = true
+    log_destination        = "${aws_cloudwatch_log_group.etl_logs.arn}:*"
+  }
+
+  definition = jsonencode({
+    StartAt = "Check If Should Process",
+    States = {
+      # Step 1: Choice
+      "Check If Should Process" = {
+        Type = "Choice",
+        Choices = [
+          {
+            Variable      = "$.body.process",
+            BooleanEquals = true,
+            Next          = "Transform Bank Transfer"
+          }
+        ],
+        Default = "SkipProcessing"
+      },
+
+      "SkipProcessing" = {
+        Type = "Succeed"
+      },
+
+      # Step 2: Transform
+      "Transform Bank Transfer" = {
+        Type       = "Task",
+        Resource   = aws_lambda_function.bank_payments_processor.arn,
+        Parameters = {
+          "key.$"      = "$.body.key",
+          "etl_flow.$" = "$.body.etl_flow",
+          "bucket.$"   = "$.body.bucket"
+        },
+        Next  = "Load Bank Transfer",
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
+          }
+        ]
+      },
+
+      # Step 3: Load
+      "Load Bank Transfer" = {
+        Type       = "Task",
+        Resource   = aws_lambda_function.load_report_and_pdf.arn,
+        Parameters = {
+          "etl_flow.$" = "$.body.etl_flow",
+          "bucket.$"   = "$.body.bucket",
+          "key.$"      = "$.body.key"
+        },
+        End = true,
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            ResultPath  = "$.error-info",
+            Next        = "CompensationFlow"
+          }
+        ]
+      },
+
+      # Step compensatorio
+      "CompensationFlow" = {
+        Type     = "Task",
+        Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "BANK_TRANSFER",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
         End      = true
       }
     }
@@ -1806,6 +2010,12 @@ resource "aws_sfn_state_machine" "mp_transfers_etl_flow" {
       "CompensationFlow" = {
         Type     = "Task",
         Resource = "arn:aws:lambda:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:function:compensation_flow",
+        Parameters = {
+          "etl_flow"     = "MP_TRANSFER",
+          "key.$"        = "$.body.key",
+          "bucket.$"     = "$.body.bucket",
+          "error_info.$" = "$.error-info"
+        },
         End      = true
       }
     }

@@ -95,7 +95,7 @@ def fix_json_in_csv(content_str):
         fixed_lines.append(line)
     
     return '\n'.join(fixed_lines)
-
+    
 def move_to_processed(s3_client, file_key, bucket_name):
     destination_folder = 'processed/'
     try:

@@ -17,6 +17,7 @@
 /extract_data_gmail/purge_pubsub_messages.py
 /extract_data_gmail/purge_pubsub_messages.sh
 /extract_data_gmail/test_token.py
+/extract_data_gmail/process_label_history.py
 /ai_agent/lambda_agent_tools.py
 /ai_agent/lambda_glue_cache.py
 /ai_agent/lambda_rag_faiss.py
@@ -28,4 +29,13 @@ resumen_tarjeta_santander_amex.pdf
 resumen_tarjeta_santander_visa.pdf
 MIGRATION_SUMMARY.md
 QUICK_START.md
-leer_resumen_tarjeta.py
+LINKEDIN_POST.md
+LINKEDIN_POST2.md
+ai_agent/__pycache__/
+load_data/__pycache__/
+load_data/mapeo_comercios_mp_report.txt
+load_data/mapeo_comercios_bank.txt
+scripts/detectar_comercios_sin_mapear.py
+scripts/cargar_mapeos_inicial.py
+scripts/leer_resumen_tarjeta.py
+scripts/backfill_comercio_mapping.py

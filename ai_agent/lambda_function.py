@@ -1,13 +1,18 @@
 import os
+import io
+import csv
 import json
+import html
+import re
 import boto3
 import base64
 import requests
 import openai
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, date, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -29,6 +34,12 @@ BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 # S3 Configuration para imágenes de tickets
 S3_BUCKET_TICKETS = os.environ.get("S3_BUCKET_TICKETS", "telegram-receipts")
 S3_PREFIX_TICKETS = os.environ.get("S3_PREFIX_TICKETS", "receipts/")
+S3_PREFIX_EXPORTS = os.environ.get("S3_PREFIX_EXPORTS", "exports/")
+EXPORT_MAX_ROWS = int(os.environ.get("EXPORT_MAX_ROWS", "3000"))
+TELEGRAM_ALERT_CHAT_ID = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip()
+ALERT_BUDGET_ARS = os.environ.get("ALERT_BUDGET_ARS", "").strip()
+MAPPING_TABLE = os.environ.get("MAPPING_TABLE", "dim_comercio_mapping")
+UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
 
 # Step Function para ETL de tickets (Express - síncrona)
 RECEIPT_ETL_STATE_MACHINE = os.environ.get("RECEIPT_ETL_STATE_MACHINE", "")
@@ -45,6 +56,111 @@ DDB_TABLE = os.environ.get("DDB_TABLE", "schema_cache")
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))  # 7 días
 
 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+
+# Zona horaria para mostrar fechas de BigQuery en el chat
+_TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
+
+# Etiquetas legibles (español) para columnas frecuentes en respuestas Telegram
+_COLUMN_LABELS_ES = {
+    "COMERCIO": "Comercio",
+    "MONTO": "Monto",
+    "FECHA_PAGO": "Fecha de pago",
+    "HORA_PAGO": "Hora",
+    "TARJETA": "Tarjeta",
+    "DIVISA": "Divisa",
+    "TRANSACTION_DATE": "Fecha y hora",
+    "fecha_transaccion": "Fecha y hora",
+    "SETTLEMENT_NET_AMOUNT": "Monto",
+    "TRANSACTION_TYPE": "Tipo de operación",
+    "PAYMENT_METHOD": "Medio de pago",
+    "PAYMENT_METHOD_TYPE": "Tipo de medio",
+    "SETTLEMENT_CURRENCY": "Moneda",
+    "INSTALLMENTS": "Cuotas",
+    "producto": "Producto",
+    "categoria": "Categoría",
+    "monto_total": "Monto",
+    "nro_ticket": "Nº ticket",
+    "fecha": "Fecha",
+    "transaction_key": "ID transacción",
+    "extraido_de": "Fuente",
+    "detalles": "Detalle",
+}
+
+def _friendly_column_label(col_name: str) -> str:
+    if col_name in _COLUMN_LABELS_ES:
+        return _COLUMN_LABELS_ES[col_name]
+    lower = col_name.lower()
+    for k, v in _COLUMN_LABELS_ES.items():
+        if k.lower() == lower:
+            return v
+    return col_name.replace("_", " ").strip().title()
+
+def _looks_like_money_column(col_name: str) -> bool:
+    u = col_name.upper()
+    return any(
+        x in u
+        for x in ("MONTO", "AMOUNT", "PRECIO", "PRICE", "TOTAL", "NET", "SETTLEMENT")
+    )
+
+def _looks_like_date_column(col_name: str) -> bool:
+    u = col_name.upper()
+    return any(x in u for x in ("FECHA", "DATE", "TIME", "TIMESTAMP", "HORA"))
+
+def _format_number_ar(value: float) -> str:
+    s = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return s
+
+def _format_money_ar(value: float) -> str:
+    sign = "−" if value < 0 else ""
+    body = _format_number_ar(abs(value))
+    return f"{sign}$ {body}"
+
+def _format_datetime_for_chat(value) -> str:
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(_TZ_AR)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    return str(value)
+
+def _format_cell_for_chat(col_name: str, value) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, str) and not value.strip():
+        return "—"
+    if isinstance(value, str) and value.strip().upper() in ("NULL", "NONE", "NAN"):
+        return "—"
+
+    if isinstance(value, Decimal):
+        try:
+            value = float(value)
+        except Exception:
+            return html.escape(str(value))
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if _looks_like_money_column(col_name):
+            return _format_money_ar(float(value))
+        if isinstance(value, float):
+            return _format_number_ar(float(value))
+        return str(value)
+
+    if isinstance(value, datetime):
+        return _format_datetime_for_chat(value)
+    if isinstance(value, date):
+        return _format_datetime_for_chat(value)
+
+    s = str(value)
+    if _looks_like_date_column(col_name) and not _looks_like_money_column(col_name):
+        try:
+            if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", s):
+                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                return _format_datetime_for_chat(dt)
+        except Exception:
+            pass
+    return html.escape(s)
 
 # =============================================================================
 # METADATA ENRIQUECIDA DEL ESQUEMA - LA CLAVE PARA UN AGENTE INTELIGENTE
@@ -138,17 +254,26 @@ TABLE_METADATA = {
         }
     },
     "carrefour_data": {
-        "description": "Compras en supermercado Carrefour con detalle de productos",
+        "description": "Compras en supermercado Carrefour con detalle de productos (1 fila = 1 producto de 1 ticket)",
         "semantic_hints": [
             "Usar cuando pregunten por 'carrefour', 'supermercado', 'compras de comida'",
-            "Tiene detalle a nivel de producto individual",
-            "Cuando se pregunte por fechas, siempre convertir el campo FECHA con la funcion PARSE_DATE(%d/%m/%Y', FECHA)",
+            "Tiene detalle a nivel de producto individual: 1 ticket genera N filas (una por producto)",
+            "IMPORTANTE: esta tabla NO tiene columna COMERCIO/COMERCIO. TODAS las filas son de Carrefour - NO filtrar por comercio en esta tabla",
+            "Para sumar el gasto total: usar SUM(monto_total) (suma por producto). NO usar SUM(total_ticket_bruto) porque está repetido en cada producto del ticket y daría double-counting",
+            "Para contar tickets distintos: COUNT(DISTINCT nro_ticket)",
+            "El campo fecha es STRING en formato dd/mm/yyyy. SIEMPRE convertir con PARSE_DATE('%d/%m/%Y', fecha). NO usar SAFE_CAST(fecha AS DATE) - falla con este formato",
         ],
         "columns": {
             "fecha": {
                 "type": "STRING",
-                "description": "Fecha de la compra",
-                "example": "2024-11-15"
+                "format": "dd/mm/yyyy",
+                "description": "Fecha de la compra. Convertir con PARSE_DATE('%d/%m/%Y', fecha)",
+                "example": "14/05/2026"
+            },
+            "nro_ticket": {
+                "type": "STRING",
+                "description": "Número de ticket. Útil para COUNT(DISTINCT nro_ticket) cuando se quiere contar compras (no productos).",
+                "example": "0123-456789"
             },
             "producto": {
                 "type": "STRING",
@@ -268,6 +393,43 @@ TABLE_METADATA = {
                 "example" : "3950.0"
             }
         }
+    },
+    "dim_comercio_mapping": {
+        "description": "Tabla de mapeo de nombres CRUDOS de comercios (como aparecen en bank_payments.COMERCIO o mp_data) a nombres LIMPIOS y categorías. USAR SIEMPRE para filtrar por comercio.",
+        "semantic_hints": [
+            "CRÍTICO: cuando el usuario pregunte por un comercio específico (ej: 'cabify', 'rappi', 'mcdonalds') NUNCA filtres con WHERE COMERCIO = 'X' o LIKE '%X%' sobre bank_payments directamente. El nombre crudo del banco es algo como 'CABIFY*RIDE' o 'HIPER CARREFOU 0123' y nunca matchea.",
+            "En cambio, hacer JOIN con dim_comercio_mapping usando: ON m.flow = 'bank_payments' AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')",
+            "Luego filtrar: WHERE UPPER(m.comercio_depurado) = UPPER('NombreComercio')",
+            "Valores válidos de flow: 'bank_payments', 'bank_transfers', 'mp_data', 'mp_transfer_data', 'carrefour_data', 'supermarket_receipts'. NUNCA usar 'bank' ni 'mp'.",
+            "NUNCA usar m.match_value ni REGEXP_REPLACE en el JOIN — usar UPPER(m.comercio_raw)"
+        ],
+        "columns": {
+            "flow": {
+                "type": "STRING",
+                "description": "Origen del mapeo. Valores válidos: 'bank_payments' | 'bank_transfers' | 'mp_data' | 'mp_transfer_data' | 'carrefour_data' | 'supermarket_receipts'",
+                "example": "bank_payments"
+            },
+            "comercio_raw": {
+                "type": "STRING",
+                "description": "Fragmento del nombre crudo del comercio a buscar. Usar con: UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')",
+                "example": "CABIFY"
+            },
+            "comercio_depurado": {
+                "type": "STRING",
+                "description": "Nombre LIMPIO del comercio. Filtrar por este campo cuando el usuario menciona un comercio.",
+                "example": "Cabify"
+            },
+            "categoria": {
+                "type": "STRING",
+                "description": "Categoría de gasto",
+                "example": "Transporte"
+            },
+            "subcategoria": {
+                "type": "STRING",
+                "description": "Subcategoría",
+                "example": "Ride"
+            }
+        }
     }
 }
 
@@ -297,6 +459,33 @@ SQL_EXAMPLES = """
     GROUP BY COMERCIO
     ORDER BY total DESC
     LIMIT 20
+
+    4. Pregunta: "¿Cuánto gasté este mes en Cabify?" (o cualquier comercio específico que NO sea Carrefour)
+    SQL:
+    SELECT SUM(CAST(b.MONTO AS FLOAT64)) AS total_gasto
+    FROM `{project}.{dataset}.bank_payments` b
+    JOIN `{project}.{dataset}.dim_comercio_mapping` m
+      ON m.flow = 'bank_payments'
+     AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
+    WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
+      AND PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) >= DATE_ADD(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 0 MONTH)
+
+    5. Pregunta: "Dame el detalle de mis últimos gastos en Cabify"
+    SQL:
+    SELECT b.FECHA_PAGO, b.COMERCIO, CAST(b.MONTO AS FLOAT64) AS monto, m.comercio_depurado
+    FROM `{project}.{dataset}.bank_payments` b
+    JOIN `{project}.{dataset}.dim_comercio_mapping` m
+      ON m.flow = 'bank_payments'
+     AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
+    WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
+    ORDER BY PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) DESC
+    LIMIT 20
+
+    6. Pregunta: "¿Cuánto gasté este mes en Carrefour?" (Carrefour es CASO ESPECIAL: tiene su propia tabla con detalle de productos)
+    SQL:
+    SELECT ROUND(SUM(monto_total), 2) AS total_gasto, COUNT(DISTINCT nro_ticket) AS tickets
+    FROM `{project}.{dataset}.carrefour_data`
+    WHERE PARSE_DATE('%d/%m/%Y', fecha) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
 """
 
 # --- Clientes AWS/GCP ---
@@ -1432,7 +1621,18 @@ REGLAS CRÍTICAS:
 4. Para campos MONTO tipo STRING, SIEMPRE usar: CAST(MONTO AS FLOAT64)
 5. Usa fechas relativas (CURRENT_DATE(), DATE_SUB, DATE_TRUNC)
 6. LIMIT 20 siempre
-7. Devuelve SOLO el SQL, sin explicaciones ni markdown"""
+
+FILTRADO POR COMERCIO (MUY IMPORTANTE):
+7. NUNCA filtres por nombre de comercio con `WHERE COMERCIO = 'X'` ni con `LIKE '%X%'` directo sobre bank_payments o mp_data. Los nombres crudos del banco son raros (ej: 'CABIFY*RIDE', 'DLOCAL*RAPPI', 'HIPER CARREFOU 0123') y nunca matchean con lo que escribe el usuario.
+8. Cuando el usuario mencione un comercio específico (Cabify, Rappi, McDonalds, Uber, etc.) SIEMPRE hacé JOIN con dim_comercio_mapping usando ESTE patrón exacto:
+   JOIN dim_comercio_mapping m ON m.flow = 'bank_payments' AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
+   Luego filtrá: WHERE UPPER(m.comercio_depurado) = UPPER('NombreComercio')
+   Valores válidos de flow: 'bank_payments', 'bank_transfers', 'mp_data', 'mp_transfer_data', 'carrefour_data', 'supermarket_receipts'
+   NUNCA uses flow = 'bank' ni flow = 'mp'. NUNCA uses m.match_value ni REGEXP_REPLACE. Ver ejemplos 4 y 5.
+9. EXCEPCIÓN: si el comercio es "Carrefour" o "supermercado Carrefour", usar la tabla carrefour_data directamente (NO hace falta JOIN ni filtro por comercio porque toda la tabla es Carrefour). Ver ejemplo 6.
+10. carrefour_data NO tiene columna COMERCIO. Para sumar gasto usar SUM(monto_total). El campo fecha es dd/mm/yyyy → usar PARSE_DATE('%d/%m/%Y', fecha), NUNCA SAFE_CAST(fecha AS DATE).
+
+11. Devuelve SOLO el SQL, sin explicaciones ni markdown"""
 
         user_prompt = f"""
 ESQUEMA DETALLADO DE LAS TABLAS:
@@ -1496,8 +1696,9 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
             3. Las tablas deben referenciarse como: `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.nombre_tabla`
             4. Si la pregunta es sobre gastos del banco/santander, usa la tabla bank_payments.
             5. Si la pregunta es sobre transacciones/pagos a través de mercado pago, usa la tabla mp_data.
-            6. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data.
+            6. Si la pregunta es sobre gastos del supermercado/carrefour, usa la tabla carrefour_data (esta tabla NO tiene columna COMERCIO; toda la tabla es Carrefour; el campo fecha es dd/mm/yyyy, usar PARSE_DATE('%d/%m/%Y', fecha)).
             7. Para información de productos, usa dim_producto y haz JOIN con carrefour_data si es necesario.
+            7b. Cuando el usuario filtre por un comercio específico (NO Carrefour) - ej: Cabify, Rappi, McDonalds - hacer JOIN bank_payments con dim_comercio_mapping ON m.flow = 'bank_payments' AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%'), y filtrar por UPPER(m.comercio_depurado) = UPPER('X'). Valores válidos de flow: 'bank_payments', 'bank_transfers', 'mp_data', 'mp_transfer_data', 'carrefour_data', 'supermarket_receipts'. NUNCA usar flow = 'bank' ni m.match_value ni REGEXP_REPLACE. NUNCA usar WHERE COMERCIO = 'X' directo.
             8. Limita los resultados a máximo 20 filas con LIMIT 20.
             9. Para filtros de fecha, usa funciones de BigQuery como DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH).
             10. No uses fechas hardcodeadas, usa funciones relativas (CURRENT_DATE(), DATE_SUB, etc).
@@ -1552,70 +1753,82 @@ def validate_sql_dry_run(client, sql: str) -> tuple:
         print(f"❌ Dry-run falló: {error_msg}")
         return False, error_msg
 
-def query_bigquery(client, sql: str) -> str:
-    """Ejecuta query en BigQuery y retorna resultados formateados"""
+def query_bigquery(client, sql: str) -> tuple:
+    """Ejecuta query en BigQuery. Retorna (texto, parse_mode) con parse_mode \"HTML\" si hay tabla formateada."""
     try:
         print(f"🔍 Ejecutando query en BigQuery:\n{sql}")
         
         # Primero validar con dry-run
         is_valid, validation_error = validate_sql_dry_run(client, sql)
         if not is_valid:
-            return f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}"
+            return (
+                f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}",
+                False,
+            )
         
         query_job = client.query(sql)
         results = query_job.result()  # Espera a que termine
         
         # Verificar si hay resultados
         if results.total_rows == 0:
-            return "ℹ️ No se encontraron resultados para tu consulta."
+            return ("ℹ️ No se encontraron resultados para tu consulta.", False)
         
-        return format_bigquery_results(results)
+        return (format_bigquery_results(results), "HTML")
         
     except Exception as e:
         error_msg = f"❌ Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
         print(error_msg)  # Debug en CloudWatch
-        return error_msg
+        return (error_msg, False)
 
 def format_bigquery_results(results) -> str:
-    """Formatea resultados de BigQuery para mostrar en Telegram"""
-    formatted_lines = []
-    
-    # Obtener nombres de columnas
+    """Formatea resultados de BigQuery para Telegram (HTML, legible en español)."""
     columns = [field.name for field in results.schema]
-    
-    # Procesar cada fila
-    for row in results:
-        formatted_lines.append("---")
+    rows = list(results)
+    n = len(rows)
+    if n == 0:
+        return "ℹ️ No se encontraron filas."
+
+    def row_block(row, index=None) -> str:
+        parts = []
+        if index is not None:
+            parts.append(f"<b>{index}.</b>")
         for col_name in columns:
-            value = row[col_name]
-            
-            # Formatear según el tipo de dato
-            if value is None:
-                formatted_value = "NULL"
-            elif isinstance(value, (int, float)):
-                if isinstance(value, float):
-                    rounded = round(value, 2)
-                    formatted_value = f"{rounded:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                else:
-                    formatted_value = f"{value:,}".replace(",", ".")
-            elif isinstance(value, bool):
-                formatted_value = "Sí" if value else "No"
+            label = _friendly_column_label(col_name)
+            raw = row[col_name]
+            if isinstance(raw, bool):
+                disp = "Sí" if raw else "No"
             else:
-                formatted_value = str(value)
-            
-            formatted_lines.append(f"*{col_name}:* {formatted_value}")
-    
-    return "📊 *Resultados:*\n" + "\n".join(formatted_lines)
+                disp = _format_cell_for_chat(col_name, raw)
+            parts.append(f"• <b>{html.escape(label)}:</b> {disp}")
+        return "\n".join(parts)
+
+    if n == 1:
+        body = row_block(rows[0], None)
+        title = "📌 <b>Resultado</b>"
+        footer = f"<i>1 fila · columnas: {len(columns)}</i>"
+    else:
+        blocks = []
+        for i, row in enumerate(rows, start=1):
+            blocks.append(row_block(row, i))
+        body = "\n\n".join(blocks)
+        title = f"📊 <b>Resultados</b> <i>({n} filas)</i>"
+        footer = f"<i>Mostrando {n} filas</i>"
+
+    out = f"{title}\n\n{body}\n\n{footer}"
+    max_len = 4000
+    if len(out) > max_len:
+        out = out[: max_len - 40] + "\n\n<i>… (mensaje truncado; acotá la consulta o pedí menos filas)</i>"
+    return out
 
 def handle_message(text: str, bq_client) -> tuple:
-    """Maneja el mensaje del usuario y retorna SQL y respuesta"""
+    """Maneja el mensaje del usuario. Retorna (sql, respuesta, parse_mode) — parse_mode False = texto plano."""
     question = text
     
     # Generar SQL con el nuevo sistema mejorado
     sql = generate_sql_with_openai2(question, bq_client)
     
     if not sql:
-        return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta."
+        return "", "❌ No se pudo generar la consulta SQL. Por favor, intenta con otra pregunta.", False
     
     # Validar primero con dry-run
     is_valid, validation_error = validate_sql_dry_run(bq_client, sql)
@@ -1629,11 +1842,11 @@ def handle_message(text: str, bq_client) -> tuple:
             is_valid, _ = validate_sql_dry_run(bq_client, sql)
     
     if not is_valid:
-        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}"
+        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}", False
     
-    response = query_bigquery(bq_client, sql)
+    response, parse_mode = query_bigquery(bq_client, sql)
     
-    return sql, response
+    return sql, response, parse_mode
 
 def retry_sql_generation(question: str, failed_sql: str, error: str, bq_client) -> str:
     """Intenta regenerar la SQL corrigiendo el error"""
@@ -1677,22 +1890,158 @@ Devuelve SOLO el SQL corregido, sin explicaciones."""
         print(f"❌ Error en retry: {e}")
         return ""
 
-def send_telegram_message(chat_id, text, token, parse_mode="Markdown"):
-    """Envía mensaje a Telegram con soporte para formato Markdown"""
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode
+def bq_fqn(table_name: str) -> str:
+    return f"`{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{table_name}`"
+
+def sql_quick_ultimo_gasto() -> str:
+    return f"""
+WITH ultimos AS (
+  SELECT
+    PARSE_DATE('%d/%m/%Y', FECHA_PAGO) AS fecha,
+    COMERCIO AS comercio,
+    CAST(MONTO AS FLOAT64) AS monto,
+    DIVISA AS divisa,
+    'bank_payments' AS extraido_de
+  FROM {bq_fqn("bank_payments")}
+  WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) IS NOT NULL
+
+  UNION ALL
+
+  SELECT
+    DATE(TIMESTAMP(TRANSACTION_DATE)) AS fecha,
+    COALESCE(PAYMENT_METHOD, TRANSACTION_TYPE) AS comercio,
+    CAST(SETTLEMENT_NET_AMOUNT AS FLOAT64) AS monto,
+    'ARS' AS divisa,
+    'mp_data' AS extraido_de
+  FROM {bq_fqn("mp_data")}
+  WHERE TRANSACTION_DATE IS NOT NULL AND CAST(TRANSACTION_DATE AS STRING) != ''
+
+  UNION ALL
+
+  SELECT
+    PARSE_DATE('%d/%m/%Y', fecha) AS fecha,
+    'Carrefour' AS comercio,
+    ROUND(SUM(monto_total), 2) AS monto,
+    'ARS' AS divisa,
+    'carrefour_data' AS extraido_de
+  FROM {bq_fqn("carrefour_data")}
+  WHERE PARSE_DATE('%d/%m/%Y', fecha) IS NOT NULL
+  GROUP BY fecha, nro_ticket
+)
+SELECT
+  FORMAT_DATE('%d/%m/%Y', fecha) AS FECHA_PAGO,
+  comercio AS COMERCIO,
+  monto AS MONTO,
+  divisa AS DIVISA,
+  extraido_de
+FROM ultimos
+ORDER BY fecha DESC, monto DESC
+LIMIT 1
+"""
+
+def sql_quick_ultimo_mp() -> str:
+    return f"""
+SELECT
+  TIMESTAMP(TRANSACTION_DATE) AS fecha_transaccion,
+  CAST(SETTLEMENT_NET_AMOUNT AS FLOAT64) AS monto,
+  TRANSACTION_TYPE,
+  PAYMENT_METHOD,
+  'mp_data' AS extraido_de,
+  CAST(SOURCE_ID AS STRING) AS transaction_key
+FROM {bq_fqn("mp_data")}
+WHERE TRANSACTION_DATE IS NOT NULL AND CAST(TRANSACTION_DATE AS STRING) != ''
+ORDER BY TIMESTAMP(TRANSACTION_DATE) DESC
+LIMIT 1
+"""
+
+def sql_quick_mes() -> str:
+    return f"""
+SELECT 'Banco (tarjeta)' AS fuente,
+  ROUND(SUM(CAST(MONTO AS FLOAT64)), 2) AS total_ars,
+  COUNT(*) AS movimientos
+FROM {bq_fqn("bank_payments")}
+WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+UNION ALL
+SELECT 'Carrefour (detalle productos)' AS fuente,
+  ROUND(SUM(monto_total), 2) AS total_ars,
+  COUNT(DISTINCT nro_ticket) AS movimientos
+FROM {bq_fqn("carrefour_data")}
+WHERE PARSE_DATE('%d/%m/%Y', fecha) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+"""
+
+def sql_quick_ultimos5_banco() -> str:
+    return f"""
+SELECT COMERCIO, MONTO, FECHA_PAGO
+FROM {bq_fqn("bank_payments")}
+WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) IS NOT NULL
+ORDER BY PARSE_DATE('%d/%m/%Y', FECHA_PAGO) DESC
+LIMIT 5
+"""
+
+def sql_quick_mes_carrefour() -> str:
+    return f"""
+SELECT
+  COUNT(DISTINCT nro_ticket) AS tickets_distintos,
+  ROUND(SUM(monto_total), 2) AS total_mes_ars
+FROM {bq_fqn("carrefour_data")}
+WHERE PARSE_DATE('%d/%m/%Y', fecha) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+"""
+
+QUICK_SQL = {
+    "ultimo_gasto": sql_quick_ultimo_gasto,
+    "ultimo_mp": sql_quick_ultimo_mp,
+    "mes": sql_quick_mes,
+    "ultimos5_banco": sql_quick_ultimos5_banco,
+    "mes_carrefour": sql_quick_mes_carrefour,
+}
+
+def quick_actions_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Último gasto (banco)", "callback_data": "q:ultimo_gasto"},
+                {"text": "Último MP", "callback_data": "q:ultimo_mp"},
+            ],
+            [
+                {"text": "Mes actual (resumen)", "callback_data": "q:mes"},
+                {"text": "Últimos 5 · banco", "callback_data": "q:ultimos5_banco"},
+            ],
+            [{"text": "Mes actual · Carrefour", "callback_data": "q:mes_carrefour"}],
+        ]
     }
+
+def run_quick_sql_key(key: str, bq_client) -> tuple:
+    builder = QUICK_SQL.get(key)
+    if not builder:
+        return "", f"❌ Acción rápida desconocida: {key}", False
+    sql = builder().strip()
+    return (sql,) + query_bigquery(bq_client, sql)
+
+def telegram_answer_callback(callback_query_id: str, text: str = None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text[:200]
+    try:
+        requests.post(url, json=payload, timeout=10).raise_for_status()
+    except Exception as e:
+        print(f"answerCallbackQuery: {e}")
+
+def send_telegram_message(chat_id, text, token, parse_mode="Markdown", reply_markup=None):
+    """Envía mensaje a Telegram. parse_mode=False omite formato (texto plano). HTML/Markdown según valor."""
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode is not False and parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
-        # Si falla con Markdown, intentar sin formato
-        if parse_mode:
+        if parse_mode is not False and parse_mode:
             print("🔄 Reintentando sin parse_mode...")
             payload.pop("parse_mode", None)
             try:
@@ -1703,14 +2052,421 @@ def send_telegram_message(chat_id, text, token, parse_mode="Markdown"):
                 print(f"Error en reintento: {e2}")
         return None
 
+def send_telegram_document(chat_id, file_bytes: bytes, filename: str, caption: str, token: str):
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    try:
+        files = {"document": (filename, file_bytes, "text/csv")}
+        data = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        r = requests.post(url, data=data, files=files, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"Error sendDocument: {e}")
+        return None
+
+def query_bigquery_to_csv_bytes(bq_client, sql: str) -> tuple:
+    """Ejecuta SQL y devuelve (bytes_csv, num_filas) o (None, 0) si error."""
+    try:
+        is_valid, err = validate_sql_dry_run(bq_client, sql)
+        if not is_valid:
+            return None, 0
+        job = bq_client.query(sql)
+        it = job.result()
+        rows = list(it)
+        if not rows:
+            return b"", 0
+        cols = [k for k in rows[0].keys()]
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(cols)
+        for row in rows:
+            w.writerow([row[c] for c in cols])
+        return buf.getvalue().encode("utf-8"), len(rows)
+    except Exception as e:
+        print(f"query_bigquery_to_csv_bytes: {e}")
+        return None, 0
+
+def export_table_csv(chat_id: str, table_key: str, bq_client, token: str) -> bool:
+    """table_key: bank | carrefour | mp"""
+    table_key = (table_key or "bank").lower().strip()
+    tables = {"bank": "bank_payments", "carrefour": "carrefour_data", "mp": "mp_data"}
+    tname = tables.get(table_key, "bank_payments")
+    sql = f"SELECT * FROM {bq_fqn(tname)} LIMIT {EXPORT_MAX_ROWS}"
+    data, n = query_bigquery_to_csv_bytes(bq_client, sql)
+    if data is None:
+        send_telegram_message(chat_id, "❌ No se pudo exportar (error en la consulta).", token, parse_mode=False)
+        return False
+    if n == 0:
+        send_telegram_message(chat_id, "ℹ️ No hay filas para exportar.", token, parse_mode=False)
+        return False
+    fname = f"{tname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    try:
+        s3 = boto3.client("s3")
+        key = f"{S3_PREFIX_EXPORTS.rstrip('/')}/{chat_id}/{fname}"
+        s3.put_object(Bucket=S3_BUCKET_TICKETS, Key=key, Body=data, ContentType="text/csv")
+    except Exception as e:
+        print(f"S3 put export (opcional): {e}")
+    cap = f"Export {tname}: {n} filas (máx. {EXPORT_MAX_ROWS})"
+    send_telegram_document(chat_id, data, fname, cap, token)
+    return True
+
+def handle_telegram_callback(data: dict, bq_client) -> dict:
+    cq = data.get("callback_query") or {}
+    cq_id = cq.get("id")
+    chat_id = cq.get("message", {}).get("chat", {}).get("id")
+    raw = (cq.get("data") or "").strip()
+    if not chat_id or not cq_id:
+        return {"statusCode": 200}
+    telegram_answer_callback(cq_id, "Listo")
+    if raw.startswith("q:"):
+        key = raw[2:]
+        sql_txt, response_text, result_parse_mode = run_quick_sql_key(key, bq_client)
+        print(f"Callback quick SQL {key}: {sql_txt[:120] if sql_txt else ''}...")
+        pm = result_parse_mode if result_parse_mode in ("HTML", False) else "Markdown"
+        send_telegram_message(
+            chat_id,
+            response_text,
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=pm,
+            reply_markup=quick_actions_keyboard(),
+        )
+    return {"statusCode": 200}
+
+def run_monthly_budget_alert(event, context) -> dict:
+    """Invocación programada (EventBridge) o manual: avisa si el gasto del mes en banco supera el tope."""
+    if not TELEGRAM_ALERT_CHAT_ID or not ALERT_BUDGET_ARS:
+        print("Alertas presupuesto: TELEGRAM_ALERT_CHAT_ID o ALERT_BUDGET_ARS no configurados.")
+        return {"statusCode": 200}
+    try:
+        budget = float(ALERT_BUDGET_ARS.replace(",", "."))
+    except ValueError:
+        print("ALERT_BUDGET_ARS inválido")
+        return {"statusCode": 200}
+    try:
+        bq_client = get_bigquery_client()
+        sql = f"""
+        SELECT ROUND(SUM(CAST(MONTO AS FLOAT64)), 2) AS total_ars
+        FROM {bq_fqn("bank_payments")}
+        WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+        """
+        job = bq_client.query(sql)
+        rows = list(job.result())
+        total = float(rows[0]["total_ars"] or 0) if rows else 0.0
+    except Exception as e:
+        print(f"Alerta presupuesto query: {e}")
+        return {"statusCode": 200}
+    chat_id = int(TELEGRAM_ALERT_CHAT_ID)
+    if total > budget:
+        msg = (
+            f"⚠️ *Alerta de presupuesto*\n\n"
+            f"Gasto acumulado del mes (banco/tarjeta): *{total:.2f}* ARS\n"
+            f"Tope configurado: *{budget:.2f}* ARS\n\n"
+            f"Superaste el límite configurado."
+        )
+        send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="Markdown")
+    else:
+        print(f"Presupuesto OK: gasto mes {total} <= {budget}")
+    return {"statusCode": 200}
+
+
+def run_daily_unmapped_alert(event, context) -> dict:
+    """
+    Notificación diaria de comercios no mapeados.
+    Invocada por EventBridge con action="alert_unmapped" o source="aws.events".
+    Envía al chat configurado los top N comercios pendientes de mapear.
+    """
+    if not TELEGRAM_ALERT_CHAT_ID:
+        print("Alerta unmapped: TELEGRAM_ALERT_CHAT_ID no configurado.")
+        return {"statusCode": 200}
+    
+    try:
+        bq_client = get_bigquery_client()
+        chat_id = int(TELEGRAM_ALERT_CHAT_ID)
+        
+        # Consultar comercios no mapeados agrupados por flow
+        sql = f"""
+        SELECT 
+            flow,
+            comercio_raw,
+            COUNT(*) AS apariciones,
+            MAX(ins_dttm) AS last_seen
+        FROM {bq_fqn(UNMAPPED_TABLE)}
+        WHERE IFNULL(resolved, FALSE) = FALSE
+          AND IFNULL(comercio_normalizado, '') != ''
+        GROUP BY flow, comercio_raw
+        ORDER BY apariciones DESC, last_seen DESC
+        LIMIT 10
+        """
+        
+        job = bq_client.query(sql)
+        rows = list(job.result())
+        
+        if not rows:
+            print("No hay comercios pendientes de mapear.")
+            return {"statusCode": 200}
+        
+        # Contar totales por flow
+        count_sql = f"""
+        SELECT 
+            flow,
+            COUNT(DISTINCT comercio_raw) AS total_pendientes
+        FROM {bq_fqn(UNMAPPED_TABLE)}
+        WHERE IFNULL(resolved, FALSE) = FALSE
+          AND IFNULL(comercio_normalizado, '') != ''
+        GROUP BY flow
+        """
+        count_job = bq_client.query(count_sql)
+        count_rows = list(count_job.result())
+        totals_by_flow = {r["flow"]: int(r["total_pendientes"]) for r in count_rows}
+        total_pendientes = sum(totals_by_flow.values())
+        
+        # Construir mensaje
+        lines = [
+            "🧩 <b>Comercios pendientes de mapear</b>",
+            f"<i>Total: {total_pendientes} comercios sin clasificar</i>",
+            ""
+        ]
+        
+        # Mostrar totales por flow
+        for flow, count in totals_by_flow.items():
+            flow_label = "Banco" if flow == "bank_payments" else "Mercado Pago" if flow == "mp_data" else flow
+            lines.append(f"• <b>{flow_label}:</b> {count} pendientes")
+        
+        lines.append("")
+        lines.append("<b>Top 10 más frecuentes:</b>")
+        
+        for i, r in enumerate(rows, start=1):
+            flow_short = "🏦" if r["flow"] == "bank_payments" else "💳" if r["flow"] == "mp_data" else "❓"
+            comercio = html.escape(str(r["comercio_raw"]))
+            apariciones = int(r["apariciones"])
+            lines.append(f"{i}. {flow_short} <code>{comercio}</code> (x{apariciones})")
+        
+        lines.append("")
+        lines.append("<i>Usá /pendientes_comercio para ver más</i>")
+        lines.append("<i>Usá /mapear_comercio flow|match|depurado|cat|subcat</i>")
+        
+        msg = "\n".join(lines)
+        send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+        
+        print(f"Alerta unmapped enviada: {total_pendientes} comercios pendientes")
+        return {"statusCode": 200}
+        
+    except Exception as e:
+        print(f"Error en alerta unmapped: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"statusCode": 200}
+
+def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> str:
+    where_flow = ""
+    if flow and flow.lower() != "all":
+        where_flow = "AND flow = @flow"
+    q = f"""
+    SELECT flow, comercio_raw, COUNT(*) AS apariciones, MAX(ins_dttm) AS last_seen
+    FROM {bq_fqn(UNMAPPED_TABLE)}
+    WHERE IFNULL(resolved, FALSE) = FALSE
+      AND IFNULL(comercio_normalizado, '') != ''
+      {where_flow}
+    GROUP BY flow, comercio_raw
+    ORDER BY apariciones DESC, last_seen DESC
+    LIMIT @lim
+    """
+    params = [bigquery.ScalarQueryParameter("lim", "INT64", limit)]
+    if flow and flow.lower() != "all":
+        params.append(bigquery.ScalarQueryParameter("flow", "STRING", flow))
+    cfg = bigquery.QueryJobConfig(query_parameters=params)
+    rows = list(bq_client.query(q, job_config=cfg).result())
+    if not rows:
+        return "✅ No hay comercios pendientes de mapear."
+    lines = ["🧩 <b>Comercios pendientes</b>"]
+    for i, r in enumerate(rows, start=1):
+        lines.append(
+            f"{i}. <b>{html.escape(r['flow'])}</b> · {html.escape(str(r['comercio_raw']))} "
+            f"(x{int(r['apariciones'])})"
+        )
+    lines.append(
+        "\n<i>Usá:</i> /mapear_comercio flow|match_value|comercio_depurado|categoria|subcategoria"
+    )
+    return "\n".join(lines)
+
+def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str, match_type: str = "contains", comercio_raw: str = None):
+    """
+    Guarda un mapeo en dim_comercio_mapping y marca los pendientes como resueltos.
+    
+    NOTA: Las tablas de hechos (bank_payments, mp_data, etc.) NO tienen columnas
+    de categoria/subcategoria. El mapeo se aplica:
+    - Durante el ETL (load_data) para nuevos registros
+    - En tiempo de consulta con JOIN a dim_comercio_mapping
+    
+    Args:
+        flow: 'bank_payments', 'mp_data', 'mp_transfer_data', 'supermarket_receipts'
+        match_value: texto a matchear (se normaliza automáticamente)
+        comercio_depurado: nombre limpio del comercio
+        categoria: categoría principal
+        subcategoria: subcategoría
+        match_type: 'contains' (default), 'exact', 'regex', 'fuzzy', 'fuzzy:85'
+        comercio_raw: texto original del comercio (opcional, para referencia)
+    """
+    flow = flow.strip()
+    match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
+    if not match_norm:
+        raise ValueError("match_value vacío o inválido.")
+    
+    # Validar match_type
+    valid_types = ["contains", "exact", "regex"]
+    is_fuzzy = match_type.startswith("fuzzy")
+    if not is_fuzzy and match_type not in valid_types:
+        match_type = "contains"
+    
+    # Si no se proporciona comercio_raw, usar match_value original
+    if comercio_raw is None:
+        comercio_raw = match_value
+
+    # 1. Guardar/actualizar regla en dim_comercio_mapping
+    merge_q = f"""
+    MERGE {bq_fqn(MAPPING_TABLE)} t
+    USING (
+      SELECT
+        @flow AS flow,
+        @match_type AS match_type,
+        @match_norm AS match_value,
+        @dep AS comercio_depurado,
+        @cat AS categoria,
+        @sub AS subcategoria,
+        @raw AS comercio_raw,
+        100 AS prioridad,
+        TRUE AS activo
+    ) s
+    ON t.flow = s.flow AND t.match_type = s.match_type AND t.match_value = s.match_value
+    WHEN MATCHED THEN UPDATE SET
+      comercio_depurado = s.comercio_depurado,
+      categoria = s.categoria,
+      subcategoria = s.subcategoria,
+      comercio_raw = s.comercio_raw,
+      prioridad = s.prioridad,
+      activo = s.activo,
+      ins_dttm = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN
+      INSERT (flow, match_type, match_value, comercio_depurado, categoria, subcategoria, comercio_raw, prioridad, activo, ins_dttm)
+      VALUES (s.flow, s.match_type, s.match_value, s.comercio_depurado, s.categoria, s.subcategoria, s.comercio_raw, s.prioridad, s.activo, CURRENT_TIMESTAMP())
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("flow", "STRING", flow),
+            bigquery.ScalarQueryParameter("match_type", "STRING", match_type),
+            bigquery.ScalarQueryParameter("match_norm", "STRING", match_norm),
+            bigquery.ScalarQueryParameter("dep", "STRING", comercio_depurado),
+            bigquery.ScalarQueryParameter("cat", "STRING", categoria),
+            bigquery.ScalarQueryParameter("sub", "STRING", subcategoria),
+            bigquery.ScalarQueryParameter("raw", "STRING", comercio_raw),
+        ]
+    )
+    bq_client.query(merge_q, job_config=cfg).result()
+
+    # 2. Intentar marcar pendientes como resueltos en comercio_unmapped_queue
+    # Nota: puede fallar si hay filas en streaming buffer (insertadas hace <30 min)
+    # En ese caso, simplemente continuamos - el mapeo ya quedó guardado
+    try:
+        resolve_q = f"""
+        UPDATE {bq_fqn(UNMAPPED_TABLE)}
+        SET resolved = TRUE
+        WHERE flow = @flow
+          AND REGEXP_REPLACE(UPPER(IFNULL(comercio_normalizado, '')), r'[^A-Z0-9]+', '') LIKE CONCAT('%', @match_norm, '%')
+          AND IFNULL(resolved, FALSE) = FALSE
+        """
+        bq_client.query(resolve_q, job_config=cfg).result()
+    except Exception as e:
+        # Si falla por streaming buffer, no es crítico - el mapeo ya está guardado
+        print(f"⚠️ No se pudo marcar como resuelto en unmapped_queue (streaming buffer?): {e}")
+
+VALID_DETAIL_SOURCES = {
+    "bank_payments",
+    "bank_transfers",
+    "mp_data",
+    "mp_transfer_data",
+    "carrefour_data",
+    "supermarket_receipts",
+}
+
+def apply_transaction_detail(bq_client, extraido_de: str, transaction_key: str, detalles: str, updated_by: str):
+    """
+    Upsert editable en PRD.transaction_details por (extraido_de, transaction_key).
+    Si ya existe, sobrescribe detalles y updated_at.
+    """
+    extraido_de = (extraido_de or "").strip()
+    transaction_key = (transaction_key or "").strip()
+    detalles = (detalles or "").strip()
+    if extraido_de not in VALID_DETAIL_SOURCES:
+        raise ValueError(
+            f"extraido_de inválido. Válidos: {', '.join(sorted(VALID_DETAIL_SOURCES))}"
+        )
+    if not transaction_key:
+        raise ValueError("transaction_key vacío.")
+    if not detalles:
+        raise ValueError("detalles vacío.")
+
+    merge_q = f"""
+    MERGE {bq_fqn("transaction_details")} t
+    USING (
+      SELECT
+        CAST(@extraido_de AS STRING) AS extraido_de,
+        CAST(@transaction_key AS STRING) AS transaction_key,
+        CAST(@detalles AS STRING) AS detalles,
+        CAST(@updated_by AS STRING) AS updated_by
+    ) s
+    ON t.extraido_de = s.extraido_de AND t.transaction_key = s.transaction_key
+    WHEN MATCHED THEN UPDATE SET
+      detalles = s.detalles,
+      updated_at = CURRENT_TIMESTAMP(),
+      updated_by = s.updated_by
+    WHEN NOT MATCHED THEN
+      INSERT (extraido_de, transaction_key, detalles, updated_at, updated_by)
+      VALUES (s.extraido_de, s.transaction_key, s.detalles, CURRENT_TIMESTAMP(), s.updated_by)
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("extraido_de", "STRING", extraido_de),
+            bigquery.ScalarQueryParameter("transaction_key", "STRING", transaction_key),
+            bigquery.ScalarQueryParameter("detalles", "STRING", detalles),
+            bigquery.ScalarQueryParameter("updated_by", "STRING", updated_by),
+        ]
+    )
+    bq_client.query(merge_q, job_config=cfg).result()
+
 def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
         
-        # Inicializar cliente de BigQuery
+        # Manejar invocaciones programadas de EventBridge
+        if isinstance(event, dict):
+            action = event.get("action", "")
+            source = event.get("source", "")
+            
+            # Alerta de presupuesto mensual
+            if action == "alert_budget" or (source == "aws.events" and event.get("detail-type") == "budget_alert"):
+                return run_monthly_budget_alert(event, context)
+            
+            # Alerta diaria de comercios no mapeados
+            if action == "alert_unmapped" or (source == "aws.events" and event.get("detail-type") == "unmapped_alert"):
+                return run_daily_unmapped_alert(event, context)
+            
+            # Compatibilidad: si viene de EventBridge sin detail-type, ejecutar ambas alertas
+            if source == "aws.events" and not event.get("detail-type"):
+                run_monthly_budget_alert(event, context)
+                return run_daily_unmapped_alert(event, context)
+        
+        body_raw = event.get("body") if isinstance(event, dict) else None
+        if not body_raw:
+            return {"statusCode": 200}
+        data = json.loads(body_raw) if isinstance(body_raw, str) else body_raw
+        
         bq_client = get_bigquery_client()
         
-        data = json.loads(event["body"])
+        if "callback_query" in data:
+            return handle_telegram_callback(data, bq_client)
+        
         message = data.get("message", {})
         chat_id = message.get("chat", {}).get("id")
         
@@ -1812,43 +2568,273 @@ def lambda_handler(event, context):
                 • Los proceso automáticamente con IA 
                 • Los datos se guardan en BigQuery
 
+                ⚡ *Atajos:* /ultimo_gasto · /ultimo_mp · /mes · /exportar banco
+
                 ¡Escribí tu pregunta o enviame una foto de un ticket!
             """
-            send_telegram_message(chat_id, welcome_message, TELEGRAM_BOT_TOKEN)
+            send_telegram_message(
+                chat_id,
+                welcome_message,
+                TELEGRAM_BOT_TOKEN,
+                reply_markup=quick_actions_keyboard(),
+            )
             return {"statusCode": 200}
         
         if text == "/help":
-            help_message = """
-            📚 *Ayuda del Bot*
+            help_message = """📚 *Ayuda del Bot*
 
-            *Consultas de texto:*
-            Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
+*Consultas de texto:*
+Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
 
-            *Ejemplos:*
-            • ¿Cuánto gasté este mes?
-            • Gastos por comercio
-            • Mis mayores gastos
-            • ¿Cuánto gasté en Carrefour?
+*Ejemplos:*
+• ¿Cuánto gasté este mes?
+• Gastos por comercio
+• Mis mayores gastos
+• ¿Cuánto gasté en Carrefour?
 
-            *Fotos de tickets:*
-            Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
+*Fotos de tickets:*
+Enviame una foto clara de un ticket de supermercado y lo proceso automáticamente.
 
-            *Comandos:*
-            • /start - Mensaje de bienvenida
-            • /help - Esta ayuda
-            """
+*Comandos básicos:*
+• /start - Mensaje de bienvenida
+• /help - Esta ayuda
+• /ultimo\_gasto - Último movimiento banco/tarjeta
+• /ultimo\_mp - Última transacción Mercado Pago
+• /mes - Resumen mes actual (banco + Carrefour)
+• /exportar [banco|carrefour|mp] - Exportar CSV
+
+*Mapeo de comercios:*
+• /pendientes\_comercio [bank|mp|all] - Ver comercios sin clasificar
+• /mapear\_comercio flow|match|depurado|cat|subcat|[tipo]
+
+*Detalles manuales por transacción:*
+• /detalle <extraido\_de> <transaction\_key> <texto>
+  Ej: /detalle bank\_payments abc123 compre regalo de cumpleaños
+  Tip: usá /ultimo\_gasto o /ultimo\_mp para ver el ID transacción
+
+*Tipos de matching:*
+• `contains` (default): busca substring
+• `exact`: coincidencia exacta
+• `fuzzy`: similitud >= 80%
+• `fuzzy:85`: similitud personalizada
+
+*Ejemplo fuzzy:*
+`/mapear_comercio bank|SHELL|Shell|nafta|combustible|fuzzy:75`
+Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
+"""
             send_telegram_message(chat_id, help_message, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
+
+        quick_cmd = {
+            "/ultimo_gasto": "ultimo_gasto",
+            "/ultimo_mp": "ultimo_mp",
+            "/mes": "mes",
+        }
+        if text in quick_cmd:
+            _, response_text, result_parse_mode = run_quick_sql_key(quick_cmd[text], bq_client)
+            pm = result_parse_mode if result_parse_mode in ("HTML", False) else "Markdown"
+            send_telegram_message(
+                chat_id,
+                response_text,
+                TELEGRAM_BOT_TOKEN,
+                parse_mode=pm,
+                reply_markup=quick_actions_keyboard(),
+            )
+            return {"statusCode": 200}
+        
+        if text.startswith("/exportar"):
+            parts = text.split(maxsplit=1)
+            raw = parts[1].strip().lower() if len(parts) > 1 else "banco"
+            alias = {
+                "banco": "bank",
+                "bank": "bank",
+                "carrefour": "carrefour",
+                "mp": "mp",
+                "mercadopago": "mp",
+            }
+            which = alias.get(raw, "bank")
+            export_table_csv(chat_id, which, bq_client, TELEGRAM_BOT_TOKEN)
+            return {"statusCode": 200}
+
+        if text.startswith("/pendientes_comercio"):
+            parts = text.split(maxsplit=1)
+            raw = parts[1].strip().lower() if len(parts) > 1 else "all"
+            flow_map = {
+                "all": "all",
+                "bank": "bank_payments",
+                "bank_payments": "bank_payments",
+                "mp": "mp_data",
+                "mp_data": "mp_data",
+                "transfer": "mp_transfer_data",
+                "mp_transfer": "mp_transfer_data",
+                "mp_transfer_data": "mp_transfer_data",
+                "supermarket": "supermarket_receipts",
+                "super": "supermarket_receipts",
+                "supermarket_receipts": "supermarket_receipts",
+                "carrefour": "carrefour_data",
+                "carrefour_data": "carrefour_data",
+            }
+            flow = flow_map.get(raw, "all")
+            msg = list_unmapped_comercios(bq_client, flow=flow, limit=20)
+            send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+            return {"statusCode": 200}
+
+        if text.startswith("/mapear_comercio"):
+            try:
+                payload = text[len("/mapear_comercio"):].strip()
+                parts = [p.strip() for p in payload.split("|")]
+                if len(parts) < 5:
+                    raise ValueError("Formato inválido (mínimo 5 campos)")
+                
+                flow_raw, match_value, depurado, categoria, subcategoria = parts[:5]
+                # Sexto parámetro opcional: match_type (default: contains)
+                match_type = parts[5].lower() if len(parts) > 5 else "contains"
+                
+                flow_alias = {
+                    "bank": "bank_payments",
+                    "bank_payments": "bank_payments",
+                    "bank_transfer": "bank_transfers",
+                    "bank_transfers": "bank_transfers",
+                    "mp": "mp_data",
+                    "mp_data": "mp_data",
+                    "transfer": "mp_transfer_data",
+                    "mp_transfer": "mp_transfer_data",
+                    "mp_transfer_data": "mp_transfer_data",
+                    "supermarket": "supermarket_receipts",
+                    "super": "supermarket_receipts",
+                    "supermarket_receipts": "supermarket_receipts",
+                    "carrefour": "carrefour_data",
+                    "carrefour_data": "carrefour_data",
+                }
+                flow = flow_alias.get(flow_raw.lower())
+                if not flow:
+                    raise ValueError("flow debe ser bank_payments/bank_transfers/mp_data/mp_transfer_data/supermarket_receipts/carrefour_data")
+                
+                # Buscar comercio_raw en unmapped_queue si existe
+                comercio_raw = None
+                try:
+                    match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
+                    raw_q = f"""
+                    SELECT comercio_raw 
+                    FROM {bq_fqn(UNMAPPED_TABLE)}
+                    WHERE flow = @flow
+                      AND comercio_normalizado = @match_norm
+                    LIMIT 1
+                    """
+                    raw_cfg = bigquery.QueryJobConfig(
+                        query_parameters=[
+                            bigquery.ScalarQueryParameter("flow", "STRING", flow),
+                            bigquery.ScalarQueryParameter("match_norm", "STRING", match_norm),
+                        ]
+                    )
+                    raw_result = list(bq_client.query(raw_q, job_config=raw_cfg).result())
+                    if raw_result and raw_result[0].comercio_raw:
+                        comercio_raw = raw_result[0].comercio_raw
+                except Exception as e:
+                    print(f"⚠️ No se pudo obtener comercio_raw de unmapped_queue: {e}")
+                
+                apply_mapping_backfill(
+                    bq_client,
+                    flow=flow,
+                    match_value=match_value,
+                    comercio_depurado=depurado,
+                    categoria=categoria,
+                    subcategoria=subcategoria,
+                    match_type=match_type,
+                    comercio_raw=comercio_raw,
+                )
+                
+                # Mensaje de confirmación
+                raw_info = f"• comercio_raw: {comercio_raw}\n" if comercio_raw else ""
+                ok = (
+                    f"✅ Mapeo guardado en dim_comercio_mapping.\n\n"
+                    f"📋 Detalles:\n"
+                    f"• flow: {flow}\n"
+                    f"• match: {match_value}\n"
+                    f"• match_type: {match_type}\n"
+                    f"• depurado: {depurado}\n"
+                    f"• categoria: {categoria}\n"
+                    f"• subcategoria: {subcategoria}\n"
+                    f"{raw_info}\n"
+                    f"ℹ️ El mapeo se aplicará a nuevos registros en el próximo ETL.\n"
+                    f"Para consultas históricas, usá JOIN con dim_comercio_mapping."
+                )
+                send_telegram_message(chat_id, ok, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            except Exception as e:
+                err = (
+                    "❌ No pude registrar el mapeo.\n\n"
+                    "Formato:\n"
+                    "/mapear_comercio flow|match|depurado|categoria|subcategoria|[tipo]\n\n"
+                    "Tipos de matching:\n"
+                    "• contains (default): busca substring\n"
+                    "• exact: coincidencia exacta\n"
+                    "• fuzzy: similitud >= 80%\n"
+                    "• fuzzy:85: similitud >= 85%\n\n"
+                    "Ejemplos:\n"
+                    "/mapear_comercio bank|MERPAGO*SHELL|Shell|nafta|combustible\n"
+                    "/mapear_comercio bank|SHELL|Shell|nafta|combustible|fuzzy:75\n\n"
+                    f"Detalle: {str(e)}"
+                )
+                send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            return {"statusCode": 200}
+
+        if text.startswith("/detalle"):
+            try:
+                payload = text[len("/detalle"):].strip()
+                # Formato: <extraido_de> <transaction_key> <texto libre con espacios>
+                parts = payload.split(maxsplit=2)
+                if len(parts) < 3:
+                    raise ValueError("Faltan campos. Esperado: <extraido_de> <transaction_key> <texto>")
+                extraido_de_in, transaction_key_in, detalles_in = parts[0], parts[1], parts[2]
+
+                apply_transaction_detail(
+                    bq_client,
+                    extraido_de=extraido_de_in,
+                    transaction_key=transaction_key_in,
+                    detalles=detalles_in,
+                    updated_by=f"telegram:{chat_id}",
+                )
+
+                ok = (
+                    f"✅ Detalle guardado en transaction_details.\n\n"
+                    f"📋 Detalles:\n"
+                    f"• fuente: {extraido_de_in}\n"
+                    f"• ID transacción: {transaction_key_in}\n"
+                    f"• detalle: {detalles_in}\n\n"
+                    f"ℹ️ Aparecerá en la columna `detalles` de la vista gastos_totales."
+                )
+                send_telegram_message(chat_id, ok, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            except Exception as e:
+                err = (
+                    "❌ No pude guardar el detalle.\n\n"
+                    "Formato:\n"
+                    "/detalle <extraido_de> <transaction_key> <texto libre>\n\n"
+                    "Fuentes válidas:\n"
+                    "• bank_payments, bank_transfers, mp_data,\n"
+                    "  mp_transfer_data, carrefour_data, supermarket_receipts\n\n"
+                    "Tip: usá /ultimo_gasto o /ultimo_mp para ver el transaction_key.\n\n"
+                    f"Detalle: {str(e)}"
+                )
+                send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
             return {"statusCode": 200}
 
         # =========================================
         # PROCESAR PREGUNTA DE TEXTO
         # =========================================
         
-        sql, response_text = handle_message(text, bq_client)
+        sql, response_text, result_parse_mode = handle_message(text, bq_client)
         print('response_text: ', response_text)
         
-        # Enviar respuesta
-        result = send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
+        # Enviar respuesta (HTML para tablas BigQuery; texto plano para errores)
+        pm = result_parse_mode if result_parse_mode in ("HTML", False) else "Markdown"
+        markup = quick_actions_keyboard() if result_parse_mode == "HTML" else None
+        result = send_telegram_message(
+            chat_id,
+            response_text,
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=pm,
+            reply_markup=markup,
+        )
 
         if result is None:
            return {

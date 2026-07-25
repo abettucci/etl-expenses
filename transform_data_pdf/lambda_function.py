@@ -4,13 +4,36 @@ import pdfplumber
 import os
 import pandas as pd
 import hashlib
+import re
 from PyPDF2 import PdfReader
 pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', None)
 
 MARKET_BUCKET = os.environ['MARKET_BUCKET_NAME']
 
 def calcular_hash_pdf(content_bytes):
     return hashlib.sha256(content_bytes).hexdigest()
+
+def extract_last_amount(text):
+    """
+    Extrae el ultimo monto numerico de un texto (soporta 1.234,56 / 1234.56 / 1234,56).
+    """
+    if not text:
+        return None
+    matches = re.findall(r'[-+]?\d[\d\.,]*', text)
+    if not matches:
+        return None
+    raw = matches[-1]
+    if ',' in raw and '.' in raw:
+        normalized = raw.replace('.', '').replace(',', '.')
+    elif ',' in raw:
+        normalized = raw.replace(',', '.')
+    else:
+        normalized = raw
+    try:
+        return float(normalized)
+    except Exception:
+        return None
 
 def transform_pdf_to_dataframe(pdf_content, pdf_key):
     try:
@@ -34,7 +57,8 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
                      for linea in texto_completo.split('\n') if linea.strip()]
 
             # Inicializar variables
-            fecha_compra = nro_ticket = suma_total_descuentos = ""
+            fecha_compra = nro_ticket = ""
+            suma_total_descuentos = 0.0
             indice_fecha = indice_inicial = indice_final = indice_nro_ticket = indice_descuentos = None
 
             for i, linea in enumerate(lineas):
@@ -65,7 +89,7 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
                     try:
                         suma_total_descuentos = float(suma_total_descuentos.replace(',', '.'))
                     except:
-                        suma_total_descuentos = 0
+                        suma_total_descuentos = 0.0
 
             # Procesar items
             lista_items = []
@@ -112,8 +136,11 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
                             precio = float(partes[2].split()[0].replace(',', '.'))
 
                     if '(' in linea and ')' in linea:
-                        monto_total = linea[linea.rfind(')')+1:].strip()
-                        monto_total = float(monto_total.replace(',', '.'))
+                        monto_texto = linea[linea.rfind(')')+1:].strip()
+                        monto_parseado = extract_last_amount(monto_texto)
+                        if monto_parseado is None:
+                            raise ValueError(f"No se pudo parsear monto_total desde: {monto_texto}")
+                        monto_total = monto_parseado
 
                     # Ver si la siguiente línea parece ser un EAN válido (solo números, 8 o más dígitos)
                     ean = ""
@@ -198,7 +225,7 @@ def lambda_handler(event, context):
     try:
         s3_file_to_transform = event['key']
         s3 = boto3.client('s3')
-        key = process_pdf_file(s3, bucket, s3_file_to_transform)
+        key = process_pdf_file(s3, MARKET_BUCKET, s3_file_to_transform)
 
         return {
             "statusCode": 200,
