@@ -467,11 +467,11 @@ SELECT
    FROM (
      SELECT FORMAT_DATE('%Y-%m', PARSE_DATE('%d/%m/%Y', fecha_pago)) as mes,
             SUM(monto) as total_mensual
-     FROM `hazel-pillar-400222.PRD.bank_payments`
+     FROM `<your-gcp-project>.PRD.bank_payments`
      WHERE PARSE_DATE('%d/%m/%Y', fecha_pago) >= DATE_SUB(CURRENT_DATE(), INTERVAL 6 MONTH)
      GROUP BY 1
    )) as promedio_6_meses
-FROM `hazel-pillar-400222.PRD.bank_payments`
+FROM `<your-gcp-project>.PRD.bank_payments`
 WHERE PARSE_DATE('%d/%m/%Y', fecha_pago) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
 ```
 

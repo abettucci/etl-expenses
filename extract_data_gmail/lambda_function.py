@@ -107,8 +107,7 @@ def get_bigquery_client():
         credentials_json = get_secret(SECRET_NAME, REGION_NAME)
         credentials = service_account.Credentials.from_service_account_info(credentials_json)
         
-        # project_id = os.environ.get('GCP_PROJECT_ID')
-        project_id = 'hazel-pillar-400222'
+        project_id = os.environ.get('GCP_PROJECT_ID')
         client = bigquery.Client(credentials=credentials, project=project_id)
         
         print(f"✅ Cliente de BigQuery autenticado para proyecto: {project_id}")
@@ -135,7 +134,7 @@ def find_html_part(payload, depth=0, max_depth=10):
 def get_message_ids_loaded_in_bigquery(bq_client, table_name, pk):
     """Obtener IDs de mensajes ya cargados en BigQuery"""
     try:
-        project_id = os.environ.get('GCP_PROJECT_ID', 'hazel-pillar-400222')
+        project_id = os.environ.get('GCP_PROJECT_ID')
         dataset = os.environ.get('BQ_DATASET_PROD', 'PRD')
         
         query = f"""

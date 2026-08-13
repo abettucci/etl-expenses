@@ -9,7 +9,7 @@ from tabula import read_pdf
 diccionario_pago_tarjetas = dict()
 pagos_de_tarjeta = []
 
-ruta = "C:/Users/agusb/Desktop/Gastos/Resumen de Tarjeta/Amex"
+ruta = os.environ.get("AMEX_STATEMENTS_PATH", "./statements/Amex")
 
 regex_pattern = r"^Resumen de tarjeta de crédito.*"
 

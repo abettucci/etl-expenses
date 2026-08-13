@@ -1017,7 +1017,7 @@ resource "aws_iam_policy" "lambda_kms_policy" {
           "kms:GenerateDataKey*",
           "kms:DescribeKey"
         ],
-        Resource = "arn:aws:kms:us-east-2:039434644707:key/5009b119-f50c-413c-9873-0e216eb14005"
+        Resource = "arn:aws:kms:us-east-2:${var.AWS_ACCOUNT_ID}:key/5009b119-f50c-413c-9873-0e216eb14005"
       }
     ]
   })

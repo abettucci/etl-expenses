@@ -202,7 +202,8 @@ def carga_inicial_de_s3(access_token):
             report_file_name_sin_extension = report_file_name[:-4]
             report_file_name_final = report_file_name_sin_extension + '.' + file_type
             file_url_base = "https://www.mercadopago.com.ar/balance/reports/settlement/settlement"
-            file_url = file_url_base + '-' + '279729559' + '-' + report_id + '/download?format=' + file_type
+            mp_user_id = os.environ.get('MP_USER_ID')
+            file_url = file_url_base + '-' + mp_user_id + '-' + report_id + '/download?format=' + file_type
             payload = {
                 "file_name" : report_file_name_final,
                 "file_url": file_url,

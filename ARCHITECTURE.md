@@ -377,7 +377,7 @@ ai_agent Lambda:
 🤖 Bot:
 📝 SQL generado:
 SELECT SUM(total_ticket_bruto) as total_gastado
-FROM `hazel-pillar-400222.PRD.carrefour_data`
+FROM `<your-gcp-project>.PRD.carrefour_data`
 WHERE PARSE_DATE('%d/%m/%Y', fecha) >= DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH)
 
 📊 Resultados:

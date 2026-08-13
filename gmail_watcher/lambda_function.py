@@ -68,7 +68,7 @@ def lambda_handler(event, context):
         # "labelIds": [inbox_label_id] + custom_labels,
         "labelIds": custom_labels,
         # "topicName": f"projects/{os.environ['GCP_PROJECT_ID']}/topics/{os.environ['PUBSUB_TOPIC']}"
-        "topicName": f"projects/hazel-pillar-400222/topics/gmail-events"
+        "topicName": f"projects/{os.environ.get('GCP_PROJECT_ID')}/topics/{os.environ.get('PUBSUB_TOPIC', 'gmail-events')}"
     }
     
     print(f"📋 Configurando watcher con labels: {[inbox_label_id] + custom_labels}")

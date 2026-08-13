@@ -34,13 +34,13 @@ def format_report_file_name(s3_filename):
     extension = s3_filename.split('.')[-1]
 
     if "_" in s3_filename:
-        # "settlement-279729559-2025-04-14-014721_2025-04-13_51102371.csv"
+        # "settlement-<mp_user_id>-2025-04-14-014721_2025-04-13_51102371.csv"
         base = s3_filename.rsplit("_", 1)[0]  # hasta antes del último _
         report_id = s3_filename.rsplit("_", 1)[-1].rsplit(".", 1)[0]
         report_date = s3_filename.split("_")[-2]
     else:
         # Caso 2: formato manual
-        # "settlement-279729559-manual-2025-08-22-111914.csv"
+        # "settlement-<mp_user_id>-manual-2025-08-22-111914.csv"
         base = s3_filename.rsplit("-", 1)[0]  # hasta antes del último "-"
         report_id = s3_filename.rsplit("-", 1)[-1].rsplit(".", 1)[0]
 
