@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir numpy==1.24.3
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código de la lambda
-COPY lambda_function.py ${LAMBDA_TASK_ROOT}
+COPY lambda_function.py variation_alerts.py ${LAMBDA_TASK_ROOT}
 
 # Limpiar archivos temporales para reducir tamaño
 RUN rm -rf /var/cache/pip/* /tmp/* /var/tmp/* && \

@@ -77,6 +77,12 @@ variable "ALERT_BUDGET_ARS" {
   default     = ""
 }
 
+variable "ALERT_INFLATION_PCT" {
+  description = "IPC mensual de referencia para alertas de variación; vacío lo omite"
+  type        = string
+  default     = ""
+}
+
 variable "OPENAI_API_KEY" {
   description = "OpenAI API Key"
   type        = string
@@ -832,6 +838,11 @@ resource "aws_lambda_function" "ai_agent" {
       RECEIPT_ETL_STATE_MACHINE   = aws_sfn_state_machine.telegram_receipt_etl_flow.arn
       TELEGRAM_ALERT_CHAT_ID      = var.TELEGRAM_ALERT_CHAT_ID
       ALERT_BUDGET_ARS            = var.ALERT_BUDGET_ARS
+      ALERT_INFLATION_PCT          = var.ALERT_INFLATION_PCT
+      ALERT_VARIATION_PERCENT      = "10"
+      ALERT_VARIATION_ARS          = "5000"
+      ALERT_VARIATION_TABLE        = aws_dynamodb_table.expense_variation_alerts.name
+      ALERT_SNS_TOPIC_ARN          = aws_sns_topic.stepfunction_alerts.arn
       S3_PREFIX_EXPORTS           = "exports/"
       EXPORT_MAX_ROWS             = "3000"
     }
@@ -864,6 +875,68 @@ resource "aws_cloudwatch_event_rule" "ai_agent_unmapped_alert" {
   name                = "ai-agent-unmapped-daily"
   description         = "Notificación diaria de comercios pendientes de mapear"
   schedule_expression = "cron(30 13 * * ? *)"
+}
+
+resource "aws_dynamodb_table" "expense_variation_alerts" {
+  name         = "expense_variation_alerts"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "alert_key"
+
+  attribute {
+    name = "alert_key"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "expense-variation-alerts"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "ai_agent_variation_weekly" {
+  name                = "ai-agent-expense-variation-weekly"
+  description         = "Compara las dos últimas semanas completas por comercio"
+  schedule_expression = "cron(0 16 ? * MON *)"
+}
+
+resource "aws_cloudwatch_event_target" "ai_agent_variation_weekly" {
+  rule      = aws_cloudwatch_event_rule.ai_agent_variation_weekly.name
+  target_id = "aiAgentExpenseVariationWeekly"
+  arn       = aws_lambda_function.ai_agent.arn
+  input     = jsonencode({ action = "alert_variations_weekly" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ai_agent_variation_weekly" {
+  statement_id  = "AllowExecutionFromEventBridgeVariationWeekly"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ai_agent_variation_weekly.arn
+}
+
+resource "aws_cloudwatch_event_rule" "ai_agent_variation_monthly" {
+  name                = "ai-agent-expense-variation-monthly"
+  description         = "Compara los dos últimos meses completos por comercio"
+  schedule_expression = "cron(0 16 3 * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "ai_agent_variation_monthly" {
+  rule      = aws_cloudwatch_event_rule.ai_agent_variation_monthly.name
+  target_id = "aiAgentExpenseVariationMonthly"
+  arn       = aws_lambda_function.ai_agent.arn
+  input     = jsonencode({ action = "alert_variations_monthly" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ai_agent_variation_monthly" {
+  statement_id  = "AllowExecutionFromEventBridgeVariationMonthly"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ai_agent_variation_monthly.arn
 }
 
 resource "aws_cloudwatch_event_target" "ai_agent_unmapped_alert" {
@@ -1126,6 +1199,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",
+          aws_dynamodb_table.expense_variation_alerts.arn,
         ]
       }
     ]
@@ -1135,6 +1209,20 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
 resource "aws_iam_role_policy_attachment" "lambda_dynamo_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_dynamo_policy.arn
+}
+
+resource "aws_iam_role_policy" "ai_agent_variation_sns" {
+  name = "ai-agent-expense-variation-sns"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sns:Publish"]
+      Resource = aws_sns_topic.stepfunction_alerts.arn
+    }]
+  })
 }
 
 

@@ -4,6 +4,7 @@ import csv
 import json
 import html
 import re
+import hashlib
 import boto3
 import base64
 import requests
@@ -12,9 +13,11 @@ import time
 import uuid
 from datetime import datetime, date, timezone
 from decimal import Decimal
+from typing import Optional
 from zoneinfo import ZoneInfo
 from google.cloud import bigquery
 from google.oauth2 import service_account
+from variation_alerts import completed_comparison_periods, exceeds_variation_threshold
 
 # Pandas - para conversión a DataFrame
 try:
@@ -38,6 +41,11 @@ S3_PREFIX_EXPORTS = os.environ.get("S3_PREFIX_EXPORTS", "exports/")
 EXPORT_MAX_ROWS = int(os.environ.get("EXPORT_MAX_ROWS", "3000"))
 TELEGRAM_ALERT_CHAT_ID = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip()
 ALERT_BUDGET_ARS = os.environ.get("ALERT_BUDGET_ARS", "").strip()
+ALERT_INFLATION_PCT = os.environ.get("ALERT_INFLATION_PCT", "").strip()
+ALERT_VARIATION_PERCENT = float(os.environ.get("ALERT_VARIATION_PERCENT", "10"))
+ALERT_VARIATION_ARS = float(os.environ.get("ALERT_VARIATION_ARS", "5000"))
+ALERT_VARIATION_TABLE = os.environ.get("ALERT_VARIATION_TABLE", "expense_variation_alerts")
+ALERT_SNS_TOPIC_ARN = os.environ.get("ALERT_SNS_TOPIC_ARN", "").strip()
 MAPPING_TABLE = os.environ.get("MAPPING_TABLE", "dim_comercio_mapping")
 UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
 
@@ -2171,6 +2179,167 @@ def run_monthly_budget_alert(event, context) -> dict:
     return {"statusCode": 200}
 
 
+def _alert_key(kind: str, current_end: date, source: str, merchant: str) -> str:
+    """Stable, non-sensitive idempotency key; no financial values are persisted."""
+    digest = hashlib.sha256(f"{kind}|{current_end.isoformat()}|{source}|{merchant}".encode()).hexdigest()
+    return f"variation#{digest}"
+
+
+def _reserve_variation_alert(key: str) -> dict:
+    """Create or resume a delivery record without duplicating completed channels."""
+    table = boto3.resource("dynamodb").Table(ALERT_VARIATION_TABLE)
+    now = int(time.time())
+    try:
+        table.put_item(
+            Item={"alert_key": key, "telegram_sent": False, "sns_sent": False, "ttl": now + 370 * 86400},
+            ConditionExpression="attribute_not_exists(alert_key)",
+        )
+        return {"telegram_sent": False, "sns_sent": False}
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        item = table.get_item(Key={"alert_key": key}, ConsistentRead=True).get("Item", {})
+        return {"telegram_sent": bool(item.get("telegram_sent")), "sns_sent": bool(item.get("sns_sent"))}
+
+
+def _mark_variation_delivery(key: str, channel: str) -> None:
+    if channel not in {"telegram", "sns"}:
+        raise ValueError("unsupported delivery channel")
+    boto3.resource("dynamodb").Table(ALERT_VARIATION_TABLE).update_item(
+        Key={"alert_key": key},
+        UpdateExpression=f"SET {channel}_sent = :sent",
+        ExpressionAttributeValues={":sent": True},
+    )
+
+
+def _inflation_percentage() -> Optional[float]:
+    if not ALERT_INFLATION_PCT:
+        return None
+    try:
+        return float(ALERT_INFLATION_PCT.replace(",", "."))
+    except ValueError:
+        print("variation_alert_invalid_inflation_config")
+        return None
+
+
+def _variation_query(periods, include_mp: bool, use_mapping: bool) -> tuple[str, bigquery.QueryJobConfig]:
+    """Build a fixed-shape BigQuery query; period boundaries are parameterized."""
+    bank_merchant = "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(b.COMERCIO), ''))" if use_mapping else "NULLIF(TRIM(b.COMERCIO), '')"
+    bank_join = """
+      LEFT JOIN {mapping} m
+        ON m.flow = 'bank_payments' AND m.activo = TRUE
+       AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
+    """ if use_mapping else ""
+    sources = ["""
+      SELECT SAFE.PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) AS expense_date,
+             {bank_merchant} AS merchant,
+             'Banco' AS source, SAFE_CAST(b.MONTO AS FLOAT64) AS amount
+      FROM {bank} b
+      {bank_join}
+      WHERE UPPER(COALESCE(b.DIVISA, 'ARS')) = 'ARS'
+    """.format(bank_merchant=bank_merchant, bank_join=bank_join, bank=bq_fqn("bank_payments"), mapping=bq_fqn(MAPPING_TABLE)), """
+      SELECT SAFE.PARSE_DATE('%d/%m/%Y', fecha) AS expense_date,
+             'Carrefour' AS merchant, 'Carrefour' AS source,
+             SAFE_CAST(monto_total AS FLOAT64) AS amount
+      FROM {carrefour}
+    """]
+    if include_mp:
+        mp_merchant = "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(p.COMERCIO), ''))" if use_mapping else "NULLIF(TRIM(p.COMERCIO), '')"
+        mp_join = """
+          LEFT JOIN {mapping} m
+            ON m.flow = 'mp_data' AND m.activo = TRUE
+           AND UPPER(p.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
+        """ if use_mapping else ""
+        sources.append("""
+          SELECT DATE(SAFE_CAST(TRANSACTION_DATE AS TIMESTAMP)) AS expense_date,
+                 {mp_merchant} AS merchant,
+                 'Mercado Pago' AS source, SAFE_CAST(p.SETTLEMENT_NET_AMOUNT AS FLOAT64) AS amount
+          FROM {mp} p
+          {mp_join}
+          WHERE UPPER(COALESCE(p.SETTLEMENT_CURRENCY, 'ARS')) = 'ARS'
+            AND UPPER(COALESCE(p.TRANSACTION_TYPE, '')) NOT IN ('CASHBACK', 'REFUND', 'INCOME')
+        """.format(mp_merchant=mp_merchant, mp_join=mp_join, mp=bq_fqn("mp_data"), mapping=bq_fqn(MAPPING_TABLE)))
+    query = """
+    WITH expenses AS ({sources}), grouped AS (
+      SELECT source, merchant,
+        SUM(IF(expense_date BETWEEN @current_start AND @current_end, amount, 0)) AS current_amount,
+        SUM(IF(expense_date BETWEEN @previous_start AND @previous_end, amount, 0)) AS previous_amount
+      FROM expenses
+      WHERE expense_date BETWEEN @previous_start AND @current_end
+        AND merchant IS NOT NULL AND merchant != '' AND amount > 0
+      GROUP BY source, merchant
+    )
+    SELECT source, merchant, previous_amount, current_amount
+    FROM grouped
+    WHERE previous_amount > 0 AND current_amount > previous_amount
+    """.format(
+        sources=" UNION ALL ".join(sources),
+        carrefour=bq_fqn("carrefour_data"),
+    )
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("current_start", "DATE", periods.current_start),
+        bigquery.ScalarQueryParameter("current_end", "DATE", periods.current_end),
+        bigquery.ScalarQueryParameter("previous_start", "DATE", periods.previous_start),
+        bigquery.ScalarQueryParameter("previous_end", "DATE", periods.previous_end),
+    ])
+    return query, config
+
+
+def _format_variation_alert(kind: str, periods, row, inflation: Optional[float]) -> str:
+    previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
+    increase, percent = current_amount - previous_amount, (current_amount / previous_amount - 1) * 100
+    period_label = "semana" if kind == "weekly" else "mes"
+    text = (
+        f"⚠️ Alerta de variación de gasto\n\n{row['merchant']} ({row['source']})\n"
+        f"{period_label.capitalize()} anterior: $ {_format_number_ar(previous_amount)}\n"
+        f"{period_label.capitalize()} actual: $ {_format_number_ar(current_amount)}\n"
+        f"Aumento: $ {_format_number_ar(increase)} ({percent:.1f}%)\n"
+        f"Período: {periods.current_start.strftime('%d/%m')}–{periods.current_end.strftime('%d/%m/%Y')}"
+    )
+    if inflation is not None and kind == "monthly":
+        comparison = "supera" if percent > inflation else "no supera"
+        text += f"\nIPC configurado: {inflation:.1f}% — el aumento {comparison} el IPC."
+    return text
+
+
+def run_expense_variation_alert(kind: str, event, context) -> dict:
+    periods = completed_comparison_periods(kind, date.today())
+    try:
+        client = get_bigquery_client()
+        mp_columns = {name.upper() for name in get_bigquery_table_columns(client, "mp_data")}
+        mapping_columns = {name.lower() for name in get_bigquery_table_columns(client, MAPPING_TABLE)}
+        use_mapping = {"comercio_raw", "comercio_depurado", "activo"}.issubset(mapping_columns)
+        query, config = _variation_query(periods, include_mp="COMERCIO" in mp_columns, use_mapping=use_mapping)
+        rows = list(client.query(query, job_config=config).result())
+    except Exception:
+        print("variation_alert_query_failed")
+        return {"statusCode": 200}
+
+    inflation = _inflation_percentage()
+    evaluated = sent = errors = 0
+    for row in rows:
+        evaluated += 1
+        previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
+        if not exceeds_variation_threshold(previous_amount, current_amount, ALERT_VARIATION_PERCENT, ALERT_VARIATION_ARS):
+            continue
+        key = _alert_key(kind, periods.current_end, str(row["source"]), str(row["merchant"]))
+        try:
+            delivery = _reserve_variation_alert(key)
+            message = _format_variation_alert(kind, periods, row, inflation)
+            delivered = False
+            if not delivery["telegram_sent"] and TELEGRAM_ALERT_CHAT_ID:
+                if send_telegram_message(TELEGRAM_ALERT_CHAT_ID, message, TELEGRAM_BOT_TOKEN, parse_mode=False):
+                    _mark_variation_delivery(key, "telegram")
+                    delivered = True
+            if not delivery["sns_sent"] and ALERT_SNS_TOPIC_ARN:
+                boto3.client("sns").publish(TopicArn=ALERT_SNS_TOPIC_ARN, Subject="Alerta de variación de gasto", Message=message)
+                _mark_variation_delivery(key, "sns")
+                delivered = True
+            sent += int(delivered)
+        except Exception:
+            errors += 1
+    print(f"variation_alert_completed kind={kind} evaluated={evaluated} alerts={sent} errors={errors}")
+    return {"statusCode": 200}
+
+
 def run_daily_unmapped_alert(event, context) -> dict:
     """
     Notificación diaria de comercios no mapeados.
@@ -2451,6 +2620,11 @@ def lambda_handler(event, context):
             # Alerta diaria de comercios no mapeados
             if action == "alert_unmapped" or (source == "aws.events" and event.get("detail-type") == "unmapped_alert"):
                 return run_daily_unmapped_alert(event, context)
+
+            if action == "alert_variations_weekly":
+                return run_expense_variation_alert("weekly", event, context)
+            if action == "alert_variations_monthly":
+                return run_expense_variation_alert("monthly", event, context)
             
             # Compatibilidad: si viene de EventBridge sin detail-type, ejecutar ambas alertas
             if source == "aws.events" and not event.get("detail-type"):
