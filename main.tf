@@ -77,6 +77,18 @@ variable "ALERT_BUDGET_ARS" {
   default     = ""
 }
 
+variable "TELEGRAM_ALLOWED_CHAT_ID" {
+  description = "Único chat de Telegram habilitado para registrar gastos por voz"
+  type        = string
+  sensitive   = true
+}
+
+variable "TELEGRAM_WEBHOOK_SECRET" {
+  description = "Secret token configurado al registrar el webhook de Telegram"
+  type        = string
+  sensitive   = true
+}
+
 variable "ALERT_INFLATION_PCT" {
   description = "IPC mensual de referencia para alertas de variación; vacío lo omite"
   type        = string
@@ -837,6 +849,9 @@ resource "aws_lambda_function" "ai_agent" {
       S3_PREFIX_TICKETS           = "receipts/"
       RECEIPT_ETL_STATE_MACHINE   = aws_sfn_state_machine.telegram_receipt_etl_flow.arn
       TELEGRAM_ALERT_CHAT_ID      = var.TELEGRAM_ALERT_CHAT_ID
+      TELEGRAM_ALLOWED_CHAT_ID    = var.TELEGRAM_ALLOWED_CHAT_ID
+      TELEGRAM_WEBHOOK_SECRET     = var.TELEGRAM_WEBHOOK_SECRET
+      VOICE_PENDING_EXPENSES_TABLE = aws_dynamodb_table.telegram_pending_voice_expenses.name
       ALERT_BUDGET_ARS            = var.ALERT_BUDGET_ARS
       ALERT_INFLATION_PCT          = var.ALERT_INFLATION_PCT
       ALERT_VARIATION_PERCENT      = "10"
@@ -875,6 +890,44 @@ resource "aws_cloudwatch_event_rule" "ai_agent_unmapped_alert" {
   name                = "ai-agent-unmapped-daily"
   description         = "Notificación diaria de comercios pendientes de mapear"
   schedule_expression = "cron(30 13 * * ? *)"
+}
+
+# Confirmaciones efímeras: no contiene audio ni transcripciones, solo el gasto validado.
+resource "aws_dynamodb_table" "telegram_pending_voice_expenses" {
+  name         = "telegram_pending_voice_expenses"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "confirmation_token"
+
+  attribute {
+    name = "confirmation_token"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "telegram-pending-voice-expenses"
+  }
+}
+
+resource "google_bigquery_table" "manual_expenses" {
+  dataset_id = google_bigquery_dataset.production.dataset_id
+  table_id   = "manual_expenses"
+  project    = var.GCP_PROJECT_ID
+
+  schema = jsonencode([
+    { name = "expense_id",          type = "STRING",    mode = "REQUIRED" },
+    { name = "telegram_message_id", type = "STRING",    mode = "REQUIRED" },
+    { name = "expense_date",        type = "DATE",      mode = "REQUIRED" },
+    { name = "amount",              type = "NUMERIC",   mode = "REQUIRED" },
+    { name = "merchant",            type = "STRING",    mode = "REQUIRED" },
+    { name = "currency",            type = "STRING",    mode = "REQUIRED" },
+    { name = "source",              type = "STRING",    mode = "REQUIRED" },
+    { name = "created_at",          type = "TIMESTAMP", mode = "REQUIRED" }
+  ])
 }
 
 resource "aws_dynamodb_table" "expense_variation_alerts" {
@@ -1199,6 +1252,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/schema_cache",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",
+          aws_dynamodb_table.telegram_pending_voice_expenses.arn,
           aws_dynamodb_table.expense_variation_alerts.arn,
         ]
       }

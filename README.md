@@ -48,6 +48,21 @@ El despliegue de los servicios utilizados de AWS lo realicé con Terraform.
 1. Crear una app en el <a href="https://www.mercadopago.com.ar/developers/panel/app">Dev Center</a> de Mercado Pago.
 2. Crear una cuenta nominal en Google Cloud Platform, crear unas credenciales de Oauth2. Habilitar la API de Gmail, descagar las credenciales en formato JSON y ejecutar el script en bash "gcp_token_offline.sh" que lo que hace es generar un access token y un refresh token que luego se van a utilizar al intentar usar la API de Gmail. El script genera un file que lo almacenamos en Secrets Manager de AWS.
 
+### Gastos por nota de voz de Telegram
+
+Configurar `TELEGRAM_ALLOWED_CHAT_ID` y `TELEGRAM_WEBHOOK_SECRET` como variables sensibles de Terraform. Al registrar el webhook del bot, enviar el mismo valor de `TELEGRAM_WEBHOOK_SECRET` en el parámetro `secret_token`; sin ese header el bot no procesa ni almacena gastos por voz. Las notas aceptadas son OGG/Opus de hasta 120 segundos y 10 MB.
+
+La nota debe expresar un único gasto en ARS, con monto y comercio; si no menciona fecha se toma la fecha actual de Argentina. El bot muestra una vista previa y solo inserta en `PRD.manual_expenses` cuando se presiona **Confirmar**. Los borradores expiran en 15 minutos y el sistema no persiste el audio ni la transcripción.
+
+### Prueba de notificaciones de variaciones
+
+Desde `ai_agent/`, configurar `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` y/o `ALERT_SNS_TOPIC_ARN`. El script valida sin enviar por defecto; `--send` habilita una notificación real.
+
+```bash
+python3 test_notifications.py --channel both
+python3 test_notifications.py --channel both --send
+```
+
 
 ## Consideraciones de diseño
 
