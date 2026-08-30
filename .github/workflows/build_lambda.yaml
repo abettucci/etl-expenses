@@ -136,7 +136,8 @@ jobs:
 
           # Importar dataset PRD
           terraform import google_bigquery_dataset.production $TF_VAR_GCP_PROJECT_ID/PRD || true
-          
+          terraform import google_bigquery_table.manual_expenses $TF_VAR_GCP_PROJECT_ID/PRD/manual_expenses || true
+
           terraform import aws_ecr_repository.lambda_images etl-expenses || true
           terraform import aws_ecr_lifecycle_policy.delete_unwanted_images etl-expenses || true
 
