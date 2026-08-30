@@ -213,6 +213,7 @@ jobs:
           terraform import aws_dynamodb_table.telegram_processed_messages telegram_processed_messages || true
           terraform import aws_dynamodb_table.telegram_pending_tickets telegram_pending_tickets || true
           terraform import aws_dynamodb_table.telegram_pending_voice_expenses telegram_pending_voice_expenses || true
+          terraform import aws_dynamodb_table.expense_variation_alerts expense_variation_alerts || true
           terraform import aws_dynamodb_table.gmail_pubsub_dedup gmail-pubsub-dedup || true
           terraform import aws_dynamodb_table.gmail_etl_retry_guard gmail-etl-retry-guard || true
 
