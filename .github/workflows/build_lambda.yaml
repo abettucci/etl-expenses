@@ -339,12 +339,18 @@ jobs:
           URL="${{ steps.webhook.outputs.webhook_url }}"
           TOKEN="${{ env.TF_VAR_TELEGRAM_BOT_TOKEN }}"
           WEBHOOK_SECRET="${{ env.TF_VAR_TELEGRAM_WEBHOOK_SECRET }}"
+
+          if [[ ! "$WEBHOOK_SECRET" =~ ^[A-Za-z0-9_-]{1,256}$ ]]; then
+            echo "Invalid TELEGRAM_WEBHOOK_SECRET: use 1-256 characters from A-Z, a-z, 0-9, _ or -." >&2
+            exit 1
+          fi
+
           PAYLOAD="$(jq -nc --arg url "$URL" --arg secret "$WEBHOOK_SECRET" '{url: $url, secret_token: $secret}')"
 
-          curl --fail --silent --show-error --output /dev/null -X POST \
+          curl --fail-with-body --silent --show-error -X POST \
             "https://api.telegram.org/bot$TOKEN/setWebhook" \
             -H "Content-Type: application/json" \
-            --data "$PAYLOAD"
+            --data "$PAYLOAD" | jq -e '.ok == true'
 
           echo "Webhook setup completed"
 
