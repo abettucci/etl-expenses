@@ -18,9 +18,14 @@ VOICE_CALLBACK_TOKEN_PATTERN = r"[A-Za-z0-9_-]{16,48}"
 
 
 class TelegramVoice(BaseModel):
-    """Allowlisted metadata for a Telegram voice note."""
+    """Allowlisted metadata for a Telegram voice note.
 
-    model_config = ConfigDict(extra="forbid")
+    extra="ignore" (not "forbid"): Telegram always sends file_unique_id
+    on every voice note, which this model never reads. Forbidding it
+    rejected every real voice message before transcription ever ran.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     file_id: str = Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
     mime_type: Literal["audio/ogg", "audio/opus"]

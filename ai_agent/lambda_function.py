@@ -67,6 +67,8 @@ ALERT_SNS_TOPIC_ARN = os.environ.get("ALERT_SNS_TOPIC_ARN", "").strip()
 MAPPING_TABLE = os.environ.get("MAPPING_TABLE", "dim_comercio_mapping")
 UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
 MANUAL_EXPENSES_TABLE = "manual_expenses"
+GASTOS_TOTALES_VIEW = os.environ.get("GASTOS_TOTALES_VIEW", "gastos_totales")
+SELF_TRANSFER_MERCHANT = os.environ.get("SELF_TRANSFER_MERCHANT", "Agustin Ignacio Bettucci")
 MAX_TELEGRAM_VOICE_BYTES = 10 * 1024 * 1024
 MAX_TELEGRAM_VOICE_SECONDS = 120
 VOICE_PENDING_EXPENSES_TABLE = os.environ.get("VOICE_PENDING_EXPENSES_TABLE", "telegram_pending_voice_expenses")
@@ -2568,49 +2570,35 @@ def _set_variation_thresholds(client, percent_threshold: float, absolute_thresho
     client.query(query, job_config=config).result()
 
 
-def _variation_query(periods, include_mp: bool, use_mapping: bool) -> tuple[str, bigquery.QueryJobConfig]:
-    """Build a fixed-shape BigQuery query; period boundaries are parameterized."""
-    bank_merchant = "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(b.COMERCIO), ''))" if use_mapping else "NULLIF(TRIM(b.COMERCIO), '')"
-    bank_join = """
+def _variation_query(periods, use_mapping: bool) -> tuple[str, bigquery.QueryJobConfig]:
+    """Build the variation query against the consolidated gastos_totales view.
+
+    Period boundaries are parameterized; only the last completed period (weekly
+    or monthly, as computed by completed_comparison_periods) is evaluated here.
+    Self-transfers to SELF_TRANSFER_MERCHANT are excluded so moving money between
+    own accounts never counts as an expense increase.
+    """
+    merchant_expr = (
+        "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(g.comercio), ''))"
+        if use_mapping else "NULLIF(TRIM(g.comercio), '')"
+    )
+    mapping_join = """
       LEFT JOIN {mapping} m
-        ON m.flow = 'bank_payments' AND m.activo = TRUE
-       AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
+        ON UPPER(g.comercio) = UPPER(m.comercio_raw)
+       AND g.extraido_de = m.flow
+       AND m.activo = TRUE
     """ if use_mapping else ""
-    sources = ["""
-      SELECT SAFE.PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) AS expense_date,
-             {bank_merchant} AS merchant,
-             'Banco' AS source, SAFE_CAST(b.MONTO AS FLOAT64) AS amount
-      FROM {bank} b
-      {bank_join}
-      WHERE UPPER(COALESCE(b.DIVISA, 'ARS')) = 'ARS'
-    """.format(bank_merchant=bank_merchant, bank_join=bank_join, bank=bq_fqn("bank_payments"), mapping=bq_fqn(MAPPING_TABLE)), """
-      SELECT SAFE.PARSE_DATE('%d/%m/%Y', fecha) AS expense_date,
-             'Carrefour' AS merchant, 'Carrefour' AS source,
-             SAFE_CAST(monto_total AS FLOAT64) AS amount
-      FROM {carrefour}
-    """, """
-      SELECT expense_date, merchant, 'Manual (voz)' AS source, SAFE_CAST(amount AS FLOAT64) AS amount
-      FROM {manual_expenses}
-      WHERE currency = 'ARS'
-    """.format(manual_expenses=bq_fqn(MANUAL_EXPENSES_TABLE))]
-    if include_mp:
-        mp_merchant = "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(p.COMERCIO), ''))" if use_mapping else "NULLIF(TRIM(p.COMERCIO), '')"
-        mp_join = """
-          LEFT JOIN {mapping} m
-            ON m.flow = 'mp_data' AND m.activo = TRUE
-           AND UPPER(p.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
-        """ if use_mapping else ""
-        sources.append("""
-          SELECT DATE(SAFE_CAST(TRANSACTION_DATE AS TIMESTAMP)) AS expense_date,
-                 {mp_merchant} AS merchant,
-                 'Mercado Pago' AS source, SAFE_CAST(p.SETTLEMENT_NET_AMOUNT AS FLOAT64) AS amount
-          FROM {mp} p
-          {mp_join}
-          WHERE UPPER(COALESCE(p.SETTLEMENT_CURRENCY, 'ARS')) = 'ARS'
-            AND UPPER(COALESCE(p.TRANSACTION_TYPE, '')) NOT IN ('CASHBACK', 'REFUND', 'INCOME')
-        """.format(mp_merchant=mp_merchant, mp_join=mp_join, mp=bq_fqn("mp_data"), mapping=bq_fqn(MAPPING_TABLE)))
     query = """
-    WITH expenses AS ({sources}), grouped AS (
+    WITH expenses AS (
+      SELECT
+        g.extraido_de AS source,
+        {merchant_expr} AS merchant,
+        DATE(g.fecha) AS expense_date,
+        SAFE_CAST(g.monto_total AS FLOAT64) AS amount
+      FROM {gastos_totales} g
+      {mapping_join}
+      WHERE UPPER(TRIM({merchant_expr})) <> UPPER(@self_transfer_merchant)
+    ), grouped AS (
       SELECT source, merchant,
         SUM(IF(expense_date BETWEEN @current_start AND @current_end, amount, 0)) AS current_amount,
         SUM(IF(expense_date BETWEEN @previous_start AND @previous_end, amount, 0)) AS previous_amount
@@ -2623,14 +2611,17 @@ def _variation_query(periods, include_mp: bool, use_mapping: bool) -> tuple[str,
     FROM grouped
     WHERE previous_amount > 0 AND current_amount > previous_amount
     """.format(
-        sources=" UNION ALL ".join(sources),
-        carrefour=bq_fqn("carrefour_data"),
+        merchant_expr=merchant_expr,
+        gastos_totales=bq_fqn(GASTOS_TOTALES_VIEW),
+        mapping_join=mapping_join,
+        mapping=bq_fqn(MAPPING_TABLE),
     )
     config = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("current_start", "DATE", periods.current_start),
         bigquery.ScalarQueryParameter("current_end", "DATE", periods.current_end),
         bigquery.ScalarQueryParameter("previous_start", "DATE", periods.previous_start),
         bigquery.ScalarQueryParameter("previous_end", "DATE", periods.previous_end),
+        bigquery.ScalarQueryParameter("self_transfer_merchant", "STRING", SELF_TRANSFER_MERCHANT),
     ])
     return query, config
 
@@ -2656,10 +2647,9 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
     periods = completed_comparison_periods(kind, date.today())
     try:
         client = get_bigquery_client()
-        mp_columns = {name.upper() for name in get_bigquery_table_columns(client, "mp_data")}
         mapping_columns = {name.lower() for name in get_bigquery_table_columns(client, MAPPING_TABLE)}
         use_mapping = {"comercio_raw", "comercio_depurado", "activo"}.issubset(mapping_columns)
-        query, config = _variation_query(periods, include_mp="COMERCIO" in mp_columns, use_mapping=use_mapping)
+        query, config = _variation_query(periods, use_mapping=use_mapping)
         rows = list(client.query(query, job_config=config).result())
         percent_threshold, absolute_threshold = _get_variation_thresholds(client)
     except Exception:
