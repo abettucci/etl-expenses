@@ -930,6 +930,23 @@ resource "google_bigquery_table" "manual_expenses" {
   ])
 }
 
+# Umbrales configurables de la alerta de variacion de gasto (fila unica, id='default').
+# Se lee/escribe desde ai_agent via /umbral_variacion y /set_umbral_variacion en Telegram;
+# si la tabla esta vacia o no existe todavia, el codigo cae a ALERT_VARIATION_PERCENT/ALERT_VARIATION_ARS.
+resource "google_bigquery_table" "alert_variation_settings" {
+  dataset_id = google_bigquery_dataset.production.dataset_id
+  table_id   = "alert_variation_settings"
+  project    = var.GCP_PROJECT_ID
+
+  schema = jsonencode([
+    { name = "id",                 type = "STRING",    mode = "REQUIRED" },
+    { name = "percent_threshold",  type = "FLOAT64",   mode = "REQUIRED" },
+    { name = "absolute_threshold", type = "FLOAT64",   mode = "REQUIRED" },
+    { name = "updated_at",         type = "TIMESTAMP", mode = "REQUIRED" },
+    { name = "updated_by",         type = "STRING",    mode = "NULLABLE" }
+  ])
+}
+
 resource "aws_dynamodb_table" "expense_variation_alerts" {
   name         = "expense_variation_alerts"
   billing_mode = "PAY_PER_REQUEST"

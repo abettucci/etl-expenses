@@ -59,9 +59,10 @@ TELEGRAM_ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", "").strip(
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 ALERT_BUDGET_ARS = os.environ.get("ALERT_BUDGET_ARS", "").strip()
 ALERT_INFLATION_PCT = os.environ.get("ALERT_INFLATION_PCT", "").strip()
-ALERT_VARIATION_PERCENT = float(os.environ.get("ALERT_VARIATION_PERCENT", "10"))
-ALERT_VARIATION_ARS = float(os.environ.get("ALERT_VARIATION_ARS", "5000"))
+ALERT_VARIATION_PERCENT_DEFAULT = float(os.environ.get("ALERT_VARIATION_PERCENT", "10"))
+ALERT_VARIATION_ARS_DEFAULT = float(os.environ.get("ALERT_VARIATION_ARS", "5000"))
 ALERT_VARIATION_TABLE = os.environ.get("ALERT_VARIATION_TABLE", "expense_variation_alerts")
+ALERT_VARIATION_SETTINGS_TABLE = os.environ.get("ALERT_VARIATION_SETTINGS_TABLE", "alert_variation_settings")
 ALERT_SNS_TOPIC_ARN = os.environ.get("ALERT_SNS_TOPIC_ARN", "").strip()
 MAPPING_TABLE = os.environ.get("MAPPING_TABLE", "dim_comercio_mapping")
 UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
@@ -2527,6 +2528,46 @@ def _inflation_percentage() -> Optional[float]:
         return None
 
 
+def _get_variation_thresholds(client) -> tuple[float, float]:
+    """Read the configurable variation thresholds from BigQuery; fall back to env defaults
+    when the settings table doesn't exist yet or has no row (first run)."""
+    query = f"""
+    SELECT percent_threshold, absolute_threshold
+    FROM {bq_fqn(ALERT_VARIATION_SETTINGS_TABLE)}
+    WHERE id = 'default'
+    LIMIT 1
+    """
+    try:
+        rows = list(client.query(query).result())
+    except Exception:
+        print("variation_alert_settings_read_failed")
+        return ALERT_VARIATION_PERCENT_DEFAULT, ALERT_VARIATION_ARS_DEFAULT
+    if not rows or rows[0].get("percent_threshold") is None or rows[0].get("absolute_threshold") is None:
+        return ALERT_VARIATION_PERCENT_DEFAULT, ALERT_VARIATION_ARS_DEFAULT
+    return float(rows[0]["percent_threshold"]), float(rows[0]["absolute_threshold"])
+
+
+def _set_variation_thresholds(client, percent_threshold: float, absolute_threshold: float, updated_by: str) -> None:
+    """Upsert the single configuration row for variation thresholds."""
+    query = f"""
+    MERGE {bq_fqn(ALERT_VARIATION_SETTINGS_TABLE)} T
+    USING (SELECT 'default' AS id) S
+    ON T.id = S.id
+    WHEN MATCHED THEN
+      UPDATE SET percent_threshold = @percent, absolute_threshold = @absolute,
+                 updated_at = CURRENT_TIMESTAMP(), updated_by = @updated_by
+    WHEN NOT MATCHED THEN
+      INSERT (id, percent_threshold, absolute_threshold, updated_at, updated_by)
+      VALUES ('default', @percent, @absolute, CURRENT_TIMESTAMP(), @updated_by)
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("percent", "FLOAT64", percent_threshold),
+        bigquery.ScalarQueryParameter("absolute", "FLOAT64", absolute_threshold),
+        bigquery.ScalarQueryParameter("updated_by", "STRING", updated_by),
+    ])
+    client.query(query, job_config=config).result()
+
+
 def _variation_query(periods, include_mp: bool, use_mapping: bool) -> tuple[str, bigquery.QueryJobConfig]:
     """Build a fixed-shape BigQuery query; period boundaries are parameterized."""
     bank_merchant = "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(b.COMERCIO), ''))" if use_mapping else "NULLIF(TRIM(b.COMERCIO), '')"
@@ -2620,6 +2661,7 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
         use_mapping = {"comercio_raw", "comercio_depurado", "activo"}.issubset(mapping_columns)
         query, config = _variation_query(periods, include_mp="COMERCIO" in mp_columns, use_mapping=use_mapping)
         rows = list(client.query(query, job_config=config).result())
+        percent_threshold, absolute_threshold = _get_variation_thresholds(client)
     except Exception:
         print("variation_alert_query_failed")
         return {"statusCode": 200}
@@ -2629,7 +2671,7 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
     for row in rows:
         evaluated += 1
         previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
-        if not exceeds_variation_threshold(previous_amount, current_amount, ALERT_VARIATION_PERCENT, ALERT_VARIATION_ARS):
+        if not exceeds_variation_threshold(previous_amount, current_amount, percent_threshold, absolute_threshold):
             continue
         key = _alert_key(kind, periods.current_end, str(row["source"]), str(row["merchant"]))
         try:
@@ -3322,6 +3364,51 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                     "• bank_payments, bank_transfers, mp_data,\n"
                     "  mp_transfer_data, carrefour_data, supermarket_receipts\n\n"
                     "Tip: usá /ultimo_gasto o /ultimo_mp para ver el transaction_key.\n\n"
+                    f"Detalle: {str(e)}"
+                )
+                send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            return {"statusCode": 200}
+
+        if text.startswith("/umbral_variacion"):
+            percent, absolute = _get_variation_thresholds(bq_client)
+            msg = (
+                f"⚙️ Umbrales actuales de alerta de variación de gasto:\n\n"
+                f"• Porcentaje: {percent:.1f}%\n"
+                f"• Monto absoluto: $ {_format_number_ar(absolute)}\n\n"
+                f"ℹ️ Se dispara la alerta si se supera cualquiera de los dos.\n"
+                f"Para cambiarlos: /set_umbral_variacion <porcentaje> <monto_ars>"
+            )
+            send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            return {"statusCode": 200}
+
+        if text.startswith("/set_umbral_variacion"):
+            if not _telegram_webhook_is_authorized(event, chat_id):
+                send_telegram_message(chat_id, "❌ No autorizado para cambiar la configuración.", TELEGRAM_BOT_TOKEN, parse_mode=False)
+                return {"statusCode": 200}
+            try:
+                payload = text[len("/set_umbral_variacion"):].strip()
+                parts = payload.split()
+                if len(parts) != 2:
+                    raise ValueError("Formato inválido")
+                percent = float(parts[0].replace(",", "."))
+                absolute = float(parts[1].replace(",", "."))
+                if percent <= 0 or absolute <= 0:
+                    raise ValueError("Los umbrales deben ser positivos")
+                _set_variation_thresholds(bq_client, percent, absolute, updated_by=f"telegram:{chat_id}")
+                ok = (
+                    f"✅ Umbrales de variación actualizados.\n\n"
+                    f"• Porcentaje: {percent:.1f}%\n"
+                    f"• Monto absoluto: $ {_format_number_ar(absolute)}\n\n"
+                    f"ℹ️ Se aplican desde la próxima corrida del chequeo semanal/mensual."
+                )
+                send_telegram_message(chat_id, ok, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            except Exception as e:
+                err = (
+                    "❌ No pude actualizar los umbrales.\n\n"
+                    "Formato:\n"
+                    "/set_umbral_variacion <porcentaje> <monto_ars>\n\n"
+                    "Ejemplo:\n"
+                    "/set_umbral_variacion 8 4000\n\n"
                     f"Detalle: {str(e)}"
                 )
                 send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
