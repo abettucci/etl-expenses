@@ -953,6 +953,7 @@ def _extract_manual_expense(transcript: str) -> ManualExpenseIntent:
         ],
     )
     raw = response.choices[0].message.content or "{}"
+    print(f"voice_extract_debug: {raw!r}")
     return ManualExpenseIntent.model_validate_json(raw)
 
 
@@ -1044,7 +1045,9 @@ def process_telegram_voice(event: dict, message: dict, chat_id: object) -> tuple
     if not try_acquire_message_lock(voice_message.message_id):
         return "", None
     try:
-        transcript = _transcribe_voice(_download_telegram_voice(voice_message.voice))
+        audio_bytes = _download_telegram_voice(voice_message.voice)
+        transcript = _transcribe_voice(audio_bytes)
+        print(f"voice_transcript_debug: {transcript!r}")
         expense = _extract_manual_expense(transcript)
         token = _save_pending_voice_expense(voice_message.chat_id, voice_message.message_id, expense)
         return (
@@ -1058,7 +1061,8 @@ def process_telegram_voice(event: dict, message: dict, chat_id: object) -> tuple
                 {"text": "Cancelar", "callback_data": build_voice_callback("cancel", token)},
             ]]
         }
-    except (ValidationError, ValueError):
+    except (ValidationError, ValueError) as exc:
+        print(f"voice_expense_rejected: {type(exc).__name__}: {exc}")
         return "No pude identificar un gasto claro. Probá diciendo, por ejemplo: “42.000 pesos peluquería”.", None
     except Exception:
         print("telegram_voice_processing_failed")
