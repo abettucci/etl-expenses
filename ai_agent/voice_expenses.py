@@ -6,11 +6,11 @@ representation here so they cannot be persisted accidentally.
 """
 
 import re
-from datetime import date
-from decimal import Decimal
+from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 VOICE_CALLBACK_PREFIX = "ve"
@@ -83,6 +83,67 @@ class ManualExpenseIntent(BaseModel):
         if not re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9&.' -]+", normalized):
             raise ValueError("invalid merchant")
         return normalized
+
+
+_SPANISH_MONTHS_AND_WEEKDAYS = (
+    r"\b(lunes|martes|miércoles|jueves|viernes|sábado|domingo|"
+    r"enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b"
+    r"|\bel\s+\d{1,2}\b"
+)
+
+
+def extract_manual_expense_regex(transcript: str, today: date) -> ManualExpenseIntent | None:
+    """Rule-based parser for the canonical "<amount> pesos <merchant>" voice format.
+
+    Returns None (never raises for "didn't match") whenever the transcript is
+    ambiguous or outside this simple shape, so the caller can fall back to an
+    LLM-based extraction instead of forcing a bad match.
+    """
+    text = " ".join(transcript.lower().split())
+    # Acepta tanto "42.000"/"1.500,50" (separadores AR) como "15000" (sin separador,
+    # como suele salir de un STT que transcribe un numero dicho en voz alta).
+    matches = re.findall(r"(\d[\d.,]*)\s*pesos", text)
+    if len(matches) != 1:
+        return None  # ambiguo (varios montos) o no menciona "pesos"
+
+    raw_amount = matches[0]
+    if "," in raw_amount:
+        integer_part, _, decimal_part = raw_amount.rpartition(",")
+        amount_str = f"{integer_part.replace('.', '')}.{decimal_part}"
+    else:
+        amount_str = raw_amount.replace(".", "")
+    try:
+        amount = Decimal(amount_str).quantize(Decimal("0.01"))
+    except InvalidOperation:
+        return None
+    if amount <= 0:
+        return None
+
+    merchant_part = text.split("pesos", 1)[1]
+    if re.search(_SPANISH_MONTHS_AND_WEEKDAYS, merchant_part):
+        return None  # fecha explicita no trivial -> que la resuelva el LLM
+
+    expense_date = today
+    if re.search(r"\banteayer\b", merchant_part):
+        expense_date = today - timedelta(days=2)
+        merchant_part = re.sub(r"\banteayer\b", "", merchant_part)
+    elif re.search(r"\bayer\b", merchant_part):
+        expense_date = today - timedelta(days=1)
+        merchant_part = re.sub(r"\bayer\b", "", merchant_part)
+    elif re.search(r"\bhoy\b", merchant_part):
+        merchant_part = re.sub(r"\bhoy\b", "", merchant_part)
+
+    merchant = " ".join(merchant_part.split())
+    try:
+        return ManualExpenseIntent(
+            intent="create_manual_expense",
+            amount=amount,
+            merchant=merchant,
+            expense_date=expense_date,
+            currency="ARS",
+        )
+    except (ValidationError, ValueError):
+        return None
 
 
 class PendingVoiceExpense(BaseModel):

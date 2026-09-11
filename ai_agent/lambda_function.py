@@ -32,6 +32,7 @@ from voice_expenses import (
     TelegramVoiceCallback,
     build_voice_callback,
     parse_voice_callback,
+    extract_manual_expense_regex,
 )
 
 # Pandas - para conversión a DataFrame
@@ -73,6 +74,8 @@ MAX_TELEGRAM_VOICE_BYTES = 10 * 1024 * 1024
 MAX_TELEGRAM_VOICE_SECONDS = 120
 VOICE_PENDING_EXPENSES_TABLE = os.environ.get("VOICE_PENDING_EXPENSES_TABLE", "telegram_pending_voice_expenses")
 VOICE_PENDING_TTL_SECONDS = 15 * 60
+GOOGLE_STT_USAGE_TABLE = os.environ.get("GOOGLE_STT_USAGE_TABLE", "google_stt_monthly_usage")
+GOOGLE_STT_FREE_TIER_SECONDS = int(os.environ.get("GOOGLE_STT_FREE_TIER_SECONDS", "3600"))
 
 # Step Function para ETL de tickets (Express - síncrona)
 RECEIPT_ETL_STATE_MACHINE = os.environ.get("RECEIPT_ETL_STATE_MACHINE", "")
@@ -920,7 +923,62 @@ def _download_telegram_voice(voice: TelegramVoice) -> bytes:
     return audio_bytes
 
 
-def _transcribe_voice(audio_bytes: bytes) -> str:
+def _google_stt_seconds_used_this_month() -> int:
+    year_month = datetime.now(_TZ_AR).strftime("%Y-%m")
+    item = dynamo.Table(GOOGLE_STT_USAGE_TABLE).get_item(Key={"year_month": year_month}).get("Item")
+    return int(item["used_seconds"]) if item else 0
+
+
+def _google_stt_record_usage(duration_seconds: int) -> None:
+    year_month = datetime.now(_TZ_AR).strftime("%Y-%m")
+    dynamo.Table(GOOGLE_STT_USAGE_TABLE).update_item(
+        Key={"year_month": year_month},
+        UpdateExpression="ADD used_seconds :d",
+        ExpressionAttributeValues={":d": duration_seconds},
+    )
+
+
+def _get_gcp_access_token() -> str:
+    from google.auth.transport.requests import Request  # import perezoso: no debe pesar en INIT
+
+    secrets_client = boto3.client("secretsmanager")
+    secret_response = secrets_client.get_secret_value(SecretId="gcp_sa_api_credentials")
+    credentials_json = json.loads(secret_response["SecretString"])
+    credentials = service_account.Credentials.from_service_account_info(
+        credentials_json,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    credentials.refresh(Request())
+    return credentials.token
+
+
+def _transcribe_voice_google(audio_bytes: bytes) -> str:
+    token = _get_gcp_access_token()
+    payload = {
+        "config": {
+            "encoding": "OGG_OPUS",
+            "sampleRateHertz": 48000,
+            "languageCode": "es-AR",
+        },
+        "audio": {"content": base64.b64encode(audio_bytes).decode("ascii")},
+    }
+    resp = requests.post(
+        "https://speech.googleapis.com/v1/speech:recognize",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    if not results:
+        raise ValueError("empty transcription")
+    transcript = results[0]["alternatives"][0]["transcript"].strip()
+    if not transcript or len(transcript) > 500:
+        raise ValueError("invalid transcription")
+    return transcript
+
+
+def _transcribe_voice_openai(audio_bytes: bytes) -> str:
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = "voice.ogg"
     result = openai_client.audio.transcriptions.create(
@@ -934,8 +992,30 @@ def _transcribe_voice(audio_bytes: bytes) -> str:
     return transcript
 
 
+def _transcribe_voice(audio_bytes: bytes, duration_seconds: int) -> str:
+    """Google STT mientras haya cuota gratis del mes; OpenAI si se agoto, es audio largo, o Google falla."""
+    used = _google_stt_seconds_used_this_month()
+    if duration_seconds <= 55 and used + duration_seconds <= GOOGLE_STT_FREE_TIER_SECONDS:
+        try:
+            transcript = _transcribe_voice_google(audio_bytes)
+            _google_stt_record_usage(duration_seconds)
+            print(f"voice_transcribe_google_ok: used_seconds={used + duration_seconds}/{GOOGLE_STT_FREE_TIER_SECONDS}")
+            return transcript
+        except Exception as exc:
+            print(f"voice_transcribe_google_failed: {type(exc).__name__}: {exc}")
+    else:
+        print(f"voice_transcribe_google_skipped: quota_used={used}s, free_tier={GOOGLE_STT_FREE_TIER_SECONDS}s")
+    return _transcribe_voice_openai(audio_bytes)
+
+
 def _extract_manual_expense(transcript: str) -> ManualExpenseIntent:
-    today = datetime.now(_TZ_AR).date().isoformat()
+    today = datetime.now(_TZ_AR).date()
+    parsed = extract_manual_expense_regex(transcript, today)
+    if parsed is not None:
+        print(f"voice_extract_regex_hit: {parsed!r}")
+        return parsed
+    print("voice_extract_regex_miss: cayendo a OpenAI")
+    today = today.isoformat()
     response = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0,
@@ -1046,7 +1126,7 @@ def process_telegram_voice(event: dict, message: dict, chat_id: object) -> tuple
         return "", None
     try:
         audio_bytes = _download_telegram_voice(voice_message.voice)
-        transcript = _transcribe_voice(audio_bytes)
+        transcript = _transcribe_voice(audio_bytes, voice_message.voice.duration)
         print(f"voice_transcript_debug: {transcript!r}")
         expense = _extract_manual_expense(transcript)
         token = _save_pending_voice_expense(voice_message.chat_id, voice_message.message_id, expense)

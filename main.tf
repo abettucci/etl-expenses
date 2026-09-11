@@ -860,6 +860,8 @@ resource "aws_lambda_function" "ai_agent" {
       ALERT_SNS_TOPIC_ARN          = aws_sns_topic.stepfunction_alerts.arn
       S3_PREFIX_EXPORTS           = "exports/"
       EXPORT_MAX_ROWS             = "3000"
+      GOOGLE_STT_USAGE_TABLE       = aws_dynamodb_table.google_stt_monthly_usage.name
+      GOOGLE_STT_FREE_TIER_SECONDS = "3600"
     }
   }
 }
@@ -910,6 +912,21 @@ resource "aws_dynamodb_table" "telegram_pending_voice_expenses" {
 
   tags = {
     Name = "telegram-pending-voice-expenses"
+  }
+}
+
+resource "aws_dynamodb_table" "google_stt_monthly_usage" {
+  name         = "google_stt_monthly_usage"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "year_month"
+
+  attribute {
+    name = "year_month"
+    type = "S"
+  }
+
+  tags = {
+    Name = "google-stt-monthly-usage"
   }
 }
 
@@ -1271,6 +1288,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",
           aws_dynamodb_table.telegram_pending_voice_expenses.arn,
           aws_dynamodb_table.expense_variation_alerts.arn,
+          aws_dynamodb_table.google_stt_monthly_usage.arn,
         ]
       }
     ]
