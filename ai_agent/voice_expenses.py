@@ -5,6 +5,8 @@ manual-expenses write path.  Audio and transcriptions deliberately have no
 representation here so they cannot be persisted accidentally.
 """
 
+from __future__ import annotations
+
 import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
