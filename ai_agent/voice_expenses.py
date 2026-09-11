@@ -8,7 +8,7 @@ representation here so they cannot be persisted accidentally.
 import re
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -54,11 +54,11 @@ class TelegramFileResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     ok: Literal[True]
-    result: dict[str, str]
+    result: dict[str, Any]
 
     @field_validator("result")
     @classmethod
-    def validate_voice_file_path(cls, value: dict[str, str]) -> dict[str, str]:
+    def validate_voice_file_path(cls, value: dict[str, Any]) -> dict[str, str]:
         file_path = value.get("file_path", "")
         if not re.fullmatch(r"voice/[A-Za-z0-9_.-]+\.(?:ogg|oga)", file_path):
             raise ValueError("invalid Telegram voice file path")
