@@ -2362,16 +2362,20 @@ def send_telegram_message(chat_id, text, token, parse_mode="Markdown", reply_mar
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()
-    except Exception:
-        print("telegram_message_send_failed")
+    except Exception as e:
+        body = getattr(e, "response", None)
+        body_text = body.text if body is not None else ""
+        print(f"telegram_message_send_failed: {type(e).__name__}: {e} | response_body={body_text}")
         if parse_mode is not False and parse_mode:
             payload.pop("parse_mode", None)
             try:
                 response = requests.post(url, json=payload, timeout=10)
                 response.raise_for_status()
                 return response.json()
-            except Exception:
-                print("telegram_message_send_retry_failed")
+            except Exception as e2:
+                body2 = getattr(e2, "response", None)
+                body2_text = body2.text if body2 is not None else ""
+                print(f"telegram_message_send_retry_failed: {type(e2).__name__}: {e2} | response_body={body2_text}")
         return None
 
 def send_telegram_document(chat_id, file_bytes: bytes, filename: str, caption: str, token: str):
@@ -2764,9 +2768,12 @@ def run_daily_unmapped_alert(event, context) -> dict:
         lines.append("<i>Usá /mapear_comercio flow|match|depurado|cat|subcat</i>")
         
         msg = "\n".join(lines)
-        send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
-        
-        print(f"Alerta unmapped enviada: {total_pendientes} comercios pendientes")
+        sent = send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+
+        if sent:
+            print(f"Alerta unmapped enviada: {total_pendientes} comercios pendientes")
+        else:
+            print(f"Alerta unmapped: fallo el envio ({total_pendientes} comercios pendientes)")
         return {"statusCode": 200}
         
     except Exception as e:
