@@ -523,6 +523,7 @@ resource "google_bigquery_dataset" "production" {
 
 # Lambda Function
 resource "aws_lambda_function" "gmail_watcher" {
+  description   = "Renueva semanalmente el watch de Gmail (Pub/Sub) para seguir recibiendo notificaciones de mails nuevos"
   function_name = "gmail-watcher-renewer"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -668,6 +669,7 @@ resource "aws_lambda_permission" "allow_eventbridge" {
 ########### 4. Lambdas basadas en imágenes Docker ###########
 # 4.2 Lambda para transformar PDFs de Gmail
 resource "aws_lambda_function" "pdf_processor" {
+  description   = "Transforma los PDFs de tickets de supermercado extraídos de Gmail al formato intermedio del ETL"
   function_name = "pdf_processor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -685,6 +687,7 @@ resource "aws_lambda_function" "pdf_processor" {
 
 # 4.3 Lambda para extraer reportes de Mercado Pago
 resource "aws_lambda_function" "mp_report_extractor" {
+  description   = "Descarga y desencripta el reporte de Mercado Pago recibido por webhook, y dispara el Step Function de ETL de MP"
   function_name = "mp_report_extractor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -704,6 +707,7 @@ resource "aws_lambda_function" "mp_report_extractor" {
 
 # 4.4 Lambda para transformar reportes de Mercado Pago
 resource "aws_lambda_function" "mp_report_processor" {
+  description   = "Transforma el reporte de Mercado Pago extraído al formato intermedio del ETL"
   function_name = "mp_report_processor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -721,6 +725,7 @@ resource "aws_lambda_function" "mp_report_processor" {
 
 # 4.5 Lambda para extraer los gastos del banco a traves de avisos en Gmail
 resource "aws_lambda_function" "extract_data_gmail" {
+  description   = "Extrae de Gmail los avisos de gastos del banco, tickets de supermercado y transferencias, y dispara el Step Function de ETL correspondiente"
   function_name = "extract_data_gmail"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -751,6 +756,7 @@ resource "aws_lambda_function" "extract_data_gmail" {
 
 # 4.6 Lambda para procesar los gastos del banco
 resource "aws_lambda_function" "bank_payments_processor" {
+  description   = "Transforma los avisos de gastos y transferencias del banco al formato intermedio del ETL"
   function_name = "bank_payments_processor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -769,6 +775,7 @@ resource "aws_lambda_function" "bank_payments_processor" {
 
 # 4.7 Lambda para cargar los dos ETLs a BigQuery (reportes de Mercado Pago y pdfs de Gmail)
 resource "aws_lambda_function" "load_report_and_pdf" {
+  description   = "Carga a BigQuery los ETLs ya transformados de reportes de Mercado Pago y PDFs de tickets de Gmail"
   function_name = "load_report_and_pdf"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -791,6 +798,7 @@ resource "aws_lambda_function" "load_report_and_pdf" {
 
 # 4.8 Lambda Dispatcher que extrae los datos del body del POST request del webhook de reportes de MP y dispara el step function de MP
 resource "aws_lambda_function" "webhook_mp_report" {
+  description   = "Dispatcher del webhook de reportes de Mercado Pago: extrae el body del POST y dispara el Step Function de MP"
   function_name = "webhook_mp_report"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -809,6 +817,7 @@ resource "aws_lambda_function" "webhook_mp_report" {
 
 # 4.9 Lambda Compensation flow que limpia archivos temporales y el envia marca de que el proceso fallo por mail
 resource "aws_lambda_function" "compensation_flow" {
+  description   = "Compensation flow: limpia archivos temporales y avisa por mail cuando un Step Function de ETL falla"
   function_name = "compensation_flow"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -828,6 +837,7 @@ resource "aws_lambda_function" "compensation_flow" {
 
 # 4.10 Lambda para procesar el agente de IA y resolver las consultas sobre los datos en BigQuery
 resource "aws_lambda_function" "ai_agent" {
+  description   = "Bot de Telegram con IA: responde consultas de gastos, procesa notas de voz y tickets, y manda alertas de presupuesto/comercios sin mapear"
   function_name = "ai_agent"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -1043,6 +1053,7 @@ resource "aws_lambda_permission" "allow_eventbridge_ai_agent_unmapped" {
 
 # 4.11 Lambda para extraer datos de tickets con OCR (OpenAI Vision + TabScanner fallback)
 resource "aws_lambda_function" "process_telegram_img" {
+  description   = "Extrae datos de tickets de supermercado enviados por foto a Telegram, usando OpenAI Vision con fallback a TabScanner OCR"
   function_name = "process_telegram_img"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -1063,6 +1074,7 @@ resource "aws_lambda_function" "process_telegram_img" {
 
 # 4.12 
 resource "aws_lambda_function" "load_receipt_to_bq" {
+  description   = "Carga a BigQuery los datos de tickets de supermercado ya extraídos por OCR"
   function_name = "load_receipt_to_bq"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -1080,6 +1092,7 @@ resource "aws_lambda_function" "load_receipt_to_bq" {
 
 # 4.13 Lambda para procesar las transferencias de mercado pago
 resource "aws_lambda_function" "mp_transfers_processor" {
+  description   = "Transforma los avisos de transferencias de Mercado Pago al formato intermedio del ETL"
   function_name = "mp_transfers_processor"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
