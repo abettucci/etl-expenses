@@ -1064,8 +1064,10 @@ def process_telegram_voice(event: dict, message: dict, chat_id: object) -> tuple
     except (ValidationError, ValueError) as exc:
         print(f"voice_expense_rejected: {type(exc).__name__}: {exc}")
         return "No pude identificar un gasto claro. Probá diciendo, por ejemplo: “42.000 pesos peluquería”.", None
-    except Exception:
-        print("telegram_voice_processing_failed")
+    except Exception as exc:
+        print(f"telegram_voice_processing_failed: {type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exc()
         return "No pude procesar el audio en este momento. Intentá nuevamente.", None
 
 
