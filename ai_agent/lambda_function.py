@@ -1202,8 +1202,10 @@ def handle_telegram_voice_callback(event: dict, data: dict) -> dict:
         bq_client = get_bigquery_client()
         _store_manual_expense(bq_client, pending.message_id, pending.expense)
         _delete_pending_voice_expense(token)
-    except Exception:
-        print("telegram_voice_confirmation_failed")
+    except Exception as exc:
+        print(f"telegram_voice_confirmation_failed: {type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exc()
         telegram_answer_callback(callback.callback_id, "No se pudo guardar")
         send_telegram_message(
             callback.chat_id,
