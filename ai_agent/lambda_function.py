@@ -1047,7 +1047,7 @@ def _store_manual_expense(bq_client, message_id: int, expense: ManualExpenseInte
     ) AS source
     ON target.telegram_message_id = source.telegram_message_id
     WHEN NOT MATCHED THEN INSERT (expense_id, telegram_message_id, expense_date, amount, merchant, currency, source, created_at)
-      VALUES (source.expense_id, source.telegram_message_id, source.expense_date, source.amount, source.merchant, source.currency, source.created_at)
+      VALUES (source.expense_id, source.telegram_message_id, source.expense_date, source.amount, source.merchant, source.currency, source.source, source.created_at)
     """
     config = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("expense_id", "STRING", str(uuid.uuid4())),
