@@ -102,13 +102,21 @@ def extract_manual_expense_regex(transcript: str, today: date) -> ManualExpenseI
     LLM-based extraction instead of forcing a bad match.
     """
     text = " ".join(transcript.lower().split())
-    # Acepta tanto "42.000"/"1.500,50" (separadores AR) como "15000" (sin separador,
-    # como suele salir de un STT que transcribe un numero dicho en voz alta).
-    matches = re.findall(r"(\d[\d.,]*)\s*pesos", text)
-    if len(matches) != 1:
-        return None  # ambiguo (varios montos) o no menciona "pesos"
+    if re.search(_SPANISH_MONTHS_AND_WEEKDAYS, text):
+        return None  # fecha explicita no trivial -> que la resuelva el LLM
 
-    raw_amount = matches[0]
+    # El monto siempre va al principio del mensaje: "<numero> pesos <comercio>",
+    # "$<numero> <comercio>", o directamente "<numero> <comercio>" si el motor de
+    # STT no agrego ninguna marca de moneda (distintos motores/versiones transcriben
+    # el mismo monto hablado de formas distintas: "32.000"/"32,000"/"$32000"/"32000").
+    # El marcador de moneda es opcional a proposito para no depender de que un motor
+    # de STT elija una forma en particular.
+    match = re.match(r"\$?\s*(\d[\d.,]*)\s*(?:pesos|ars)?\s*", text)
+    if not match:
+        return None  # el mensaje no arranca con un monto reconocible
+    raw_amount = match.group(1)
+    if re.search(r"\d", text[match.end():]):
+        return None  # hay otro numero mas adelante -> ambiguo
     # El separador decimal solo se reconoce si el ultimo grupo tiene 1-2 digitos
     # (centavos). Un grupo de 3 digitos es agrupador de miles, sea "." (Whisper,
     # "32.000") o "," (Google STT, "32,000") -- ambos motores transcriben el
@@ -126,9 +134,7 @@ def extract_manual_expense_regex(transcript: str, today: date) -> ManualExpenseI
     if amount <= 0:
         return None
 
-    merchant_part = text.split("pesos", 1)[1]
-    if re.search(_SPANISH_MONTHS_AND_WEEKDAYS, merchant_part):
-        return None  # fecha explicita no trivial -> que la resuelva el LLM
+    merchant_part = text[match.end():]
 
     expense_date = today
     if re.search(r"\banteayer\b", merchant_part):
