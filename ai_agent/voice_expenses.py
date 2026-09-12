@@ -109,11 +109,16 @@ def extract_manual_expense_regex(transcript: str, today: date) -> ManualExpenseI
         return None  # ambiguo (varios montos) o no menciona "pesos"
 
     raw_amount = matches[0]
-    if "," in raw_amount:
-        integer_part, _, decimal_part = raw_amount.rpartition(",")
-        amount_str = f"{integer_part.replace('.', '')}.{decimal_part}"
+    # El separador decimal solo se reconoce si el ultimo grupo tiene 1-2 digitos
+    # (centavos). Un grupo de 3 digitos es agrupador de miles, sea "." (Whisper,
+    # "32.000") o "," (Google STT, "32,000") -- ambos motores transcriben el
+    # mismo monto hablado con separadores distintos.
+    last_group = re.search(r"[.,](\d+)$", raw_amount)
+    if last_group and len(last_group.group(1)) in (1, 2):
+        integer_part = re.sub(r"[.,]", "", raw_amount[: last_group.start()])
+        amount_str = f"{integer_part}.{last_group.group(1)}"
     else:
-        amount_str = raw_amount.replace(".", "")
+        amount_str = re.sub(r"[.,]", "", raw_amount)
     try:
         amount = Decimal(amount_str).quantize(Decimal("0.01"))
     except InvalidOperation:
