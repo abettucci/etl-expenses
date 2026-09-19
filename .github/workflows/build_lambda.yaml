@@ -267,6 +267,15 @@ jobs:
 
           # Divi resources may have been created before Terraform state was
           # persisted. Import them once; later runs use the S3 backend above.
+          import_if_unmanaged() {
+            local address="$1"
+            local import_id="$2"
+            if terraform state show "$address" >/dev/null 2>&1; then
+              return 0
+            fi
+            terraform import "$address" "$import_id"
+          }
+
           terraform import aws_dynamodb_table.divi_application divi-application || true
           terraform import aws_secretsmanager_secret.divi_mercadopago divi/mercadopago || true
           terraform import aws_s3_bucket.divi_frontend "$TF_VAR_divi_frontend_bucket_name" || true
@@ -275,17 +284,27 @@ jobs:
           terraform import aws_lambda_function.divi_app_api divi_app_api || true
           terraform import aws_lambda_permission.divi_api divi_app_api/AllowDiviHttpApi || true
 
-          DIVI_POOL_ID=$(aws cognito-idp list-user-pools --max-results 60 \
-            --query "UserPools[?Name=='divi-users'].Id | [0]" --output text 2>/dev/null || true)
+          # The domain uniquely identifies its user pool. Listing by name is
+          # ambiguous because Cognito permits multiple pools named divi-users.
+          DIVI_POOL_ID=$(aws cognito-idp describe-user-pool-domain \
+            --domain divi-expenses-app \
+            --query "DomainDescription.UserPoolId" --output text 2>/dev/null || true)
           if [ -n "$DIVI_POOL_ID" ] && [ "$DIVI_POOL_ID" != "None" ]; then
-            terraform import aws_cognito_user_pool.divi "$DIVI_POOL_ID" || true
+            CURRENT_DIVI_POOL_ID=$(terraform state show aws_cognito_user_pool.divi 2>/dev/null \
+              | sed -n 's/^ *id *= "\([^"]*\)"/\1/p' | head -n 1 || true)
+            if [ -n "$CURRENT_DIVI_POOL_ID" ] && [ "$CURRENT_DIVI_POOL_ID" != "$DIVI_POOL_ID" ]; then
+              terraform state rm aws_cognito_user_pool_domain.divi || true
+              terraform state rm aws_cognito_user_pool_client.divi_web || true
+              terraform state rm aws_cognito_user_pool.divi || true
+            fi
+            import_if_unmanaged aws_cognito_user_pool.divi "$DIVI_POOL_ID"
             DIVI_CLIENT_ID=$(aws cognito-idp list-user-pool-clients --user-pool-id "$DIVI_POOL_ID" \
               --max-results 60 --query "UserPoolClients[?ClientName=='divi-web'].ClientId | [0]" \
               --output text 2>/dev/null || true)
             if [ -n "$DIVI_CLIENT_ID" ] && [ "$DIVI_CLIENT_ID" != "None" ]; then
-              terraform import aws_cognito_user_pool_client.divi_web "$DIVI_POOL_ID/$DIVI_CLIENT_ID" || true
+              import_if_unmanaged aws_cognito_user_pool_client.divi_web "$DIVI_POOL_ID/$DIVI_CLIENT_ID"
             fi
-            terraform import aws_cognito_user_pool_domain.divi "$DIVI_POOL_ID/divi-expenses-app" || true
+            import_if_unmanaged aws_cognito_user_pool_domain.divi "$DIVI_POOL_ID/divi-expenses-app"
           fi
 
           DIVI_OAC_ID=$(aws cloudfront list-origin-access-controls \
@@ -355,10 +374,12 @@ jobs:
           terraform import aws_lambda_function.mp_transfers_processor mp_transfers_processor || true
 
           # Lambda Permissions
-          terraform import aws_lambda_permission.allow_api_gateway_ai_agent ai_agent/AllowAPIGatewayInvokeAiAgent || true
-          terraform import aws_lambda_permission.allow_api_gateway_mp_webhook webhook_mp_report/AllowAPIGatewayInvokeMercadoPagoWebhook || true
-          terraform import aws_lambda_permission.allow_api_gateway_market_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeMarketMailDataExtractor || true
-          terraform import aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor || true
+          # These policy statements already exist. Do not hide an import
+          # failure: otherwise apply tries to recreate the same statement ID.
+          import_if_unmanaged aws_lambda_permission.allow_api_gateway_ai_agent ai_agent/AllowAPIGatewayInvokeAiAgent
+          import_if_unmanaged aws_lambda_permission.allow_api_gateway_mp_webhook webhook_mp_report/AllowAPIGatewayInvokeMercadoPagoWebhook
+          import_if_unmanaged aws_lambda_permission.allow_api_gateway_market_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeMarketMailDataExtractor
+          import_if_unmanaged aws_lambda_permission.allow_api_gateway_bank_mail_data_extractor extract_data_gmail/AllowAPIGatewayInvokeBankMailDataExtractor
           terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge || true
           terraform import aws_lambda_permission.allow_eventbridge_ai_agent_budget ai_agent/AllowExecutionFromEventBridgeBudget || true
           terraform import aws_lambda_permission.allow_eventbridge_ai_agent_variation_weekly ai_agent/AllowExecutionFromEventBridgeVariationWeekly || true
