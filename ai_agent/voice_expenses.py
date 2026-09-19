@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -77,8 +77,11 @@ class ManualExpenseIntent(BaseModel):
     merchant: str = Field(min_length=2, max_length=100)
     expense_date: date
     currency: Literal["ARS"]
-    category: str | None = Field(default=None, max_length=80)
-    subcategory: str | None = Field(default=None, max_length=80)
+    # Optional rather than ``str | None``: the production Lambda image still
+    # runs Python 3.9, whose Pydantic type resolver cannot evaluate PEP 604
+    # unions from postponed annotations.
+    category: Optional[str] = Field(default=None, max_length=80)
+    subcategory: Optional[str] = Field(default=None, max_length=80)
 
     @field_validator("merchant")
     @classmethod
