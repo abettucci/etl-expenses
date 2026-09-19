@@ -1,0 +1,9 @@
+{
+  "name": "Divi — gastos y regalos",
+  "short_name": "Divi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0e15",
+  "theme_color": "#0b0e15",
+  "description": "Gastos compartidos, regalos y pools sin fricción."
+}

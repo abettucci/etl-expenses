@@ -87,6 +87,7 @@ TABSCANNER_API_KEY = os.environ.get("TABSCANNER_API_KEY", "")
 BQ_TABLE_SUPERMARKET = os.environ.get("BQ_TABLE_SUPERMARKET", "supermarket_receipts")
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "")
 REGION = os.environ.get("AWS_REGION", "us-east-2")
 DDB_TABLE = os.environ.get("DDB_TABLE", "schema_cache")
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "604800"))  # 7 días
@@ -992,8 +993,46 @@ def _transcribe_voice_openai(audio_bytes: bytes) -> str:
     return transcript
 
 
+def _transcribe_voice_assemblyai(audio_bytes: bytes) -> str:
+    headers = {"authorization": ASSEMBLYAI_API_KEY}
+
+    upload_resp = requests.post(
+        "https://api.assemblyai.com/v2/upload",
+        headers=headers,
+        data=audio_bytes,
+        timeout=30,
+    )
+    upload_resp.raise_for_status()
+    audio_url = upload_resp.json()["upload_url"]
+
+    submit_resp = requests.post(
+        "https://api.assemblyai.com/v2/transcript",
+        headers=headers,
+        json={"audio_url": audio_url, "language_code": "es"},
+        timeout=15,
+    )
+    submit_resp.raise_for_status()
+    transcript_id = submit_resp.json()["id"]
+
+    poll_url = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
+    for _ in range(30):  # hasta ~60s de polling, muy por debajo del timeout de 900s del Lambda
+        time.sleep(2)
+        poll_resp = requests.get(poll_url, headers=headers, timeout=15)
+        poll_resp.raise_for_status()
+        data = poll_resp.json()
+        if data["status"] == "completed":
+            transcript = (data.get("text") or "").strip()
+            if not transcript or len(transcript) > 500:
+                raise ValueError("invalid transcription")
+            return transcript
+        if data["status"] == "error":
+            raise ValueError(f"AssemblyAI error: {data.get('error')}")
+    raise TimeoutError("AssemblyAI transcription did not finish in time")
+
+
 def _transcribe_voice(audio_bytes: bytes, duration_seconds: int) -> str:
-    """Google STT mientras haya cuota gratis del mes; OpenAI si se agoto, es audio largo, o Google falla."""
+    """Google STT mientras haya cuota gratis del mes; OpenAI si se agoto, es audio
+    largo, o Google falla; AssemblyAI como ultimo recurso si esta configurado."""
     used = _google_stt_seconds_used_this_month()
     if duration_seconds <= 55 and used + duration_seconds <= GOOGLE_STT_FREE_TIER_SECONDS:
         try:
@@ -1005,7 +1044,16 @@ def _transcribe_voice(audio_bytes: bytes, duration_seconds: int) -> str:
             print(f"voice_transcribe_google_failed: {type(exc).__name__}: {exc}")
     else:
         print(f"voice_transcribe_google_skipped: quota_used={used}s, free_tier={GOOGLE_STT_FREE_TIER_SECONDS}s")
-    return _transcribe_voice_openai(audio_bytes)
+
+    try:
+        return _transcribe_voice_openai(audio_bytes)
+    except Exception as exc:
+        print(f"voice_transcribe_openai_failed: {type(exc).__name__}: {exc}")
+        if not ASSEMBLYAI_API_KEY:
+            raise
+        transcript = _transcribe_voice_assemblyai(audio_bytes)
+        print("voice_transcribe_assemblyai_ok")
+        return transcript
 
 
 def _extract_manual_expense(transcript: str) -> ManualExpenseIntent:

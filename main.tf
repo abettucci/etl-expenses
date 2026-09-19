@@ -120,6 +120,13 @@ variable "TABSCANNER_API_KEY" {
   default     = ""
 }
 
+variable "ASSEMBLYAI_API_KEY" {
+  description = "AssemblyAI API Key (fallback final de transcripcion de voz)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 
 variable "glue_database_name" {
   type    = string
@@ -853,6 +860,7 @@ resource "aws_lambda_function" "ai_agent" {
       BQ_LOCATION                 = "US"
       TELEGRAM_BOT_TOKEN          = var.TELEGRAM_BOT_TOKEN
       OPENAI_API_KEY              = var.OPENAI_API_KEY
+      ASSEMBLYAI_API_KEY          = var.ASSEMBLYAI_API_KEY
       DDB_TABLE                   = var.dynamodb_table_name
       CACHE_TTL_SECONDS           = "604800"  # 7 días
       S3_BUCKET_TICKETS           = aws_s3_bucket.telegram_receipts.bucket
