@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: ["pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "extract_data_gmail-latest|extract_data_gmail/extract_data_gmail.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile", "ai_agent-latest|ai_agent/ai_agent.dockerfile", "gmail_watcher-latest|gmail_watcher/gmail_watcher.dockerfile", "process_telegram_img-latest|process_telegram_img/process_telegram_img.dockerfile", "load_receipt_to_bq-latest|load_receipt_to_bq/load_receipt_to_bq.dockerfile","mp_transfers_processor-latest|transform_data_mp_transfers/transform_data_mp_transfers.dockerfile"]
+        image: ["pdf_processor-latest|transform_data_pdf/transform_data_pdf.dockerfile","mp_report_extractor-latest|extract_data_mp/extract_data_mp.dockerfile","mp_report_processor-latest|transform_data_mp/transform_data_mp.dockerfile","load_report_and_pdf-latest|load_data/load_data.dockerfile", "webhook_mp_report-latest|webhook_mp_report/webhook_mp_report.dockerfile", "compensation_flow-latest|compensation_flow/compensation_flow.dockerfile", "extract_data_gmail-latest|extract_data_gmail/extract_data_gmail.dockerfile", "bank_payments_processor-latest|transform_data_bank_pay/transform_data_bank_pay.dockerfile", "ai_agent-latest|ai_agent/ai_agent.dockerfile", "gmail_watcher-latest|gmail_watcher/gmail_watcher.dockerfile", "process_telegram_img-latest|process_telegram_img/process_telegram_img.dockerfile", "load_receipt_to_bq-latest|load_receipt_to_bq/load_receipt_to_bq.dockerfile","mp_transfers_processor-latest|transform_data_mp_transfers/transform_data_mp_transfers.dockerfile", "app_api-latest|app_api/app_api.dockerfile"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -92,6 +92,9 @@ jobs:
         run: |
           # Extraer el nombre base (ej: "pdf_extractor-latest" -> "pdf_extractor")
           LAMBDA_NAME=$(echo "$IMAGE_TAG" | cut -d'-' -f1)
+          if [ "$IMAGE_TAG" = "app_api-latest" ]; then
+            LAMBDA_NAME="divi_app_api"
+          fi
           IMAGE_LOGICAL_URI="$ECR_REPO:$IMAGE_TAG"
 
           # (Opcional) Actualizar Lambda directamente

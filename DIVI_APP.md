@@ -31,9 +31,10 @@ Set these Terraform variables through CI secrets, never in source:
 
 `divi_app_infra.tf` provisions the Cognito pool, DynamoDB store, HTTP API,
 Secrets Manager secret, Lambda and private S3 + CloudFront SPA distribution.
-Build the API image with `app_api/app_api.dockerfile`, tag it `app_api-latest`
-in the existing `etl-expenses` ECR repository, then upload `divi_web/dist` to
-the Terraform-created frontend bucket and invalidate CloudFront.
+The CI workflow builds and publishes `app_api/app_api.dockerfile` as
+`app_api-latest` in the existing `etl-expenses` ECR repository before applying
+Terraform. Then upload `divi_web/dist` to the Terraform-created frontend
+bucket and invalidate CloudFront.
 
 ## Payment configuration
 
