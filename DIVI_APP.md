@@ -34,7 +34,9 @@ Secrets Manager secret, Lambda and private S3 + CloudFront SPA distribution.
 The CI workflow builds and publishes `app_api/app_api.dockerfile` as
 `app_api-latest` in the existing `etl-expenses` ECR repository before applying
 Terraform. Then upload `divi_web/dist` to the Terraform-created frontend
-bucket and invalidate CloudFront.
+bucket and invalidate CloudFront. CI persists Terraform state in the private,
+versioned bucket `etl-expenses-terraform-state-<AWS account ID>`, with a
+DynamoDB lock table, so deployments do not recreate existing resources.
 
 ## Payment configuration
 

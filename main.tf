@@ -1,4 +1,9 @@
 terraform {
+  # Backend configuration is supplied by CI so the account-specific bucket is
+  # never hard-coded in source. Keeping state remote prevents ephemeral GitHub
+  # runners from attempting to recreate resources on every deploy.
+  backend "s3" {}
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
