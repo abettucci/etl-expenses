@@ -34,6 +34,7 @@ from voice_expenses import (
     parse_voice_callback,
     extract_manual_expense_regex,
     parse_voice_expense_correction,
+    suggest_manual_expense_classification,
 )
 
 # Pandas - para conversión a DataFrame
@@ -1209,9 +1210,16 @@ def _voice_expense_preview(expense: ManualExpenseIntent) -> str:
         details.append(f"Categoría: {expense.category}")
     if expense.subcategory:
         details.append(f"Subcategoría: {expense.subcategory}")
-    return "¿Guardar este gasto?\n\n" + "\n".join(details) + (
+    suggestion = suggest_manual_expense_classification(expense.merchant)
+    suggestion_text = ""
+    if suggestion and (not expense.category or not expense.subcategory):
+        suggestion_text = (
+            "\n\nSugerencia según el comercio (no se guarda sola):\n"
+            f"Categoría: {suggestion[0]}\nSubcategoría: {suggestion[1]}"
+        )
+    return "¿Guardar este gasto?\n\n" + "\n".join(details) + suggestion_text + (
         "\n\nPodés corregirlo antes de confirmar, por ejemplo:\n"
-        "Categoría: Auto\nSubcategoría: Lavado\nMonto: 25000\n\n"
+        "Agregale categoría: Auto\nSubcategoría: Lavado\nMonto: 25000\n\n"
         "Confirmá para cargarlo en BigQuery."
     )
 

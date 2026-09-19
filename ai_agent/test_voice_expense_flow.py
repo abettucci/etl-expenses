@@ -190,7 +190,7 @@ class VoiceExpenseFlowTest(unittest.TestCase):
             handled, text, keyboard = self.module.handle_pending_voice_expense_correction(
                 self.event,
                 12345,
-                "Comercio: Exclusive Car Wash\nCategoría: Auto\nSubcategoría: Lavado",
+                "Agregale: Comercio: Exclusive Car Wash\nCategoría: Auto\nSubcategoría: Lavado",
             )
 
         self.assertTrue(handled)
@@ -201,6 +201,17 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         self.assertEqual(self.table.item["expense"]["category"], "Auto")
         self.assertEqual(self.table.item["expense"]["subcategory"], "Lavado")
         store.assert_not_called()
+
+    def test_preview_suggests_category_and_subcategory_without_applying_them(self):
+        expense = self.expense.model_copy(update={"merchant": "Exclusive Car Wash"})
+
+        text = self.module._voice_expense_preview(expense)
+
+        self.assertIn("Sugerencia según el comercio", text)
+        self.assertIn("Categoría: Auto", text)
+        self.assertIn("Subcategoría: Lavado", text)
+        self.assertIsNone(expense.category)
+        self.assertIsNone(expense.subcategory)
 
 
 if __name__ == "__main__":

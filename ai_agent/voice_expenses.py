@@ -8,6 +8,7 @@ representation here so they cannot be persisted accidentally.
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, Optional
@@ -17,6 +18,25 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 VOICE_CALLBACK_PREFIX = "ve"
 VOICE_CALLBACK_TOKEN_PATTERN = r"[A-Za-z0-9_-]{16,48}"
+
+
+_CORRECTION_PREFIX = re.compile(
+    r"^\s*(?:agregale|agregá|agrega|cambiale|cambiá|cambia|"
+    r"corregile|corregí|corrige|ponele|poné|pone|actualizale|actualizá|actualiza)\b"
+    r"\s*(?:la|el)?\s*:?\s*",
+    re.IGNORECASE,
+)
+
+_CLASSIFICATION_SUGGESTIONS = (
+    (("car wash", "lavadero", "lavado de auto", "lavado auto"), ("Auto", "Lavado")),
+    (("ypf", "shell", "axion", "puma energy", "nafta", "combustible"), ("Auto", "Combustible")),
+    (("estacionamiento", "parking", "garage"), ("Auto", "Estacionamiento")),
+    (("uber", "cabify", "didi", "taxi", "remis"), ("Transporte", "Viajes")),
+    (("rappi", "pedidos ya", "pedidosya"), ("Comida", "Delivery")),
+    (("carrefour", "coto", "disco", "jumbo", "dia ", "supermercado"), ("Comida", "Supermercado")),
+    (("netflix", "spotify", "disney", "youtube premium"), ("Entretenimiento", "Streaming")),
+    (("farmacia", "farmacity"), ("Salud", "Farmacia")),
+)
 
 
 class TelegramVoice(BaseModel):
@@ -134,6 +154,10 @@ def parse_voice_expense_correction(text: object) -> dict[str, object] | None:
     raw_text = str(text or "").strip()
     if not raw_text or len(raw_text) > 1000:
         return None
+    # "Agregale categoría: Auto" and "Agregale: Categoría: Auto" are
+    # corrections too. Remove only a leading imperative phrase; a normal
+    # expense query remains untouched and can continue through the SQL flow.
+    raw_text = _CORRECTION_PREFIX.sub("", raw_text, count=1)
 
     labels = {
         "comercio": "merchant",
@@ -189,6 +213,19 @@ def parse_voice_expense_correction(text: object) -> dict[str, object] | None:
             })
             patch[field] = getattr(validated, field)
     return patch or None
+
+
+def suggest_manual_expense_classification(merchant: str) -> tuple[str, str] | None:
+    """Return a transparent rule-based category suggestion for a merchant.
+
+    Suggestions are never persisted automatically; the person can accept or
+    override them in the confirmation preview.
+    """
+    normalized = unicodedata.normalize("NFKD", merchant).encode("ascii", "ignore").decode("ascii").lower()
+    for keywords, suggestion in _CLASSIFICATION_SUGGESTIONS:
+        if any(keyword in normalized for keyword in keywords):
+            return suggestion
+    return None
 
 
 _SPANISH_MONTHS_AND_WEEKDAYS = (

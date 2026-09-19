@@ -15,6 +15,7 @@ from voice_expenses import (
     build_voice_callback,
     parse_voice_expense_correction,
     parse_voice_callback,
+    suggest_manual_expense_classification,
 )
 
 
@@ -84,6 +85,23 @@ class ManualExpenseIntentTest(unittest.TestCase):
         self.assertEqual(patch["category"], "Auto")
         self.assertEqual(patch["subcategory"], "Lavado")
         self.assertEqual(patch["amount"], Decimal("21500.50"))
+
+    def test_parses_conversational_prefixes_for_pending_expense_corrections(self):
+        patch = parse_voice_expense_correction(
+            "Agregale: Categoría: Auto\nSubcategoría: Lavado"
+        )
+        self.assertEqual(patch, {"category": "Auto", "subcategory": "Lavado"})
+        self.assertEqual(
+            parse_voice_expense_correction("agregale categoria: Auto"),
+            {"category": "Auto"},
+        )
+
+    def test_suggests_classification_from_recognized_merchant_without_persisting_it(self):
+        self.assertEqual(
+            suggest_manual_expense_classification("Exclusive Car Wash"),
+            ("Auto", "Lavado"),
+        )
+        self.assertIsNone(suggest_manual_expense_classification("Comercio desconocido"))
 
     def test_unlabelled_question_is_not_a_correction(self):
         self.assertIsNone(parse_voice_expense_correction("¿Cuánto gasté este mes?"))
