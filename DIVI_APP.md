@@ -21,7 +21,10 @@ continue offline. With an API URL and a Cognito access token in
 
 Set these Terraform variables through CI secrets, never in source:
 
-- `divi_frontend_bucket_name` and `divi_frontend_origin`
+- `divi_frontend_origin`. The CI workflow derives
+  `divi_frontend_bucket_name` as `divi-expenses-frontend-<AWS account ID>` so
+  Terraform stays non-interactive and the S3 bucket name remains globally
+  unique.
 - Google OAuth client ID/secret (optional; email authentication works without it)
 - Mercado Pago application token, webhook secret, Premium plan ID and OAuth
   client ID/secret/redirect URI.

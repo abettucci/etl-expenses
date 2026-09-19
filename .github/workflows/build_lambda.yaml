@@ -8,6 +8,9 @@ on:
 env:
   TF_VAR_AWS_REGION: ${{ secrets.AWS_REGION }}
   TF_VAR_AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  # S3 bucket names are globally unique. Keep this deterministic so Terraform
+  # does not prompt for a required variable during non-interactive CI runs.
+  TF_VAR_divi_frontend_bucket_name: divi-expenses-frontend-${{ secrets.AWS_ACCOUNT_ID }}
   TF_VAR_ECR_REPO: ${{ secrets.ECR_REPO }}
   ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPO }}"
   TF_VAR_EMAIL: ${{ secrets.EMAIL }}
