@@ -13,6 +13,7 @@ from voice_expenses import (
     TelegramFileResponse,
     TelegramVoice,
     build_voice_callback,
+    parse_voice_expense_correction,
     parse_voice_callback,
 )
 
@@ -74,6 +75,18 @@ class ManualExpenseIntentTest(unittest.TestCase):
         })
         self.assertNotIn("transcript", pending.model_dump())
         self.assertNotIn("audio", pending.model_dump())
+
+    def test_parses_labelled_partial_correction_with_category_and_subcategory(self):
+        patch = parse_voice_expense_correction(
+            "Comercio: Exclusive Car Wash\nCategoría: Auto\nSubcategoría; Lavado\nMonto: 21.500,50"
+        )
+        self.assertEqual(patch["merchant"], "Exclusive Car Wash")
+        self.assertEqual(patch["category"], "Auto")
+        self.assertEqual(patch["subcategory"], "Lavado")
+        self.assertEqual(patch["amount"], Decimal("21500.50"))
+
+    def test_unlabelled_question_is_not_a_correction(self):
+        self.assertIsNone(parse_voice_expense_correction("¿Cuánto gasté este mes?"))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ representation here so they cannot be persisted accidentally.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
@@ -77,6 +77,8 @@ class ManualExpenseIntent(BaseModel):
     merchant: str = Field(min_length=2, max_length=100)
     expense_date: date
     currency: Literal["ARS"]
+    category: str | None = Field(default=None, max_length=80)
+    subcategory: str | None = Field(default=None, max_length=80)
 
     @field_validator("merchant")
     @classmethod
@@ -85,6 +87,105 @@ class ManualExpenseIntent(BaseModel):
         if not re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9&.' -]+", normalized):
             raise ValueError("invalid merchant")
         return normalized
+
+    @field_validator("category", "subcategory")
+    @classmethod
+    def classification_must_be_readable(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            return None
+        if not re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9&.' /-]+", normalized):
+            raise ValueError("invalid classification")
+        return normalized
+
+
+def _parse_ars_amount(raw_value: str) -> Decimal:
+    value = raw_value.strip().replace("$", "").replace("ARS", "").replace("ars", "")
+    value = re.sub(r"\s+", "", value)
+    if not re.fullmatch(r"\d[\d.,]*", value):
+        raise ValueError("invalid amount")
+    last_group = re.search(r"[.,](\d+)$", value)
+    if last_group and len(last_group.group(1)) in (1, 2):
+        integer_part = re.sub(r"[.,]", "", value[: last_group.start()])
+        value = f"{integer_part}.{last_group.group(1)}"
+    else:
+        value = re.sub(r"[.,]", "", value)
+    try:
+        amount = Decimal(value).quantize(Decimal("0.01"))
+    except InvalidOperation as exc:
+        raise ValueError("invalid amount") from exc
+    if amount <= 0:
+        raise ValueError("invalid amount")
+    return amount
+
+
+def parse_voice_expense_correction(text: object) -> dict[str, object] | None:
+    """Parse labelled, partial corrections for a pending voice expense.
+
+    Corrections deliberately use explicit labels so a normal question sent while
+    a confirmation is open does not get mistaken for a financial update.
+    Accepted example: ``Comercio: Lavadero\nCategoría: Auto\nSubcategoría: Lavado``.
+    """
+    raw_text = str(text or "").strip()
+    if not raw_text or len(raw_text) > 1000:
+        return None
+
+    labels = {
+        "comercio": "merchant",
+        "merchant": "merchant",
+        "monto": "amount",
+        "importe": "amount",
+        "fecha": "expense_date",
+        "categoria": "category",
+        "categoría": "category",
+        "subcategoria": "subcategory",
+        "subcategoría": "subcategory",
+    }
+    pattern = re.compile(
+        r"(?:^|[\n;])\s*(comercio|merchant|monto|importe|fecha|categor[ií]a|subcategor[ií]a)\s*[:=;]\s*"
+        r"(.*?)(?=(?:[\n;]\s*(?:comercio|merchant|monto|importe|fecha|categor[ií]a|subcategor[ií]a)\s*[:=;])|$)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    patch: dict[str, object] = {}
+    for match in pattern.finditer(raw_text):
+        field = labels[match.group(1).strip().lower()]
+        value = " ".join(match.group(2).split())
+        if not value:
+            raise ValueError(f"missing {field}")
+        if field == "amount":
+            patch[field] = _parse_ars_amount(value)
+        elif field == "expense_date":
+            parsed_date = None
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+                try:
+                    parsed_date = datetime.strptime(value, fmt).date()
+                    break
+                except ValueError:
+                    continue
+            if parsed_date is None:
+                raise ValueError("invalid date")
+            patch[field] = parsed_date
+        elif field == "merchant":
+            patch[field] = ManualExpenseIntent.model_validate({
+                "intent": "create_manual_expense",
+                "amount": "1",
+                "merchant": value,
+                "expense_date": date.today(),
+                "currency": "ARS",
+            }).merchant
+        else:
+            validated = ManualExpenseIntent.model_validate({
+                "intent": "create_manual_expense",
+                "amount": "1",
+                "merchant": "Gasto manual",
+                "expense_date": date.today(),
+                "currency": "ARS",
+                field: value,
+            })
+            patch[field] = getattr(validated, field)
+    return patch or None
 
 
 _SPANISH_MONTHS_AND_WEEKDAYS = (

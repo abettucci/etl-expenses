@@ -964,6 +964,8 @@ resource "google_bigquery_table" "manual_expenses" {
     { name = "expense_date",        type = "DATE",      mode = "REQUIRED" },
     { name = "amount",              type = "NUMERIC",   mode = "REQUIRED" },
     { name = "merchant",            type = "STRING",    mode = "REQUIRED" },
+    { name = "categoria",           type = "STRING",    mode = "NULLABLE" },
+    { name = "subcategoria",        type = "STRING",    mode = "NULLABLE" },
     { name = "currency",            type = "STRING",    mode = "REQUIRED" },
     { name = "source",              type = "STRING",    mode = "REQUIRED" },
     { name = "created_at",          type = "TIMESTAMP", mode = "REQUIRED" }

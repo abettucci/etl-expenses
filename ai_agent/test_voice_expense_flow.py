@@ -21,6 +21,16 @@ class FakeTable:
     def get_item(self, **_kwargs):
         return {"Item": self.item} if self.item else {}
 
+    def scan(self, **kwargs):
+        expected_chat = kwargs.get("ExpressionAttributeValues", {}).get(":chat_id")
+        items = [self.item] if self.item and self.item.get("chat_id") == expected_chat else []
+        return {"Items": items}
+
+    def update_item(self, **kwargs):
+        if not self.item or self.item.get("confirmation_token") != kwargs["Key"]["confirmation_token"]:
+            raise ValueError("missing pending expense")
+        self.item["expense"] = kwargs["ExpressionAttributeValues"][":expense"]
+
     def delete_item(self, **kwargs):
         self.deleted.append(kwargs["Key"]["confirmation_token"])
         self.item = None
@@ -166,6 +176,31 @@ class VoiceExpenseFlowTest(unittest.TestCase):
 
         store.assert_not_called()
         self.assertEqual(self.table.deleted, [token])
+
+    def test_text_correction_updates_pending_preview_without_writing(self):
+        token = "zPq8Z9u5E2J7S3rK6T1vM4nQ"
+        self.table.item = {
+            "confirmation_token": token,
+            "chat_id": "12345",
+            "message_id": "456",
+            "expense": self.expense.model_dump(mode="json"),
+            "expires_at": 2_000_000_000,
+        }
+        with patch.object(self.module, "_store_manual_expense") as store:
+            handled, text, keyboard = self.module.handle_pending_voice_expense_correction(
+                self.event,
+                12345,
+                "Comercio: Exclusive Car Wash\nCategoría: Auto\nSubcategoría: Lavado",
+            )
+
+        self.assertTrue(handled)
+        self.assertIn("Exclusive Car Wash", text)
+        self.assertIn("Categoría: Auto", text)
+        self.assertIn("Subcategoría: Lavado", text)
+        self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], f"ve:confirm:{token}")
+        self.assertEqual(self.table.item["expense"]["category"], "Auto")
+        self.assertEqual(self.table.item["expense"]["subcategory"], "Lavado")
+        store.assert_not_called()
 
 
 if __name__ == "__main__":

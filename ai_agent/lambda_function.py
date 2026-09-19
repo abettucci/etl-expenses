@@ -33,6 +33,7 @@ from voice_expenses import (
     build_voice_callback,
     parse_voice_callback,
     extract_manual_expense_regex,
+    parse_voice_expense_correction,
 )
 
 # Pandas - para conversión a DataFrame
@@ -1091,11 +1092,12 @@ def _store_manual_expense(bq_client, message_id: int, expense: ManualExpenseInte
     USING (
       SELECT @expense_id AS expense_id, @telegram_message_id AS telegram_message_id,
              @expense_date AS expense_date, @amount AS amount, @merchant AS merchant,
+             @categoria AS categoria, @subcategoria AS subcategoria,
              'ARS' AS currency, 'telegram_voice' AS source, CURRENT_TIMESTAMP() AS created_at
     ) AS source
     ON target.telegram_message_id = source.telegram_message_id
-    WHEN NOT MATCHED THEN INSERT (expense_id, telegram_message_id, expense_date, amount, merchant, currency, source, created_at)
-      VALUES (source.expense_id, source.telegram_message_id, source.expense_date, source.amount, source.merchant, source.currency, source.source, source.created_at)
+    WHEN NOT MATCHED THEN INSERT (expense_id, telegram_message_id, expense_date, amount, merchant, categoria, subcategoria, currency, source, created_at)
+      VALUES (source.expense_id, source.telegram_message_id, source.expense_date, source.amount, source.merchant, source.categoria, source.subcategoria, source.currency, source.source, source.created_at)
     """
     config = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("expense_id", "STRING", str(uuid.uuid4())),
@@ -1103,6 +1105,8 @@ def _store_manual_expense(bq_client, message_id: int, expense: ManualExpenseInte
         bigquery.ScalarQueryParameter("expense_date", "DATE", expense.expense_date),
         bigquery.ScalarQueryParameter("amount", "NUMERIC", expense.amount),
         bigquery.ScalarQueryParameter("merchant", "STRING", expense.merchant),
+        bigquery.ScalarQueryParameter("categoria", "STRING", expense.category),
+        bigquery.ScalarQueryParameter("subcategoria", "STRING", expense.subcategory),
     ])
     bq_client.query(query, job_config=config).result()
 
@@ -1138,19 +1142,112 @@ def _get_pending_voice_expense(token: str, chat_id: int) -> PendingVoiceExpense 
     ).get("Item")
     if not item:
         return None
+    pending = _pending_voice_expense_from_item(item)
+    if pending is None:
+        return None
+    if pending.chat_id != chat_id or pending.expires_at < int(time.time()):
+        return None
+    return pending
+
+
+def _pending_voice_expense_from_item(item: dict) -> PendingVoiceExpense | None:
     try:
-        pending = PendingVoiceExpense.model_validate({
+        return PendingVoiceExpense.model_validate({
             "confirmation_token": item.get("confirmation_token"),
             "chat_id": int(item.get("chat_id")),
             "message_id": int(item.get("message_id")),
             "expense": item.get("expense"),
             "expires_at": item.get("expires_at"),
         })
-    except (TypeError, ValueError, ValidationError):
+    except (AttributeError, TypeError, ValueError, ValidationError):
         return None
-    if pending.chat_id != chat_id or pending.expires_at < int(time.time()):
-        return None
-    return pending
+
+
+def _get_pending_voice_expense_for_chat(chat_id: int) -> PendingVoiceExpense | None:
+    """Find the current confirmation for one chat without exposing other chats."""
+    response = dynamo.Table(VOICE_PENDING_EXPENSES_TABLE).scan(
+        FilterExpression="#chat_id = :chat_id",
+        ExpressionAttributeNames={"#chat_id": "chat_id"},
+        ExpressionAttributeValues={":chat_id": str(chat_id)},
+        ConsistentRead=True,
+    )
+    candidates = [
+        pending
+        for item in response.get("Items", [])
+        if (pending := _pending_voice_expense_from_item(item)) is not None
+        and pending.expires_at >= int(time.time())
+    ]
+    return max(candidates, key=lambda pending: pending.expires_at, default=None)
+
+
+def _update_pending_voice_expense(pending: PendingVoiceExpense, expense: ManualExpenseIntent) -> bool:
+    try:
+        dynamo.Table(VOICE_PENDING_EXPENSES_TABLE).update_item(
+            Key={"confirmation_token": pending.confirmation_token},
+            UpdateExpression="SET #expense = :expense",
+            ConditionExpression="#chat_id = :chat_id AND #expires_at >= :now",
+            ExpressionAttributeNames={"#expense": "expense", "#chat_id": "chat_id", "#expires_at": "expires_at"},
+            ExpressionAttributeValues={
+                ":expense": expense.model_dump(mode="json"),
+                ":chat_id": str(pending.chat_id),
+                ":now": int(time.time()),
+            },
+        )
+        return True
+    except Exception as exc:
+        print(f"voice_expense_update_failed: {type(exc).__name__}: {exc}")
+        return False
+
+
+def _voice_expense_preview(expense: ManualExpenseIntent) -> str:
+    details = [
+        f"Comercio: {expense.merchant}",
+        f"Monto: $ {_format_number_ar(float(expense.amount))} ARS",
+        f"Fecha: {expense.expense_date.strftime('%d/%m/%Y')}",
+    ]
+    if expense.category:
+        details.append(f"Categoría: {expense.category}")
+    if expense.subcategory:
+        details.append(f"Subcategoría: {expense.subcategory}")
+    return "¿Guardar este gasto?\n\n" + "\n".join(details) + (
+        "\n\nPodés corregirlo antes de confirmar, por ejemplo:\n"
+        "Categoría: Auto\nSubcategoría: Lavado\nMonto: 25000\n\n"
+        "Confirmá para cargarlo en BigQuery."
+    )
+
+
+def handle_pending_voice_expense_correction(event: dict, chat_id: int, text: str) -> tuple[bool, str | None, dict | None]:
+    """Apply labelled text corrections to a pending voice-expense preview."""
+    try:
+        pending = _get_pending_voice_expense_for_chat(chat_id)
+    except Exception as exc:
+        print(f"voice_expense_lookup_failed: {type(exc).__name__}: {exc}")
+        return False, None, None
+    if pending is None:
+        return False, None, None
+    try:
+        patch = parse_voice_expense_correction(text)
+    except ValueError:
+        return True, (
+            "No pude aplicar esa corrección. Usá campos como: "
+            "Categoría: Auto, Subcategoría: Lavado, Monto: 25000 o Fecha: 19/09/2026."
+        ), None
+    if patch is None:
+        return False, None, None
+    if not _telegram_webhook_is_authorized(event, chat_id):
+        return True, "No pude actualizar ese gasto.", None
+    try:
+        expense = pending.expense.model_copy(update=patch)
+    except ValidationError:
+        return True, "No pude aplicar esa corrección. Revisá los valores e intentá otra vez.", None
+    if not _update_pending_voice_expense(pending, expense):
+        return True, "No pude actualizar el gasto en este momento. Intentá nuevamente.", None
+    return True, _voice_expense_preview(expense), {
+        "inline_keyboard": [[
+            {"text": "Confirmar", "callback_data": build_voice_callback("confirm", pending.confirmation_token)},
+            {"text": "Cancelar", "callback_data": build_voice_callback("cancel", pending.confirmation_token)},
+        ]]
+    }
 
 
 def _delete_pending_voice_expense(token: str) -> None:
@@ -1178,12 +1275,7 @@ def process_telegram_voice(event: dict, message: dict, chat_id: object) -> tuple
         print(f"voice_transcript_debug: {transcript!r}")
         expense = _extract_manual_expense(transcript)
         token = _save_pending_voice_expense(voice_message.chat_id, voice_message.message_id, expense)
-        return (
-            "¿Guardar este gasto?\n\n"
-            f"Comercio: {expense.merchant}\nMonto: $ {_format_number_ar(float(expense.amount))} ARS\n"
-            f"Fecha: {expense.expense_date.strftime('%d/%m/%Y')}\n\n"
-            "Confirmá para cargarlo en BigQuery."
-        ), {
+        return _voice_expense_preview(expense), {
             "inline_keyboard": [[
                 {"text": "Confirmar", "callback_data": build_voice_callback("confirm", token)},
                 {"text": "Cancelar", "callback_data": build_voice_callback("cancel", token)},
@@ -3221,6 +3313,20 @@ def lambda_handler(event, context):
         telegram_message_id = message.get("message_id")
         if telegram_message_id and not try_acquire_message_lock(telegram_message_id):
             print(f"⚠️ Mensaje de texto {telegram_message_id} ya fue procesado o está siendo procesado, ignorando")
+            return {"statusCode": 200}
+
+        handled_correction, correction_response, correction_keyboard = handle_pending_voice_expense_correction(
+            event, int(chat_id), text
+        )
+        if handled_correction:
+            if correction_response:
+                send_telegram_message(
+                    chat_id,
+                    correction_response,
+                    TELEGRAM_BOT_TOKEN,
+                    parse_mode=False,
+                    reply_markup=correction_keyboard,
+                )
             return {"statusCode": 200}
 
         # =========================================
