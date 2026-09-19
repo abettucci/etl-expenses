@@ -176,6 +176,18 @@ jobs:
             -backend-config="dynamodb_table=etl-expenses-terraform-locks" \
             -backend-config="encrypt=true"
 
+          # The state now persists across runners. Existing imports must be
+          # idempotent: Terraform otherwise exits when an address is already
+          # managed, before it gets to apply.
+          terraform() {
+            if [ "$1" = "import" ] && [ -n "${2:-}" ] \
+              && command terraform state show "$2" >/dev/null 2>&1; then
+              echo "Already managed: $2"
+              return 0
+            fi
+            command terraform "$@"
+          }
+
           # Importar dataset STG
           terraform import google_bigquery_dataset.staging $TF_VAR_GCP_PROJECT_ID/STG || true
 
