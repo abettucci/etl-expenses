@@ -211,15 +211,43 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         store.assert_not_called()
 
     def test_preview_suggests_category_and_subcategory_without_applying_them(self):
-        expense = self.expense.model_copy(update={"merchant": "Exclusive Car Wash"})
+        expense = self.expense.model_copy(update={"merchant": "lavadero de autos exclusive car wash"})
 
         text = self.module._voice_expense_preview(expense)
 
-        self.assertIn("Sugerencia según el comercio", text)
-        self.assertIn("Categoría: Auto", text)
-        self.assertIn("Subcategoría: Lavado", text)
+        self.assertIn("Sugerencias disponibles", text)
+        self.assertIn("Comercio sugerido: Exclusive Car Wash", text)
+        self.assertIn("Categoría sugerida: Auto", text)
+        self.assertIn("Subcategoría sugerida: Lavado", text)
         self.assertIsNone(expense.category)
         self.assertIsNone(expense.subcategory)
+
+    def test_suggestion_button_updates_pending_expense_without_writing_to_bigquery(self):
+        token = "zPq8Z9u5E2J7S3rK6T1vM4nQ"
+        expense = self.expense.model_copy(update={"merchant": "lavadero de autos exclusive car wash"})
+        self.table.item = {
+            "confirmation_token": token,
+            "chat_id": "12345",
+            "message_id": "456",
+            "expense": expense.model_dump(mode="json"),
+            "expires_at": 2_000_000_000,
+        }
+        update = {
+            "callback_query": {
+                "id": "callback-suggestion", "data": f"ve:suggestion:{token}",
+                "message": {"chat": {"id": 12345}},
+            },
+        }
+        with patch.object(self.module, "_store_manual_expense") as store, \
+             patch.object(self.module, "telegram_answer_callback"), \
+             patch.object(self.module, "send_telegram_message") as send:
+            self.module.handle_telegram_voice_callback(self.event, update)
+
+        store.assert_not_called()
+        self.assertEqual(self.table.item["expense"]["merchant"], "Exclusive Car Wash")
+        self.assertEqual(self.table.item["expense"]["category"], "Auto")
+        self.assertEqual(self.table.item["expense"]["subcategory"], "Lavado")
+        self.assertEqual(send.call_args.kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"], f"ve:confirm:{token}")
 
     def test_text_can_start_editing_confirmed_expense_and_accept_bare_merchant_value(self):
         self.module._save_recent_manual_expense(

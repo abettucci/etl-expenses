@@ -38,6 +38,18 @@ _CLASSIFICATION_SUGGESTIONS = (
     (("farmacia", "farmacity"), ("Salud", "Farmacia")),
 )
 
+_MERCHANT_SUGGESTIONS = (
+    (("exclusive car wash",), "Exclusive Car Wash"),
+    (("car wash",), "Car Wash"),
+)
+
+_NATURAL_CORRECTION = re.compile(
+    r"^\s*(?:cambia|cambiá|cambiale|corregí|corregile|actualiza|actualizá|pone|poné)\s+"
+    r"(?:el|la)?\s*(nombre\s+del\s+comercio|comercio|monto|importe|fecha|"
+    r"categor[ií]a|subcategor[ií]a)\s+(?:a|por)\s+(.+?)\s*$",
+    re.IGNORECASE,
+)
+
 
 class TelegramVoice(BaseModel):
     """Allowlisted metadata for a Telegram voice note.
@@ -154,6 +166,10 @@ def parse_voice_expense_correction(text: object) -> dict[str, object] | None:
     raw_text = str(text or "").strip()
     if not raw_text or len(raw_text) > 1000:
         return None
+    natural_match = _NATURAL_CORRECTION.fullmatch(raw_text)
+    if natural_match:
+        natural_label = natural_match.group(1).lower()
+        raw_text = f"{'Comercio' if natural_label.startswith('nombre') else natural_match.group(1)}: {natural_match.group(2)}"
     # "Agregale categoría: Auto" and "Agregale: Categoría: Auto" are
     # corrections too. Remove only a leading imperative phrase; a normal
     # expense query remains untouched and can continue through the SQL flow.
@@ -226,6 +242,25 @@ def suggest_manual_expense_classification(merchant: str) -> tuple[str, str] | No
         if any(keyword in normalized for keyword in keywords):
             return suggestion
     return None
+
+
+def suggest_manual_expense_values(merchant: str) -> dict[str, str]:
+    """Return optional, rule-based values that a person can explicitly apply.
+
+    The caller must present these values and request confirmation; this helper
+    never mutates an expense by itself.
+    """
+    normalized = unicodedata.normalize("NFKD", merchant).encode("ascii", "ignore").decode("ascii").lower()
+    values: dict[str, str] = {}
+    for keywords, suggested_merchant in _MERCHANT_SUGGESTIONS:
+        if any(keyword in normalized for keyword in keywords):
+            if normalized != suggested_merchant.lower():
+                values["merchant"] = suggested_merchant
+            break
+    classification = suggest_manual_expense_classification(merchant)
+    if classification:
+        values["category"], values["subcategory"] = classification
+    return values
 
 
 _SPANISH_MONTHS_AND_WEEKDAYS = (
@@ -323,17 +358,17 @@ class TelegramVoiceCallback(BaseModel):
     callback_data: str = Field(min_length=1, max_length=64)
 
 
-def build_voice_callback(action: Literal["confirm", "cancel"], token: str) -> str:
+def build_voice_callback(action: Literal["confirm", "cancel", "suggestion"], token: str) -> str:
     """Build a compact Telegram callback payload with no financial data."""
     if not re.fullmatch(VOICE_CALLBACK_TOKEN_PATTERN, token):
         raise ValueError("invalid confirmation token")
     return f"{VOICE_CALLBACK_PREFIX}:{action}:{token}"
 
 
-def parse_voice_callback(value: object) -> tuple[Literal["confirm", "cancel"], str]:
-    """Parse only the two explicit actions allowed by this feature."""
+def parse_voice_callback(value: object) -> tuple[Literal["confirm", "cancel", "suggestion"], str]:
+    """Parse only the explicit actions allowed by the confirmation flow."""
     raw = str(value or "")
-    match = re.fullmatch(rf"{VOICE_CALLBACK_PREFIX}:(confirm|cancel):({VOICE_CALLBACK_TOKEN_PATTERN})", raw)
+    match = re.fullmatch(rf"{VOICE_CALLBACK_PREFIX}:(confirm|cancel|suggestion):({VOICE_CALLBACK_TOKEN_PATTERN})", raw)
     if not match:
         raise ValueError("invalid voice callback")
     return match.group(1), match.group(2)

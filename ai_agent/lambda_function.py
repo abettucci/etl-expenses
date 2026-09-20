@@ -35,7 +35,7 @@ from voice_expenses import (
     parse_voice_callback,
     extract_manual_expense_regex,
     parse_voice_expense_correction,
-    suggest_manual_expense_classification,
+    suggest_manual_expense_values,
 )
 
 # Pandas - para conversión a DataFrame
@@ -1455,18 +1455,48 @@ def _voice_expense_preview(expense: ManualExpenseIntent) -> str:
         details.append(f"Categoría: {expense.category}")
     if expense.subcategory:
         details.append(f"Subcategoría: {expense.subcategory}")
-    suggestion = suggest_manual_expense_classification(expense.merchant)
+    suggestion = _voice_expense_suggestion_patch(expense)
     suggestion_text = ""
-    if suggestion and (not expense.category or not expense.subcategory):
-        suggestion_text = (
-            "\n\nSugerencia según el comercio (no se guarda sola):\n"
-            f"Categoría: {suggestion[0]}\nSubcategoría: {suggestion[1]}"
+    if suggestion:
+        labels = {
+            "merchant": "Comercio sugerido",
+            "category": "Categoría sugerida",
+            "subcategory": "Subcategoría sugerida",
+        }
+        suggestion_text = "\n\nSugerencias disponibles (no se guardan solas):\n" + "\n".join(
+            f"{labels[field]}: {value}" for field, value in suggestion.items()
         )
     return "¿Guardar este gasto?\n\n" + "\n".join(details) + suggestion_text + (
         "\n\nPodés corregirlo antes de confirmar, por ejemplo:\n"
         "Agregale categoría: Auto\nSubcategoría: Lavado\nMonto: 25000\n\n"
         "Confirmá para cargarlo en BigQuery."
     )
+
+
+def _voice_expense_suggestion_patch(expense: ManualExpenseIntent) -> dict[str, str]:
+    suggested = suggest_manual_expense_values(expense.merchant)
+    patch: dict[str, str] = {}
+    if suggested.get("merchant") and suggested["merchant"] != expense.merchant:
+        patch["merchant"] = suggested["merchant"]
+    if suggested.get("category") and not expense.category:
+        patch["category"] = suggested["category"]
+    if suggested.get("subcategory") and not expense.subcategory:
+        patch["subcategory"] = suggested["subcategory"]
+    return patch
+
+
+def _voice_expense_keyboard(expense: ManualExpenseIntent, token: str) -> dict:
+    buttons = []
+    if _voice_expense_suggestion_patch(expense):
+        buttons.append([{
+            "text": "Aplicar sugerencias",
+            "callback_data": build_voice_callback("suggestion", token),
+        }])
+    buttons.append([
+        {"text": "Confirmar", "callback_data": build_voice_callback("confirm", token)},
+        {"text": "Cancelar", "callback_data": build_voice_callback("cancel", token)},
+    ])
+    return {"inline_keyboard": buttons}
 
 
 def handle_pending_voice_expense_correction(event: dict, chat_id: int, text: str) -> tuple[bool, str | None, dict | None]:
@@ -1495,12 +1525,7 @@ def handle_pending_voice_expense_correction(event: dict, chat_id: int, text: str
         return True, "No pude aplicar esa corrección. Revisá los valores e intentá otra vez.", None
     if not _update_pending_voice_expense(pending, expense):
         return True, "No pude actualizar el gasto en este momento. Intentá nuevamente.", None
-    return True, _voice_expense_preview(expense), {
-        "inline_keyboard": [[
-            {"text": "Confirmar", "callback_data": build_voice_callback("confirm", pending.confirmation_token)},
-            {"text": "Cancelar", "callback_data": build_voice_callback("cancel", pending.confirmation_token)},
-        ]]
-    }
+    return True, _voice_expense_preview(expense), _voice_expense_keyboard(expense, pending.confirmation_token)
 
 
 def handle_confirmed_manual_expense_edit(
@@ -1685,12 +1710,7 @@ def process_telegram_voice(event: dict, message: dict, chat_id: object) -> tuple
         print(f"voice_transcript_debug: {transcript!r}")
         expense = _extract_manual_expense(transcript)
         token = _save_pending_voice_expense(voice_message.chat_id, voice_message.message_id, expense)
-        return _voice_expense_preview(expense), {
-            "inline_keyboard": [[
-                {"text": "Confirmar", "callback_data": build_voice_callback("confirm", token)},
-                {"text": "Cancelar", "callback_data": build_voice_callback("cancel", token)},
-            ]]
-        }
+        return _voice_expense_preview(expense), _voice_expense_keyboard(expense, token)
     except (ValidationError, ValueError) as exc:
         print(f"voice_expense_rejected: {type(exc).__name__}: {exc}")
         return "No pude identificar un gasto claro. Probá diciendo, por ejemplo: “42.000 pesos peluquería”.", None
@@ -1746,6 +1766,30 @@ def handle_telegram_voice_callback(event: dict, data: dict) -> dict:
         _delete_pending_voice_expense(token)
         telegram_answer_callback(callback.callback_id, "Carga cancelada")
         send_telegram_message(callback.chat_id, "Carga cancelada.", TELEGRAM_BOT_TOKEN, parse_mode=False)
+        return {"statusCode": 200}
+
+    if action == "suggestion":
+        patch = _voice_expense_suggestion_patch(pending.expense)
+        if not patch:
+            telegram_answer_callback(callback.callback_id, "No hay sugerencias nuevas.")
+            return {"statusCode": 200}
+        try:
+            expense = pending.expense.model_copy(update=patch)
+        except ValidationError:
+            telegram_answer_callback(callback.callback_id, "No se pudieron aplicar las sugerencias.")
+            return {"statusCode": 200}
+        if not _update_pending_voice_expense(pending, expense):
+            telegram_answer_callback(callback.callback_id, "No se pudo actualizar.")
+            send_telegram_message(
+                callback.chat_id, "No pude aplicar las sugerencias. Intentá nuevamente.",
+                TELEGRAM_BOT_TOKEN, parse_mode=False,
+            )
+            return {"statusCode": 200}
+        telegram_answer_callback(callback.callback_id, "Sugerencias aplicadas")
+        send_telegram_message(
+            callback.chat_id, _voice_expense_preview(expense), TELEGRAM_BOT_TOKEN,
+            parse_mode=False, reply_markup=_voice_expense_keyboard(expense, pending.confirmation_token),
+        )
         return {"statusCode": 200}
 
     try:

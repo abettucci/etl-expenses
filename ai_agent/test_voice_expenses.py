@@ -16,6 +16,7 @@ from voice_expenses import (
     parse_voice_expense_correction,
     parse_voice_callback,
     suggest_manual_expense_classification,
+    suggest_manual_expense_values,
 )
 
 
@@ -51,6 +52,7 @@ class ManualExpenseIntentTest(unittest.TestCase):
         token = "zPq8Z9u5E2J7S3rK6T1vM4nQ"
         callback = build_voice_callback("confirm", token)
         self.assertEqual(parse_voice_callback(callback), ("confirm", token))
+        self.assertEqual(parse_voice_callback(build_voice_callback("suggestion", token)), ("suggestion", token))
         with self.assertRaises(ValueError):
             parse_voice_callback("ve:confirm:42;DROP TABLE")
 
@@ -95,6 +97,10 @@ class ManualExpenseIntentTest(unittest.TestCase):
             parse_voice_expense_correction("agregale categoria: Auto"),
             {"category": "Auto"},
         )
+        self.assertEqual(
+            parse_voice_expense_correction("cambia el comercio a Exclusive Car Wash"),
+            {"merchant": "Exclusive Car Wash"},
+        )
 
     def test_suggests_classification_from_recognized_merchant_without_persisting_it(self):
         self.assertEqual(
@@ -102,6 +108,14 @@ class ManualExpenseIntentTest(unittest.TestCase):
             ("Auto", "Lavado"),
         )
         self.assertIsNone(suggest_manual_expense_classification("Comercio desconocido"))
+        self.assertEqual(
+            suggest_manual_expense_values("lavadero de autos exclusive car wash"),
+            {
+                "merchant": "Exclusive Car Wash",
+                "category": "Auto",
+                "subcategory": "Lavado",
+            },
+        )
 
     def test_unlabelled_question_is_not_a_correction(self):
         self.assertIsNone(parse_voice_expense_correction("¿Cuánto gasté este mes?"))
