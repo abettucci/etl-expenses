@@ -3308,8 +3308,8 @@ def _variation_query(
     )
     category_expr = f"COALESCE({mapped_category_expr}, {raw_category_expr})"
     subcategory_expr = f"COALESCE({mapped_subcategory_expr}, {raw_subcategory_expr})"
-    mapping_join = """
-      LEFT JOIN {mapping} m
+    mapping_join = f"""
+      LEFT JOIN {bq_fqn(MAPPING_TABLE)} m
         ON UPPER(g.comercio) = UPPER(m.comercio_raw)
        AND g.extraido_de = m.flow
        AND m.activo = TRUE
@@ -3367,8 +3367,9 @@ def _variation_query(
         subcategory_expr=subcategory_expr,
         gastos_totales=bq_fqn(GASTOS_TOTALES_VIEW),
         mapping_join=mapping_join,
-        mapping=bq_fqn(MAPPING_TABLE),
     )
+    if "{" in query or "}" in query:
+        raise RuntimeError("variation query template contains unresolved placeholders")
     config = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("current_start", "DATE", periods.current_start),
         bigquery.ScalarQueryParameter("current_end", "DATE", periods.current_end),

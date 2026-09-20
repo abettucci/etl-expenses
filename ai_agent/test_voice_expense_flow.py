@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import types
 import unittest
+from datetime import date
 from unittest.mock import patch
 
 
@@ -61,6 +62,12 @@ def load_lambda_module():
     fake_openai.OpenAI = lambda **_kwargs: types.SimpleNamespace()
 
     fake_bigquery = types.ModuleType("google.cloud.bigquery")
+    fake_bigquery.QueryJobConfig = lambda query_parameters: types.SimpleNamespace(
+        query_parameters=query_parameters
+    )
+    fake_bigquery.ScalarQueryParameter = lambda name, _type, value: types.SimpleNamespace(
+        name=name, value=value
+    )
     fake_service_account = types.ModuleType("google.oauth2.service_account")
     fake_cloud = types.ModuleType("google.cloud")
     fake_cloud.bigquery = fake_bigquery
@@ -145,6 +152,24 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         self.assertEqual(text, "No pude procesar este mensaje de voz.")
         self.assertIsNone(keyboard)
         download.assert_not_called()
+
+    def test_variation_query_resolves_mapping_table_placeholder(self):
+        periods = types.SimpleNamespace(
+            current_start=date(2026, 9, 7),
+            current_end=date(2026, 9, 13),
+            previous_start=date(2026, 8, 31),
+            previous_end=date(2026, 9, 6),
+        )
+        query, _config = self.module._variation_query(
+            periods,
+            use_mapping=True,
+            gastos_columns={"categoria", "subcategoria"},
+            mapping_columns={"comercio_raw", "comercio_depurado", "activo", "categoria", "subcategoria"},
+        )
+        self.assertNotIn("{mapping}", query)
+        self.assertIn("`test-project.PRD.dim_comercio_mapping`", query)
+        self.assertIn("'categoria' AS dimension_type", query)
+        self.assertIn("'subcategoria' AS dimension_type", query)
 
     def test_confirmed_callback_writes_once_and_retry_does_not_duplicate(self):
         token = "zPq8Z9u5E2J7S3rK6T1vM4nQ"
