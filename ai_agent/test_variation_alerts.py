@@ -20,6 +20,13 @@ class VariationAlertRulesTest(unittest.TestCase):
         self.assertEqual(periods.current_end, date(2025, 12, 31))
         self.assertEqual(periods.previous_start, date(2025, 11, 1))
 
+    def test_biweekly_uses_two_adjacent_complete_two_week_windows(self):
+        periods = completed_comparison_periods("biweekly", date(2026, 1, 5))
+        self.assertEqual(periods.current_start, date(2025, 12, 22))
+        self.assertEqual(periods.current_end, date(2026, 1, 4))
+        self.assertEqual(periods.previous_start, date(2025, 12, 8))
+        self.assertEqual(periods.previous_end, date(2025, 12, 21))
+
     def test_threshold_is_percentage_or_absolute_increase(self):
         self.assertTrue(exceeds_variation_threshold(10000, 11000))
         self.assertTrue(exceeds_variation_threshold(100000, 105000))

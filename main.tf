@@ -849,7 +849,7 @@ resource "aws_lambda_function" "compensation_flow" {
 
 # 4.10 Lambda para procesar el agente de IA y resolver las consultas sobre los datos en BigQuery
 resource "aws_lambda_function" "ai_agent" {
-  description   = "Bot de Telegram con IA: responde consultas de gastos, procesa notas de voz y tickets, y manda alertas de presupuesto/comercios sin mapear"
+  description   = "Bot de Telegram con IA: responde consultas de gastos, procesa notas de voz y tickets, y manda alertas de presupuesto, variaciones y comercios sin mapear"
   function_name = "ai_agent"
   role          = aws_iam_role.lambda_exec.arn
   package_type  = "Image"
@@ -1067,6 +1067,29 @@ resource "aws_lambda_permission" "allow_eventbridge_ai_agent_variation_weekly" {
   function_name = aws_lambda_function.ai_agent.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.ai_agent_variation_weekly.arn
+}
+
+# Dos semanas completas contra las dos anteriores. El rate evita que la alerta
+# se repita cada lunes sobre ventanas superpuestas.
+resource "aws_cloudwatch_event_rule" "ai_agent_variation_biweekly" {
+  name                = "ai-agent-expense-variation-biweekly"
+  description         = "Compara las últimas dos semanas completas por comercio, categoría y subcategoría"
+  schedule_expression = "rate(14 days)"
+}
+
+resource "aws_cloudwatch_event_target" "ai_agent_variation_biweekly" {
+  rule      = aws_cloudwatch_event_rule.ai_agent_variation_biweekly.name
+  target_id = "aiAgentExpenseVariationBiweekly"
+  arn       = aws_lambda_function.ai_agent.arn
+  input     = jsonencode({ action = "alert_variations_biweekly" })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_ai_agent_variation_biweekly" {
+  statement_id  = "AllowExecutionFromEventBridgeVariationBiweekly"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ai_agent.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ai_agent_variation_biweekly.arn
 }
 
 resource "aws_cloudwatch_event_rule" "ai_agent_variation_monthly" {

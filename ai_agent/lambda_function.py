@@ -10,6 +10,7 @@ import unicodedata
 import hashlib
 import hmac
 import secrets
+import traceback
 import boto3
 import base64
 import requests
@@ -3181,9 +3182,11 @@ def run_monthly_budget_alert(event, context) -> dict:
     return {"statusCode": 200}
 
 
-def _alert_key(kind: str, current_end: date, source: str, merchant: str) -> str:
+def _alert_key(kind: str, current_end: date, source: str, dimension_type: str, dimension: str) -> str:
     """Stable, non-sensitive idempotency key; no financial values are persisted."""
-    digest = hashlib.sha256(f"{kind}|{current_end.isoformat()}|{source}|{merchant}".encode()).hexdigest()
+    digest = hashlib.sha256(
+        f"{kind}|{current_end.isoformat()}|{source}|{dimension_type}|{dimension}".encode()
+    ).hexdigest()
     return f"variation#{digest}"
 
 
@@ -3262,18 +3265,49 @@ def _set_variation_thresholds(client, percent_threshold: float, absolute_thresho
     client.query(query, job_config=config).result()
 
 
-def _variation_query(periods, use_mapping: bool) -> tuple[str, bigquery.QueryJobConfig]:
+def _variation_query(
+    periods,
+    use_mapping: bool,
+    gastos_columns: set[str],
+    mapping_columns: set[str],
+) -> tuple[str, bigquery.QueryJobConfig]:
     """Build the variation query against the consolidated gastos_totales view.
 
     Period boundaries are parameterized; only the last completed period (weekly
-    or monthly, as computed by completed_comparison_periods) is evaluated here.
+    biweekly or monthly, as computed by completed_comparison_periods) is evaluated here.
     Self-transfers to SELF_TRANSFER_MERCHANT are excluded so moving money between
     own accounts never counts as an expense increase.
+
+    The consolidated view is older than the category fields in some deployments.
+    We inspect its schema before composing the SQL, so alerting by merchant keeps
+    working while category/subcategory alerts are simply omitted until those
+    fields are available.
     """
+    gastos_columns = {column.lower() for column in gastos_columns}
+    mapping_columns = {column.lower() for column in mapping_columns}
+
     merchant_expr = (
         "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(g.comercio), ''))"
         if use_mapping else "NULLIF(TRIM(g.comercio), '')"
     )
+    raw_category_expr = (
+        "NULLIF(TRIM(g.categoria), '')" if "categoria" in gastos_columns else "CAST(NULL AS STRING)"
+    )
+    raw_subcategory_expr = (
+        "NULLIF(TRIM(g.subcategoria), '')" if "subcategoria" in gastos_columns else "CAST(NULL AS STRING)"
+    )
+    mapped_category_expr = (
+        "NULLIF(TRIM(m.categoria), '')"
+        if use_mapping and "categoria" in mapping_columns
+        else "CAST(NULL AS STRING)"
+    )
+    mapped_subcategory_expr = (
+        "NULLIF(TRIM(m.subcategoria), '')"
+        if use_mapping and "subcategoria" in mapping_columns
+        else "CAST(NULL AS STRING)"
+    )
+    category_expr = f"COALESCE({mapped_category_expr}, {raw_category_expr})"
+    subcategory_expr = f"COALESCE({mapped_subcategory_expr}, {raw_subcategory_expr})"
     mapping_join = """
       LEFT JOIN {mapping} m
         ON UPPER(g.comercio) = UPPER(m.comercio_raw)
@@ -3285,25 +3319,52 @@ def _variation_query(periods, use_mapping: bool) -> tuple[str, bigquery.QueryJob
       SELECT
         g.extraido_de AS source,
         {merchant_expr} AS merchant,
+        {category_expr} AS category,
+        {subcategory_expr} AS subcategory,
         DATE(g.fecha) AS expense_date,
         SAFE_CAST(g.monto_total AS FLOAT64) AS amount
       FROM {gastos_totales} g
       {mapping_join}
       WHERE UPPER(TRIM({merchant_expr})) <> UPPER(@self_transfer_merchant)
+    ), dimensions AS (
+      SELECT source, 'comercio' AS dimension_type, merchant AS dimension, expense_date, amount
+      FROM expenses
+
+      UNION ALL
+
+      SELECT source, 'categoria' AS dimension_type, category AS dimension, expense_date, amount
+      FROM expenses
+      WHERE category IS NOT NULL AND LOWER(category) != 'sin_clasificar'
+
+      UNION ALL
+
+      SELECT
+        source,
+        'subcategoria' AS dimension_type,
+        CASE
+          WHEN category IS NULL THEN subcategory
+          ELSE CONCAT(category, ' › ', subcategory)
+        END AS dimension,
+        expense_date,
+        amount
+      FROM expenses
+      WHERE subcategory IS NOT NULL AND LOWER(subcategory) != 'sin_clasificar'
     ), grouped AS (
-      SELECT source, merchant,
+      SELECT source, dimension_type, dimension,
         SUM(IF(expense_date BETWEEN @current_start AND @current_end, amount, 0)) AS current_amount,
         SUM(IF(expense_date BETWEEN @previous_start AND @previous_end, amount, 0)) AS previous_amount
-      FROM expenses
+      FROM dimensions
       WHERE expense_date BETWEEN @previous_start AND @current_end
-        AND merchant IS NOT NULL AND merchant != '' AND amount > 0
-      GROUP BY source, merchant
+        AND dimension IS NOT NULL AND dimension != '' AND amount > 0
+      GROUP BY source, dimension_type, dimension
     )
-    SELECT source, merchant, previous_amount, current_amount
+    SELECT source, dimension_type, dimension, previous_amount, current_amount
     FROM grouped
     WHERE previous_amount > 0 AND current_amount > previous_amount
     """.format(
         merchant_expr=merchant_expr,
+        category_expr=category_expr,
+        subcategory_expr=subcategory_expr,
         gastos_totales=bq_fqn(GASTOS_TOTALES_VIEW),
         mapping_join=mapping_join,
         mapping=bq_fqn(MAPPING_TABLE),
@@ -3321,9 +3382,14 @@ def _variation_query(periods, use_mapping: bool) -> tuple[str, bigquery.QueryJob
 def _format_variation_alert(kind: str, periods, row, inflation: Optional[float]) -> str:
     previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
     increase, percent = current_amount - previous_amount, (current_amount / previous_amount - 1) * 100
-    period_label = "semana" if kind == "weekly" else "mes"
+    period_label = {"weekly": "semana", "biweekly": "período de 2 semanas", "monthly": "mes"}[kind]
+    dimension_label = {
+        "comercio": "Comercio",
+        "categoria": "Categoría",
+        "subcategoria": "Subcategoría",
+    }.get(str(row["dimension_type"]), "Dimensión")
     text = (
-        f"⚠️ Alerta de variación de gasto\n\n{row['merchant']} ({row['source']})\n"
+        f"⚠️ Alerta de variación de gasto\n\n{dimension_label}: {row['dimension']} ({row['source']})\n"
         f"{period_label.capitalize()} anterior: $ {_format_number_ar(previous_amount)}\n"
         f"{period_label.capitalize()} actual: $ {_format_number_ar(current_amount)}\n"
         f"Aumento: $ {_format_number_ar(increase)} ({percent:.1f}%)\n"
@@ -3340,13 +3406,32 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
     try:
         client = get_bigquery_client()
         mapping_columns = {name.lower() for name in get_bigquery_table_columns(client, MAPPING_TABLE)}
+        gastos_columns = {name.lower() for name in get_bigquery_table_columns(client, GASTOS_TOTALES_VIEW)}
         use_mapping = {"comercio_raw", "comercio_depurado", "activo"}.issubset(mapping_columns)
-        query, config = _variation_query(periods, use_mapping=use_mapping)
+        query, config = _variation_query(
+            periods,
+            use_mapping=use_mapping,
+            gastos_columns=gastos_columns,
+            mapping_columns=mapping_columns,
+        )
         rows = list(client.query(query, job_config=config).result())
         percent_threshold, absolute_threshold = _get_variation_thresholds(client)
-    except Exception:
-        print("variation_alert_query_failed")
-        return {"statusCode": 200}
+    except Exception as exc:
+        # Keep the scheduled invocation non-sensitive, but leave enough
+        # observability in CloudWatch to distinguish schema, permission and
+        # BigQuery SQL failures without logging query results or expense data.
+        print(
+            "variation_alert_query_failed "
+            f"kind={kind} "
+            f"current_period={periods.current_start.isoformat()}:{periods.current_end.isoformat()} "
+            f"previous_period={periods.previous_start.isoformat()}:{periods.previous_end.isoformat()} "
+            f"error_type={type(exc).__name__} error_message={exc}"
+        )
+        traceback.print_exc()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": "variation_alert_query_failed", "kind": kind}),
+        }
 
     inflation = _inflation_percentage()
     evaluated = sent = errors = 0
@@ -3355,7 +3440,13 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
         previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
         if not exceeds_variation_threshold(previous_amount, current_amount, percent_threshold, absolute_threshold):
             continue
-        key = _alert_key(kind, periods.current_end, str(row["source"]), str(row["merchant"]))
+        key = _alert_key(
+            kind,
+            periods.current_end,
+            str(row["source"]),
+            str(row["dimension_type"]),
+            str(row["dimension"]),
+        )
         try:
             delivery = _reserve_variation_alert(key)
             message = _format_variation_alert(kind, periods, row, inflation)
@@ -3661,6 +3752,8 @@ def lambda_handler(event, context):
 
             if action == "alert_variations_weekly":
                 return run_expense_variation_alert("weekly", event, context)
+            if action == "alert_variations_biweekly":
+                return run_expense_variation_alert("biweekly", event, context)
             if action == "alert_variations_monthly":
                 return run_expense_variation_alert("monthly", event, context)
             

@@ -19,6 +19,14 @@ def completed_comparison_periods(kind: str, today: date) -> ComparisonPeriods:
         current_start = current_end - timedelta(days=6)
         previous_end = current_start - timedelta(days=1)
         previous_start = previous_end - timedelta(days=6)
+    elif kind == "biweekly":
+        # Dos ventanas consecutivas de 14 días, ambas cerradas. La ventana
+        # actual siempre termina el domingo anterior para no comparar días
+        # incompletos con días cerrados.
+        current_end = today - timedelta(days=today.weekday() + 1)
+        current_start = current_end - timedelta(days=13)
+        previous_end = current_start - timedelta(days=1)
+        previous_start = previous_end - timedelta(days=13)
     elif kind == "monthly":
         current_end = today.replace(day=1) - timedelta(days=1)
         current_start = current_end.replace(day=1)

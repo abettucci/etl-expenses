@@ -394,6 +394,7 @@ jobs:
           terraform import aws_lambda_permission.allow_eventbridge gmail-watcher-renewer/AllowExecutionFromEventBridge || true
           terraform import aws_lambda_permission.allow_eventbridge_ai_agent_budget ai_agent/AllowExecutionFromEventBridgeBudget || true
           terraform import aws_lambda_permission.allow_eventbridge_ai_agent_variation_weekly ai_agent/AllowExecutionFromEventBridgeVariationWeekly || true
+          terraform import aws_lambda_permission.allow_eventbridge_ai_agent_variation_biweekly ai_agent/AllowExecutionFromEventBridgeVariationBiweekly || true
           terraform import aws_lambda_permission.allow_eventbridge_ai_agent_variation_monthly ai_agent/AllowExecutionFromEventBridgeVariationMonthly || true
           terraform import aws_lambda_permission.allow_eventbridge_ai_agent_unmapped ai_agent/AllowExecutionFromEventBridgeUnmapped || true
 

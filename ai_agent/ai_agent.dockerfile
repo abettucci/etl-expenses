@@ -1,5 +1,6 @@
-# Imagen base de AWS Lambda con Python 3.9
-FROM public.ecr.aws/lambda/python:3.9
+# Python 3.9 está fuera de soporte de Google Auth y Google API Core.
+# Python 3.11 conserva compatibilidad con las dependencias actuales del agente.
+FROM public.ecr.aws/lambda/python:3.11
 
 # Actualizar pip y setuptools
 RUN pip install --upgrade pip setuptools wheel
