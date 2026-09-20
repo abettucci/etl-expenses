@@ -875,6 +875,7 @@ resource "aws_lambda_function" "ai_agent" {
       TELEGRAM_ALLOWED_CHAT_ID    = var.TELEGRAM_ALLOWED_CHAT_ID
       TELEGRAM_WEBHOOK_SECRET     = var.TELEGRAM_WEBHOOK_SECRET
       VOICE_PENDING_EXPENSES_TABLE = aws_dynamodb_table.telegram_pending_voice_expenses.name
+      MANUAL_EXPENSE_EDITS_TABLE   = aws_dynamodb_table.telegram_recent_manual_expenses.name
       ALERT_BUDGET_ARS            = var.ALERT_BUDGET_ARS
       ALERT_INFLATION_PCT          = var.ALERT_INFLATION_PCT
       ALERT_VARIATION_PERCENT      = "10"
@@ -938,6 +939,28 @@ resource "aws_dynamodb_table" "telegram_pending_voice_expenses" {
   }
 }
 
+# Último gasto manual confirmado por chat. Permite una edición explícita por 24h;
+# no contiene audio ni transcripciones y expira automáticamente.
+resource "aws_dynamodb_table" "telegram_recent_manual_expenses" {
+  name         = "telegram_recent_manual_expenses"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "chat_id"
+
+  attribute {
+    name = "chat_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "telegram-recent-manual-expenses"
+  }
+}
+
 resource "aws_dynamodb_table" "google_stt_monthly_usage" {
   name         = "google_stt_monthly_usage"
   billing_mode = "PAY_PER_REQUEST"
@@ -969,6 +992,22 @@ resource "google_bigquery_table" "manual_expenses" {
     { name = "currency",            type = "STRING",    mode = "REQUIRED" },
     { name = "source",              type = "STRING",    mode = "REQUIRED" },
     { name = "created_at",          type = "TIMESTAMP", mode = "REQUIRED" }
+  ])
+}
+
+resource "google_bigquery_table" "manual_expense_audit" {
+  dataset_id = google_bigquery_dataset.production.dataset_id
+  table_id   = "manual_expense_audit"
+  project    = var.GCP_PROJECT_ID
+
+  schema = jsonencode([
+    { name = "audit_id",         type = "STRING",    mode = "REQUIRED" },
+    { name = "expense_id",       type = "STRING",    mode = "REQUIRED" },
+    { name = "telegram_chat_id", type = "STRING",    mode = "REQUIRED" },
+    { name = "changed_fields",   type = "STRING",    mode = "REQUIRED" },
+    { name = "old_expense",      type = "STRING",    mode = "REQUIRED" },
+    { name = "new_expense",      type = "STRING",    mode = "REQUIRED" },
+    { name = "edited_at",        type = "TIMESTAMP", mode = "REQUIRED" }
   ])
 }
 
@@ -1315,6 +1354,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_processed_messages",
           "arn:aws:dynamodb:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:table/telegram_pending_tickets",
           aws_dynamodb_table.telegram_pending_voice_expenses.arn,
+          aws_dynamodb_table.telegram_recent_manual_expenses.arn,
           aws_dynamodb_table.expense_variation_alerts.arn,
           aws_dynamodb_table.google_stt_monthly_usage.arn,
         ]

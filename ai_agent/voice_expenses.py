@@ -308,6 +308,7 @@ class PendingVoiceExpense(BaseModel):
     confirmation_token: str = Field(pattern=rf"^{VOICE_CALLBACK_TOKEN_PATTERN}$")
     chat_id: int = Field(strict=True)
     message_id: int = Field(ge=1, strict=True)
+    expense_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
     expense: ManualExpenseIntent
     expires_at: int = Field(ge=1)
 

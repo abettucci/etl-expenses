@@ -6,6 +6,7 @@ import csv
 import json
 import html
 import re
+import unicodedata
 import hashlib
 import hmac
 import secrets
@@ -76,6 +77,8 @@ MAX_TELEGRAM_VOICE_BYTES = 10 * 1024 * 1024
 MAX_TELEGRAM_VOICE_SECONDS = 120
 VOICE_PENDING_EXPENSES_TABLE = os.environ.get("VOICE_PENDING_EXPENSES_TABLE", "telegram_pending_voice_expenses")
 VOICE_PENDING_TTL_SECONDS = 15 * 60
+MANUAL_EXPENSE_EDITS_TABLE = os.environ.get("MANUAL_EXPENSE_EDITS_TABLE", "telegram_recent_manual_expenses")
+MANUAL_EXPENSE_EDIT_TTL_SECONDS = 24 * 60 * 60
 GOOGLE_STT_USAGE_TABLE = os.environ.get("GOOGLE_STT_USAGE_TABLE", "google_stt_monthly_usage")
 GOOGLE_STT_FREE_TIER_SECONDS = int(os.environ.get("GOOGLE_STT_FREE_TIER_SECONDS", "3600"))
 
@@ -1087,7 +1090,10 @@ def _extract_manual_expense(transcript: str) -> ManualExpenseIntent:
     return ManualExpenseIntent.model_validate_json(raw)
 
 
-def _store_manual_expense(bq_client, message_id: int, expense: ManualExpenseIntent) -> None:
+def _store_manual_expense(
+    bq_client, message_id: int, expense: ManualExpenseIntent, expense_id: str | None = None,
+) -> str:
+    expense_id = expense_id or str(uuid.uuid4())
     query = f"""
     MERGE {bq_fqn(MANUAL_EXPENSES_TABLE)} AS target
     USING (
@@ -1101,13 +1107,249 @@ def _store_manual_expense(bq_client, message_id: int, expense: ManualExpenseInte
       VALUES (source.expense_id, source.telegram_message_id, source.expense_date, source.amount, source.merchant, source.categoria, source.subcategoria, source.currency, source.source, source.created_at)
     """
     config = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("expense_id", "STRING", str(uuid.uuid4())),
+        bigquery.ScalarQueryParameter("expense_id", "STRING", expense_id),
         bigquery.ScalarQueryParameter("telegram_message_id", "STRING", str(message_id)),
         bigquery.ScalarQueryParameter("expense_date", "DATE", expense.expense_date),
         bigquery.ScalarQueryParameter("amount", "NUMERIC", expense.amount),
         bigquery.ScalarQueryParameter("merchant", "STRING", expense.merchant),
         bigquery.ScalarQueryParameter("categoria", "STRING", expense.category),
         bigquery.ScalarQueryParameter("subcategoria", "STRING", expense.subcategory),
+    ])
+    bq_client.query(query, job_config=config).result()
+    return expense_id
+
+
+_MANUAL_EXPENSE_EDIT_FIELDS = {
+    "merchant": ("Comercio", "Comercio: Exclusive Car Wash"),
+    "amount": ("Monto", "Monto: 25000"),
+    "expense_date": ("Fecha", "Fecha: 19/09/2026"),
+    "category": ("Categoría", "Categoría: Auto"),
+    "subcategory": ("Subcategoría", "Subcategoría: Lavado"),
+}
+
+
+def _manual_expense_edit_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [
+            {"text": "Comercio", "callback_data": "me:field:merchant"},
+            {"text": "Monto", "callback_data": "me:field:amount"},
+        ],
+        [
+            {"text": "Fecha", "callback_data": "me:field:expense_date"},
+            {"text": "Categoría", "callback_data": "me:field:category"},
+        ],
+        [
+            {"text": "Subcategoría", "callback_data": "me:field:subcategory"},
+        ],
+        [
+            {"text": "Eliminar gasto", "callback_data": "me:delete"},
+            {"text": "Cancelar", "callback_data": "me:cancel"},
+        ],
+    ]}
+
+
+def _manual_expense_edit_button() -> dict:
+    return {"inline_keyboard": [[{"text": "Editar gasto", "callback_data": "me:edit"}]]}
+
+
+def _recent_manual_expense_from_item(item: object) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    try:
+        chat_id = int(item.get("chat_id"))
+        expense_id = str(item.get("expense_id") or "")
+        expires_at = int(item.get("expires_at"))
+        expense = ManualExpenseIntent.model_validate(item.get("expense"))
+        candidate = item.get("edit_candidate")
+        edit_candidate = ManualExpenseIntent.model_validate(candidate) if candidate else None
+        edit_field = item.get("edit_field")
+        if edit_field is not None and edit_field not in _MANUAL_EXPENSE_EDIT_FIELDS:
+            return None
+        if not re.fullmatch(r"[0-9a-f-]{36}", expense_id):
+            return None
+        return {
+            "chat_id": chat_id,
+            "expense_id": expense_id,
+            "message_id": int(item.get("message_id")),
+            "expense": expense,
+            "edit_field": edit_field,
+            "edit_candidate": edit_candidate,
+            "expires_at": expires_at,
+        }
+    except (TypeError, ValueError, ValidationError):
+        return None
+
+
+def _get_recent_manual_expense(chat_id: int) -> dict | None:
+    item = dynamo.Table(MANUAL_EXPENSE_EDITS_TABLE).get_item(
+        Key={"chat_id": str(chat_id)}, ConsistentRead=True,
+    ).get("Item")
+    recent = _recent_manual_expense_from_item(item)
+    if recent is None or recent["chat_id"] != chat_id or recent["expires_at"] < int(time.time()):
+        return None
+    return recent
+
+
+def _save_recent_manual_expense(
+    chat_id: int,
+    message_id: int,
+    expense_id: str,
+    expense: ManualExpenseIntent,
+    *,
+    expires_at: int | None = None,
+    edit_field: str | None = None,
+    edit_candidate: ManualExpenseIntent | None = None,
+) -> None:
+    expires_at = expires_at or int(time.time()) + MANUAL_EXPENSE_EDIT_TTL_SECONDS
+    item = {
+        "chat_id": str(chat_id),
+        "message_id": str(message_id),
+        "expense_id": expense_id,
+        "expense": expense.model_dump(mode="json"),
+        "expires_at": expires_at,
+        "ttl": expires_at,
+    }
+    if edit_field:
+        item["edit_field"] = edit_field
+    if edit_candidate:
+        item["edit_candidate"] = edit_candidate.model_dump(mode="json")
+    dynamo.Table(MANUAL_EXPENSE_EDITS_TABLE).put_item(Item=item)
+
+
+def _save_recent_edit_state(
+    recent: dict,
+    *,
+    edit_field: str | None = None,
+    edit_candidate: ManualExpenseIntent | None = None,
+    expense: ManualExpenseIntent | None = None,
+) -> None:
+    _save_recent_manual_expense(
+        recent["chat_id"], recent["message_id"], recent["expense_id"],
+        expense or recent["expense"], expires_at=recent["expires_at"],
+        edit_field=edit_field, edit_candidate=edit_candidate,
+    )
+
+
+def _expense_edit_preview(expense: ManualExpenseIntent) -> str:
+    return "¿Aplicar estos cambios al gasto ya guardado?\n\n" + "\n".join([
+        f"Comercio: {expense.merchant}",
+        f"Monto: $ {_format_number_ar(float(expense.amount))} ARS",
+        f"Fecha: {expense.expense_date.strftime('%d/%m/%Y')}",
+        *( [f"Categoría: {expense.category}"] if expense.category else [] ),
+        *( [f"Subcategoría: {expense.subcategory}"] if expense.subcategory else [] ),
+    ])
+
+
+def _expense_edit_confirmation_keyboard() -> dict:
+    return {"inline_keyboard": [[
+        {"text": "Confirmar cambio", "callback_data": "me:confirm"},
+        {"text": "Cancelar", "callback_data": "me:cancel"},
+    ]]}
+
+
+def _edit_field_from_text(text: str) -> str | None:
+    normalized = "".join(
+        character for character in unicodedata.normalize("NFKD", text.lower())
+        if not unicodedata.combining(character)
+    )
+    if "comerc" in normalized or "nombre" in normalized:
+        return "merchant"
+    if "monto" in normalized or "importe" in normalized:
+        return "amount"
+    if "fecha" in normalized:
+        return "expense_date"
+    if "subcategoria" in normalized:
+        return "subcategory"
+    if "categoria" in normalized:
+        return "category"
+    return None
+
+
+def _is_confirmed_expense_edit_request(text: str) -> bool:
+    normalized = "".join(
+        character for character in unicodedata.normalize("NFKD", text.lower())
+        if not unicodedata.combining(character)
+    )
+    return bool(re.search(r"\b(?:editar|edita|corregir|corrige)\b", normalized)) and (
+        "gasto" in normalized or _edit_field_from_text(normalized) is not None
+    )
+
+
+def _parse_edit_patch(text: str, selected_field: str | None) -> dict[str, object] | None:
+    # A command such as "Corregir último gasto\nComercio: ..." keeps the
+    # explicit label, while a field selected from a button also accepts the
+    # new value alone (for example, "Exclusive Car Wash").
+    labelled_text = re.sub(
+        r"^\s*(?:quiero\s+)?(?:editar|edita|corregir|corrige)\b[^\n]*\n?",
+        "", text, flags=re.IGNORECASE,
+    )
+    patch = parse_voice_expense_correction(labelled_text)
+    if patch is not None:
+        return patch
+    if not selected_field:
+        return None
+    label = {
+        "merchant": "Comercio", "amount": "Monto", "expense_date": "Fecha",
+        "category": "Categoría", "subcategory": "Subcategoría",
+    }[selected_field]
+    return parse_voice_expense_correction(f"{label}: {text}")
+
+
+def _update_confirmed_manual_expense(bq_client, recent: dict, edited: ManualExpenseIntent) -> None:
+    old_expense = recent["expense"].model_dump(mode="json")
+    new_expense = edited.model_dump(mode="json")
+    changed_fields = sorted(
+        field for field, value in new_expense.items()
+        if field not in {"intent", "currency"} and old_expense.get(field) != value
+    )
+    if not changed_fields:
+        return
+    query = f"""
+    BEGIN TRANSACTION;
+    UPDATE {bq_fqn(MANUAL_EXPENSES_TABLE)}
+    SET expense_date = @expense_date, amount = @amount, merchant = @merchant,
+        categoria = @categoria, subcategoria = @subcategoria
+    WHERE expense_id = @expense_id;
+    INSERT {bq_fqn('manual_expense_audit')}
+      (audit_id, expense_id, telegram_chat_id, changed_fields, old_expense, new_expense, edited_at)
+    VALUES
+      (@audit_id, @expense_id, @telegram_chat_id, @changed_fields, @old_expense, @new_expense, CURRENT_TIMESTAMP());
+    COMMIT TRANSACTION;
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("audit_id", "STRING", str(uuid.uuid4())),
+        bigquery.ScalarQueryParameter("expense_id", "STRING", recent["expense_id"]),
+        bigquery.ScalarQueryParameter("telegram_chat_id", "STRING", str(recent["chat_id"])),
+        bigquery.ScalarQueryParameter("changed_fields", "STRING", json.dumps(changed_fields)),
+        bigquery.ScalarQueryParameter("old_expense", "STRING", json.dumps(old_expense, sort_keys=True)),
+        bigquery.ScalarQueryParameter("new_expense", "STRING", json.dumps(new_expense, sort_keys=True)),
+        bigquery.ScalarQueryParameter("expense_date", "DATE", edited.expense_date),
+        bigquery.ScalarQueryParameter("amount", "NUMERIC", edited.amount),
+        bigquery.ScalarQueryParameter("merchant", "STRING", edited.merchant),
+        bigquery.ScalarQueryParameter("categoria", "STRING", edited.category),
+        bigquery.ScalarQueryParameter("subcategoria", "STRING", edited.subcategory),
+    ])
+    bq_client.query(query, job_config=config).result()
+
+
+def _delete_confirmed_manual_expense(bq_client, recent: dict) -> None:
+    old_expense = recent["expense"].model_dump(mode="json")
+    query = f"""
+    BEGIN TRANSACTION;
+    DELETE FROM {bq_fqn(MANUAL_EXPENSES_TABLE)} WHERE expense_id = @expense_id;
+    INSERT {bq_fqn('manual_expense_audit')}
+      (audit_id, expense_id, telegram_chat_id, changed_fields, old_expense, new_expense, edited_at)
+    VALUES
+      (@audit_id, @expense_id, @telegram_chat_id, @changed_fields, @old_expense, @new_expense, CURRENT_TIMESTAMP());
+    COMMIT TRANSACTION;
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("audit_id", "STRING", str(uuid.uuid4())),
+        bigquery.ScalarQueryParameter("expense_id", "STRING", recent["expense_id"]),
+        bigquery.ScalarQueryParameter("telegram_chat_id", "STRING", str(recent["chat_id"])),
+        bigquery.ScalarQueryParameter("changed_fields", "STRING", json.dumps(["deleted"])),
+        bigquery.ScalarQueryParameter("old_expense", "STRING", json.dumps(old_expense, sort_keys=True)),
+        bigquery.ScalarQueryParameter("new_expense", "STRING", "{}"),
     ])
     bq_client.query(query, job_config=config).result()
 
@@ -1119,6 +1361,7 @@ def _save_pending_voice_expense(chat_id: int, message_id: int, expense: ManualEx
         confirmation_token=token,
         chat_id=chat_id,
         message_id=message_id,
+        expense_id=str(uuid.uuid4()),
         expense=expense,
         expires_at=expires_at,
     )
@@ -1127,6 +1370,7 @@ def _save_pending_voice_expense(chat_id: int, message_id: int, expense: ManualEx
             "confirmation_token": pending.confirmation_token,
             "chat_id": str(pending.chat_id),
             "message_id": str(pending.message_id),
+            "expense_id": pending.expense_id,
             "expense": pending.expense.model_dump(mode="json"),
             "expires_at": pending.expires_at,
             "ttl": pending.expires_at,
@@ -1157,6 +1401,7 @@ def _pending_voice_expense_from_item(item: dict) -> PendingVoiceExpense | None:
             "confirmation_token": item.get("confirmation_token"),
             "chat_id": int(item.get("chat_id")),
             "message_id": int(item.get("message_id")),
+            "expense_id": item.get("expense_id"),
             "expense": item.get("expense"),
             "expires_at": item.get("expires_at"),
         })
@@ -1258,6 +1503,163 @@ def handle_pending_voice_expense_correction(event: dict, chat_id: int, text: str
     }
 
 
+def handle_confirmed_manual_expense_edit(
+    event: dict, chat_id: int, text: str,
+) -> tuple[bool, str | None, dict | None]:
+    """Stage an edit for the latest confirmed manual expense in this chat."""
+    is_edit_request = _is_confirmed_expense_edit_request(text)
+    try:
+        recent = _get_recent_manual_expense(chat_id)
+    except Exception as exc:
+        print(f"manual_expense_edit_lookup_failed: {type(exc).__name__}: {exc}")
+        return False, None, None
+    if recent is None:
+        if is_edit_request:
+            return True, (
+                "No encontré un gasto manual reciente para editar. Podés editar el último gasto "
+                "durante las 24 horas posteriores a su confirmación."
+            ), None
+        return False, None, None
+    if not _telegram_webhook_is_authorized(event, chat_id):
+        return True, "No pude actualizar ese gasto.", None
+
+    requested_field = _edit_field_from_text(text)
+    try:
+        direct_patch = _parse_edit_patch(text, None) if is_edit_request else None
+    except ValueError:
+        direct_patch = None
+    if is_edit_request and requested_field and recent["edit_field"] is None and not direct_patch:
+        _save_recent_edit_state(recent, edit_field=requested_field)
+        label, example = _MANUAL_EXPENSE_EDIT_FIELDS[requested_field]
+        return True, f"¿Cuál es el nuevo valor de {label.lower()}? Enviá, por ejemplo:\n{example}", None
+    if not is_edit_request and recent["edit_field"] is None:
+        return False, None, None
+
+    try:
+        patch = direct_patch or _parse_edit_patch(text, recent["edit_field"])
+    except ValueError:
+        patch = None
+    if not patch:
+        label, example = _MANUAL_EXPENSE_EDIT_FIELDS.get(
+            recent["edit_field"], ("ese campo", "Comercio: Exclusive Car Wash")
+        )
+        return True, f"No pude interpretar el cambio. Enviá, por ejemplo:\n{example}", None
+    try:
+        candidate = recent["expense"].model_copy(update=patch)
+    except ValidationError:
+        return True, "No pude aplicar esa corrección. Revisá el valor e intentá otra vez.", None
+    _save_recent_edit_state(recent, edit_candidate=candidate)
+    return True, _expense_edit_preview(candidate), _expense_edit_confirmation_keyboard()
+
+
+def _manual_expense_edit_callback_from_update(data: dict) -> tuple[str, int, str] | None:
+    try:
+        callback = data.get("callback_query") or {}
+        callback_id = str(callback.get("id") or "")
+        callback_data = str(callback.get("data") or "")
+        chat_id = int(((callback.get("message") or {}).get("chat") or {}).get("id"))
+        if not callback_id or not re.fullmatch(
+            r"me:(?:edit|cancel|confirm|delete|delete_confirm|field:(?:merchant|amount|expense_date|category|subcategory))",
+            callback_data,
+        ):
+            return None
+        return callback_id, chat_id, callback_data
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def handle_manual_expense_edit_callback(event: dict, data: dict) -> dict:
+    callback = _manual_expense_edit_callback_from_update(data)
+    if callback is None:
+        return {"statusCode": 200}
+    callback_id, chat_id, action = callback
+    if not _telegram_webhook_is_authorized(event, chat_id):
+        return {"statusCode": 200}
+    try:
+        recent = _get_recent_manual_expense(chat_id)
+    except Exception as exc:
+        print(f"manual_expense_edit_callback_lookup_failed: {type(exc).__name__}: {exc}")
+        recent = None
+    if recent is None:
+        telegram_answer_callback(callback_id, "No encontré un gasto reciente para editar.")
+        send_telegram_message(
+            chat_id, "No encontré un gasto reciente para editar. Podés editarlo hasta 24 horas después de cargarlo.",
+            TELEGRAM_BOT_TOKEN, parse_mode=False,
+        )
+        return {"statusCode": 200}
+
+    if action == "me:edit":
+        telegram_answer_callback(callback_id, "Elegí el campo a corregir")
+        send_telegram_message(
+            chat_id, "¿Qué querés corregir del último gasto?", TELEGRAM_BOT_TOKEN,
+            parse_mode=False, reply_markup=_manual_expense_edit_keyboard(),
+        )
+        return {"statusCode": 200}
+    if action.startswith("me:field:"):
+        field = action.rsplit(":", 1)[1]
+        _save_recent_edit_state(recent, edit_field=field)
+        label, example = _MANUAL_EXPENSE_EDIT_FIELDS[field]
+        telegram_answer_callback(callback_id, f"Editar {label.lower()}")
+        send_telegram_message(
+            chat_id, f"Enviá el nuevo valor de {label.lower()}. Por ejemplo:\n{example}",
+            TELEGRAM_BOT_TOKEN, parse_mode=False,
+        )
+        return {"statusCode": 200}
+    if action == "me:delete":
+        telegram_answer_callback(callback_id, "Confirmá la eliminación")
+        send_telegram_message(
+            chat_id, "¿Eliminar el último gasto manual? Esta acción no se puede deshacer.",
+            TELEGRAM_BOT_TOKEN, parse_mode=False,
+            reply_markup={"inline_keyboard": [[
+                {"text": "Sí, eliminar", "callback_data": "me:delete_confirm"},
+                {"text": "Cancelar", "callback_data": "me:cancel"},
+            ]]},
+        )
+        return {"statusCode": 200}
+    if action == "me:cancel":
+        _save_recent_edit_state(recent)
+        telegram_answer_callback(callback_id, "Edición cancelada")
+        send_telegram_message(chat_id, "Edición cancelada.", TELEGRAM_BOT_TOKEN, parse_mode=False)
+        return {"statusCode": 200}
+    if action == "me:delete_confirm":
+        try:
+            _delete_confirmed_manual_expense(get_bigquery_client(), recent)
+            dynamo.Table(MANUAL_EXPENSE_EDITS_TABLE).delete_item(Key={"chat_id": str(chat_id)})
+        except Exception as exc:
+            print(f"manual_expense_delete_failed: {type(exc).__name__}: {exc}")
+            telegram_answer_callback(callback_id, "No se pudo eliminar")
+            send_telegram_message(
+                chat_id, "No pude eliminar el gasto en este momento. Tocá Sí, eliminar nuevamente.",
+                TELEGRAM_BOT_TOKEN, parse_mode=False,
+            )
+            return {"statusCode": 200}
+        telegram_answer_callback(callback_id, "Gasto eliminado")
+        send_telegram_message(chat_id, "✅ Gasto eliminado de BigQuery.", TELEGRAM_BOT_TOKEN, parse_mode=False)
+        return {"statusCode": 200}
+
+    candidate = recent["edit_candidate"]
+    if candidate is None:
+        telegram_answer_callback(callback_id, "Primero elegí un cambio.")
+        return {"statusCode": 200}
+    try:
+        _update_confirmed_manual_expense(get_bigquery_client(), recent, candidate)
+        _save_recent_edit_state(recent, expense=candidate)
+    except Exception as exc:
+        print(f"manual_expense_edit_save_failed: {type(exc).__name__}: {exc}")
+        telegram_answer_callback(callback_id, "No se pudo actualizar")
+        send_telegram_message(
+            chat_id, "No pude actualizar el gasto en este momento. Tocá Confirmar cambio nuevamente.",
+            TELEGRAM_BOT_TOKEN, parse_mode=False,
+        )
+        return {"statusCode": 200}
+    telegram_answer_callback(callback_id, "Gasto actualizado")
+    send_telegram_message(
+        chat_id, "✅ Gasto actualizado en BigQuery.", TELEGRAM_BOT_TOKEN, parse_mode=False,
+        reply_markup=_manual_expense_edit_button(),
+    )
+    return {"statusCode": 200}
+
+
 def _delete_pending_voice_expense(token: str) -> None:
     dynamo.Table(VOICE_PENDING_EXPENSES_TABLE).delete_item(Key={"confirmation_token": token})
 
@@ -1348,7 +1750,12 @@ def handle_telegram_voice_callback(event: dict, data: dict) -> dict:
 
     try:
         bq_client = get_bigquery_client()
-        _store_manual_expense(bq_client, pending.message_id, pending.expense)
+        expense_id = _store_manual_expense(
+            bq_client, pending.message_id, pending.expense, pending.expense_id,
+        )
+        _save_recent_manual_expense(
+            callback.chat_id, pending.message_id, expense_id, pending.expense,
+        )
         _delete_pending_voice_expense(token)
     except Exception as exc:
         print(f"telegram_voice_confirmation_failed: {type(exc).__name__}: {exc}")
@@ -1366,9 +1773,10 @@ def handle_telegram_voice_callback(event: dict, data: dict) -> dict:
     telegram_answer_callback(callback.callback_id, "Gasto cargado")
     send_telegram_message(
         callback.chat_id,
-        "✅ Gasto manual agregado a BigQuery.",
+        "✅ Gasto manual agregado a BigQuery. Podés editarlo durante las próximas 24 horas.",
         TELEGRAM_BOT_TOKEN,
         parse_mode=False,
+        reply_markup=_manual_expense_edit_button(),
     )
     return {"statusCode": 200}
 
@@ -3228,6 +3636,8 @@ def lambda_handler(event, context):
             raw_callback_data = str((data.get("callback_query") or {}).get("data") or "")
             if raw_callback_data.startswith("ve:"):
                 return handle_telegram_voice_callback(event, data)
+            if raw_callback_data.startswith("me:"):
+                return handle_manual_expense_edit_callback(event, data)
             bq_client = get_bigquery_client()
             return handle_telegram_callback(data, bq_client)
         
@@ -3334,6 +3744,20 @@ def lambda_handler(event, context):
                     TELEGRAM_BOT_TOKEN,
                     parse_mode=False,
                     reply_markup=correction_keyboard,
+                )
+            return {"statusCode": 200}
+
+        handled_edit, edit_response, edit_keyboard = handle_confirmed_manual_expense_edit(
+            event, int(chat_id), text
+        )
+        if handled_edit:
+            if edit_response:
+                send_telegram_message(
+                    chat_id,
+                    edit_response,
+                    TELEGRAM_BOT_TOKEN,
+                    parse_mode=False,
+                    reply_markup=edit_keyboard,
                 )
             return {"statusCode": 200}
 

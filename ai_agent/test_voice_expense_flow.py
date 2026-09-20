@@ -21,6 +21,9 @@ class FakeTable:
     def get_item(self, **_kwargs):
         return {"Item": self.item} if self.item else {}
 
+    def put_item(self, **kwargs):
+        self.item = kwargs["Item"]
+
     def scan(self, **kwargs):
         expected_chat = kwargs.get("ExpressionAttributeValues", {}).get(":chat_id")
         items = [self.item] if self.item and self.item.get("chat_id") == expected_chat else []
@@ -32,16 +35,20 @@ class FakeTable:
         self.item["expense"] = kwargs["ExpressionAttributeValues"][":expense"]
 
     def delete_item(self, **kwargs):
-        self.deleted.append(kwargs["Key"]["confirmation_token"])
+        key = kwargs["Key"]
+        self.deleted.append(key.get("confirmation_token") or key.get("chat_id"))
         self.item = None
 
 
 class FakeDynamo:
     def __init__(self, table):
-        self.table = table
+        self.tables = {
+            "telegram_pending_voice_expenses": table,
+            "telegram_recent_manual_expenses": FakeTable(),
+        }
 
-    def Table(self, _name):
-        return self.table
+    def Table(self, name):
+        return self.tables.setdefault(name, FakeTable())
 
 
 def load_lambda_module():
@@ -104,6 +111,7 @@ class VoiceExpenseFlowTest(unittest.TestCase):
     def setUp(self):
         self.table = FakeTable()
         self.module.dynamo = FakeDynamo(self.table)
+        self.edit_table = self.module.dynamo.Table("telegram_recent_manual_expenses")
         self.event = {"headers": {"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret"}}
         self.message = {
             "message_id": 456,
@@ -212,6 +220,84 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         self.assertIn("Subcategoría: Lavado", text)
         self.assertIsNone(expense.category)
         self.assertIsNone(expense.subcategory)
+
+    def test_text_can_start_editing_confirmed_expense_and_accept_bare_merchant_value(self):
+        self.module._save_recent_manual_expense(
+            12345, 456, "5c5d5605-c512-4a54-93a4-e9c7f0ba9ffd", self.expense,
+        )
+
+        handled, text, keyboard = self.module.handle_confirmed_manual_expense_edit(
+            self.event, 12345, "quiero corregir el nombre del comercio",
+        )
+
+        self.assertTrue(handled)
+        self.assertIn("nuevo valor de comercio", text)
+        self.assertIsNone(keyboard)
+        self.assertEqual(self.edit_table.item["edit_field"], "merchant")
+
+        handled, text, keyboard = self.module.handle_confirmed_manual_expense_edit(
+            self.event, 12345, "Exclusive Car Wash",
+        )
+
+        self.assertTrue(handled)
+        self.assertIn("¿Aplicar estos cambios", text)
+        self.assertIn("Exclusive Car Wash", text)
+        self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "me:confirm")
+        self.assertEqual(self.edit_table.item["edit_candidate"]["merchant"], "Exclusive Car Wash")
+
+    def test_confirming_edit_updates_the_specific_expense_and_keeps_audit_path(self):
+        expense_id = "5c5d5605-c512-4a54-93a4-e9c7f0ba9ffd"
+        edited = self.expense.model_copy(update={"merchant": "Exclusive Car Wash"})
+        self.module._save_recent_manual_expense(
+            12345, 456, expense_id, self.expense, edit_candidate=edited,
+        )
+        update = {
+            "callback_query": {
+                "id": "callback-edit-1", "data": "me:confirm", "message": {"chat": {"id": 12345}},
+            },
+        }
+        with patch.object(self.module, "get_bigquery_client", return_value=object()), \
+             patch.object(self.module, "_update_confirmed_manual_expense") as update_expense, \
+             patch.object(self.module, "telegram_answer_callback"), \
+             patch.object(self.module, "send_telegram_message") as send:
+            self.module.handle_manual_expense_edit_callback(self.event, update)
+
+        update_expense.assert_called_once()
+        self.assertEqual(update_expense.call_args.args[1]["expense_id"], expense_id)
+        self.assertEqual(update_expense.call_args.args[2].merchant, "Exclusive Car Wash")
+        self.assertEqual(self.edit_table.item["expense"]["merchant"], "Exclusive Car Wash")
+        self.assertNotIn("edit_candidate", self.edit_table.item)
+        self.assertEqual(send.call_args.kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "me:edit")
+
+    def test_deleting_confirmed_expense_requires_delete_confirmation(self):
+        self.module._save_recent_manual_expense(
+            12345, 456, "5c5d5605-c512-4a54-93a4-e9c7f0ba9ffd", self.expense,
+        )
+        ask_delete = {
+            "callback_query": {
+                "id": "callback-delete-ask", "data": "me:delete", "message": {"chat": {"id": 12345}},
+            },
+        }
+        with patch.object(self.module, "telegram_answer_callback"), \
+             patch.object(self.module, "send_telegram_message") as send:
+            self.module.handle_manual_expense_edit_callback(self.event, ask_delete)
+        self.assertEqual(
+            send.call_args.kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+            "me:delete_confirm",
+        )
+
+        confirm_delete = {
+            "callback_query": {
+                "id": "callback-delete-confirm", "data": "me:delete_confirm", "message": {"chat": {"id": 12345}},
+            },
+        }
+        with patch.object(self.module, "get_bigquery_client", return_value=object()), \
+             patch.object(self.module, "_delete_confirmed_manual_expense") as delete_expense, \
+             patch.object(self.module, "telegram_answer_callback"), \
+             patch.object(self.module, "send_telegram_message"):
+            self.module.handle_manual_expense_edit_callback(self.event, confirm_delete)
+        delete_expense.assert_called_once()
+        self.assertIsNone(self.edit_table.item)
 
 
 if __name__ == "__main__":
