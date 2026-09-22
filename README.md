@@ -63,6 +63,29 @@ python3 test_notifications.py --channel both
 python3 test_notifications.py --channel both --send
 ```
 
+### Reproceso histórico de alertas de variación
+
+El comparador programado evalúa sólo el último período cerrado. Para revisar
+semanas anteriores, usar el cliente de `ai_agent/`: incluye las comparaciones
+`WEEK_VS_WEEK`, `WEEK_VS_2_WEEKS` y `WEEK_VS_1_MONTH`, por comercio, categoría
+y subcategoría. Por seguridad corre en modo simulación; la respuesta JSON lista
+los candidatos que superan el umbral sin enviar notificaciones.
+
+```bash
+cd ai_agent
+python3 reprocess_variation_alerts.py --from 2026-01-01 --to 2026-09-21
+python3 reprocess_variation_alerts.py --from 2026-01-01 --to 2026-09-21 --comparison WEEK_VS_2_WEEKS
+```
+
+Revisar primero el resultado. Para notificar los casos elegibles, agregar
+`--send` (y opcionalmente ajustar `--limit` hasta 500). Las entregas históricas
+usan una clave de idempotencia distinta de las alertas programadas, por lo que
+no interfieren entre sí ni se reenvían por una misma ejecución repetida.
+
+```bash
+python3 reprocess_variation_alerts.py --from 2026-01-01 --to 2026-09-21 --send --limit 50
+```
+
 
 ## Consideraciones de diseño
 

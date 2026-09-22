@@ -3265,24 +3265,12 @@ def _set_variation_thresholds(client, percent_threshold: float, absolute_thresho
     client.query(query, job_config=config).result()
 
 
-def _variation_query(
-    periods,
+def _variation_dimension_ctes(
     use_mapping: bool,
     gastos_columns: set[str],
     mapping_columns: set[str],
-) -> tuple[str, bigquery.QueryJobConfig]:
-    """Build the variation query against the consolidated gastos_totales view.
-
-    Period boundaries are parameterized; only the last completed period (weekly
-    biweekly or monthly, as computed by completed_comparison_periods) is evaluated here.
-    Self-transfers to SELF_TRANSFER_MERCHANT are excluded so moving money between
-    own accounts never counts as an expense increase.
-
-    The consolidated view is older than the category fields in some deployments.
-    We inspect its schema before composing the SQL, so alerting by merchant keeps
-    working while category/subcategory alerts are simply omitted until those
-    fields are available.
-    """
+) -> str:
+    """Return the normalized expense dimensions shared by live and backfill alerts."""
     gastos_columns = {column.lower() for column in gastos_columns}
     mapping_columns = {column.lower() for column in mapping_columns}
 
@@ -3314,8 +3302,8 @@ def _variation_query(
        AND g.extraido_de = m.flow
        AND m.activo = TRUE
     """ if use_mapping else ""
-    query = """
-    WITH expenses AS (
+    return f"""
+    expenses AS (
       SELECT
         g.extraido_de AS source,
         {merchant_expr} AS merchant,
@@ -3323,7 +3311,7 @@ def _variation_query(
         {subcategory_expr} AS subcategory,
         DATE(g.fecha) AS expense_date,
         SAFE_CAST(g.monto_total AS FLOAT64) AS amount
-      FROM {gastos_totales} g
+      FROM {bq_fqn(GASTOS_TOTALES_VIEW)} g
       {mapping_join}
       WHERE UPPER(TRIM({merchant_expr})) <> UPPER(@self_transfer_merchant)
     ), dimensions AS (
@@ -3349,7 +3337,20 @@ def _variation_query(
         amount
       FROM expenses
       WHERE subcategory IS NOT NULL AND LOWER(subcategory) != 'sin_clasificar'
-    ), grouped AS (
+    )
+    """
+
+
+def _variation_query(
+    periods,
+    use_mapping: bool,
+    gastos_columns: set[str],
+    mapping_columns: set[str],
+) -> tuple[str, bigquery.QueryJobConfig]:
+    """Build the latest completed-period variation query."""
+    dimension_ctes = _variation_dimension_ctes(use_mapping, gastos_columns, mapping_columns)
+    query = f"""
+    WITH {dimension_ctes}, grouped AS (
       SELECT source, dimension_type, dimension,
         SUM(IF(expense_date BETWEEN @current_start AND @current_end, amount, 0)) AS current_amount,
         SUM(IF(expense_date BETWEEN @previous_start AND @previous_end, amount, 0)) AS previous_amount
@@ -3361,13 +3362,7 @@ def _variation_query(
     SELECT source, dimension_type, dimension, previous_amount, current_amount
     FROM grouped
     WHERE previous_amount > 0 AND current_amount > previous_amount
-    """.format(
-        merchant_expr=merchant_expr,
-        category_expr=category_expr,
-        subcategory_expr=subcategory_expr,
-        gastos_totales=bq_fqn(GASTOS_TOTALES_VIEW),
-        mapping_join=mapping_join,
-    )
+    """
     if "{" in query or "}" in query:
         raise RuntimeError("variation query template contains unresolved placeholders")
     config = bigquery.QueryJobConfig(query_parameters=[
@@ -3378,6 +3373,256 @@ def _variation_query(
         bigquery.ScalarQueryParameter("self_transfer_merchant", "STRING", SELF_TRANSFER_MERCHANT),
     ])
     return query, config
+
+
+_REPROCESS_COMPARISON_TYPES = {
+    "WEEK_VS_WEEK": "Semana vs semana anterior",
+    "WEEK_VS_2_WEEKS": "Semana vs hace 2 semanas",
+    "WEEK_VS_1_MONTH": "Semana vs hace 1 mes",
+}
+
+
+def _historical_variation_query(
+    reprocess_from: date,
+    reprocess_to: date,
+    comparison_types: list[str],
+    use_mapping: bool,
+    gastos_columns: set[str],
+    mapping_columns: set[str],
+    limit: int,
+) -> tuple[str, bigquery.QueryJobConfig]:
+    """Compare every complete week in a historical range against three references.
+
+    This query is intentionally separate from the scheduled alert query: it is
+    only used by the explicit reprocess action and never by EventBridge.
+    """
+    dimension_ctes = _variation_dimension_ctes(use_mapping, gastos_columns, mapping_columns)
+    query = f"""
+    WITH {dimension_ctes},
+    weeks AS (
+      SELECT week_start
+      FROM UNNEST(GENERATE_DATE_ARRAY(
+        DATE_TRUNC(@reprocess_from, WEEK(MONDAY)),
+        DATE_TRUNC(@reprocess_to, WEEK(MONDAY)),
+        INTERVAL 1 WEEK
+      )) AS week_start
+      WHERE DATE_ADD(week_start, INTERVAL 6 DAY) <= @reprocess_to
+    ), comparison_periods AS (
+      SELECT
+        'WEEK_VS_WEEK' AS comparison_type,
+        DATE_SUB(week_start, INTERVAL 1 WEEK) AS previous_start,
+        DATE_SUB(DATE_ADD(week_start, INTERVAL 6 DAY), INTERVAL 1 WEEK) AS previous_end,
+        week_start AS current_start,
+        DATE_ADD(week_start, INTERVAL 6 DAY) AS current_end
+      FROM weeks
+
+      UNION ALL
+
+      SELECT
+        'WEEK_VS_2_WEEKS',
+        DATE_SUB(week_start, INTERVAL 2 WEEK),
+        DATE_SUB(DATE_ADD(week_start, INTERVAL 6 DAY), INTERVAL 2 WEEK),
+        week_start,
+        DATE_ADD(week_start, INTERVAL 6 DAY)
+      FROM weeks
+
+      UNION ALL
+
+      SELECT
+        'WEEK_VS_1_MONTH',
+        DATE_SUB(week_start, INTERVAL 1 MONTH),
+        DATE_SUB(DATE_ADD(week_start, INTERVAL 6 DAY), INTERVAL 1 MONTH),
+        week_start,
+        DATE_ADD(week_start, INTERVAL 6 DAY)
+      FROM weeks
+    ), totals AS (
+      SELECT
+        p.comparison_type,
+        p.previous_start,
+        p.previous_end,
+        p.current_start,
+        p.current_end,
+        d.source,
+        d.dimension_type,
+        d.dimension,
+        SUM(IF(d.expense_date BETWEEN p.previous_start AND p.previous_end, d.amount, 0)) AS previous_amount,
+        SUM(IF(d.expense_date BETWEEN p.current_start AND p.current_end, d.amount, 0)) AS current_amount
+      FROM comparison_periods p
+      JOIN dimensions d ON d.expense_date BETWEEN p.previous_start AND p.current_end
+      WHERE d.dimension IS NOT NULL AND d.dimension != '' AND d.amount > 0
+      GROUP BY
+        p.comparison_type, p.previous_start, p.previous_end, p.current_start, p.current_end,
+        d.source, d.dimension_type, d.dimension
+    )
+    SELECT
+      comparison_type, previous_start, previous_end, current_start, current_end,
+      source, dimension_type, dimension, previous_amount, current_amount
+    FROM totals
+    WHERE previous_amount > 0
+      AND current_amount > previous_amount
+      AND comparison_type IN UNNEST(@reprocess_comparisons)
+    ORDER BY current_end DESC, comparison_type, dimension_type, dimension
+    LIMIT @reprocess_limit
+    """
+    if "{" in query or "}" in query:
+        raise RuntimeError("historical variation query contains unresolved placeholders")
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("reprocess_from", "DATE", reprocess_from),
+        bigquery.ScalarQueryParameter("reprocess_to", "DATE", reprocess_to),
+        bigquery.ArrayQueryParameter("reprocess_comparisons", "STRING", comparison_types),
+        bigquery.ScalarQueryParameter("reprocess_limit", "INT64", limit),
+        bigquery.ScalarQueryParameter("self_transfer_merchant", "STRING", SELF_TRANSFER_MERCHANT),
+    ])
+    return query, config
+
+
+def _comparison_label(comparison_type: str) -> str:
+    return _REPROCESS_COMPARISON_TYPES.get(comparison_type, comparison_type)
+
+
+def _format_historical_variation_alert(row) -> str:
+    previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
+    increase, percent = current_amount - previous_amount, (current_amount / previous_amount - 1) * 100
+    dimension_label = {
+        "comercio": "Comercio",
+        "categoria": "Categoría",
+        "subcategoria": "Subcategoría",
+    }.get(str(row["dimension_type"]), "Dimensión")
+    return (
+        "⚠️ Alerta histórica de variación de gasto\n\n"
+        f"Comparación: {_comparison_label(str(row['comparison_type']))}\n"
+        f"{dimension_label}: {row['dimension']} ({row['source']})\n"
+        f"Período anterior: {row['previous_start'].strftime('%d/%m/%Y')}–{row['previous_end'].strftime('%d/%m/%Y')}\n"
+        f"Período actual: {row['current_start'].strftime('%d/%m/%Y')}–{row['current_end'].strftime('%d/%m/%Y')}\n"
+        f"Anterior: $ {_format_number_ar(previous_amount)}\n"
+        f"Actual: $ {_format_number_ar(current_amount)}\n"
+        f"Aumento: $ {_format_number_ar(increase)} ({percent:.1f}%)"
+    )
+
+
+def _deliver_variation_alert(key: str, message: str) -> tuple[bool, bool]:
+    """Deliver one alert idempotently and report each channel separately."""
+    delivery = _reserve_variation_alert(key)
+    telegram_delivered = sns_delivered = False
+    if not delivery["telegram_sent"] and TELEGRAM_ALERT_CHAT_ID:
+        if send_telegram_message(TELEGRAM_ALERT_CHAT_ID, message, TELEGRAM_BOT_TOKEN, parse_mode=False):
+            _mark_variation_delivery(key, "telegram")
+            telegram_delivered = True
+    if not delivery["sns_sent"] and ALERT_SNS_TOPIC_ARN:
+        boto3.client("sns").publish(
+            TopicArn=ALERT_SNS_TOPIC_ARN,
+            Subject="Alerta de variación de gasto",
+            Message=message,
+        )
+        _mark_variation_delivery(key, "sns")
+        sns_delivered = True
+    return telegram_delivered, sns_delivered
+
+
+def _serialize_historical_variation(row) -> dict:
+    previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
+    return {
+        "comparison_type": str(row["comparison_type"]),
+        "comparison_label": _comparison_label(str(row["comparison_type"])),
+        "source": str(row["source"]),
+        "dimension_type": str(row["dimension_type"]),
+        "dimension": str(row["dimension"]),
+        "previous_start": row["previous_start"].isoformat(),
+        "previous_end": row["previous_end"].isoformat(),
+        "current_start": row["current_start"].isoformat(),
+        "current_end": row["current_end"].isoformat(),
+        "previous_amount": previous_amount,
+        "current_amount": current_amount,
+        "increase_ars": current_amount - previous_amount,
+        "increase_pct": round((current_amount / previous_amount - 1) * 100, 1),
+    }
+
+
+def run_expense_variation_reprocess(event, context) -> dict:
+    """Run a bounded historical preview or an explicit historical alert delivery."""
+    try:
+        reprocess_from = date.fromisoformat(str(event["from"]))
+        reprocess_to = date.fromisoformat(str(event["to"]))
+        limit = int(event.get("limit", 50))
+        requested_types = event.get("comparisons") or list(_REPROCESS_COMPARISON_TYPES)
+        if isinstance(requested_types, str):
+            requested_types = [requested_types]
+        comparison_types = [str(item).upper() for item in requested_types]
+        if reprocess_from > reprocess_to:
+            raise ValueError("'from' must not be later than 'to'")
+        if not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500")
+        if not comparison_types or any(item not in _REPROCESS_COMPARISON_TYPES for item in comparison_types):
+            raise ValueError("unsupported comparison type")
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"statusCode": 400, "body": json.dumps({"error": "invalid_reprocess_request", "detail": str(exc)})}
+
+    send = event.get("send", False) is True
+    try:
+        client = get_bigquery_client()
+        mapping_columns = {name.lower() for name in get_bigquery_table_columns(client, MAPPING_TABLE)}
+        gastos_columns = {name.lower() for name in get_bigquery_table_columns(client, GASTOS_TOTALES_VIEW)}
+        use_mapping = {"comercio_raw", "comercio_depurado", "activo"}.issubset(mapping_columns)
+        query, config = _historical_variation_query(
+            reprocess_from,
+            reprocess_to,
+            comparison_types,
+            use_mapping,
+            gastos_columns,
+            mapping_columns,
+            limit,
+        )
+        rows = list(client.query(query, job_config=config).result())
+        percent_threshold, absolute_threshold = _get_variation_thresholds(client)
+    except Exception as exc:
+        print(f"variation_reprocess_query_failed error_type={type(exc).__name__} error_message={exc}")
+        traceback.print_exc()
+        return {"statusCode": 500, "body": json.dumps({"error": "variation_reprocess_query_failed"})}
+
+    eligible = [
+        row for row in rows
+        if exceeds_variation_threshold(
+            float(row["previous_amount"]), float(row["current_amount"]), percent_threshold, absolute_threshold
+        )
+    ]
+    summary = {
+        "mode": "send" if send else "dry_run",
+        "from": reprocess_from.isoformat(),
+        "to": reprocess_to.isoformat(),
+        "comparisons": comparison_types,
+        "candidate_rows": len(rows),
+        "eligible_alerts": len(eligible),
+        "percent_threshold": percent_threshold,
+        "absolute_threshold": absolute_threshold,
+        "results": [_serialize_historical_variation(row) for row in eligible],
+    }
+    if not send:
+        print(f"variation_reprocess_completed mode=dry_run candidates={len(rows)} eligible={len(eligible)}")
+        return {"statusCode": 200, "body": json.dumps(summary)}
+
+    telegram_delivered = sns_delivered = errors = 0
+    for row in eligible:
+        key = _alert_key(
+            f"backfill:{row['comparison_type']}",
+            row["current_end"],
+            str(row["source"]),
+            str(row["dimension_type"]),
+            str(row["dimension"]),
+        )
+        try:
+            telegram_sent, sns_sent = _deliver_variation_alert(key, _format_historical_variation_alert(row))
+            telegram_delivered += int(telegram_sent)
+            sns_delivered += int(sns_sent)
+        except Exception:
+            errors += 1
+            traceback.print_exc()
+    summary.update({"telegram_delivered": telegram_delivered, "sns_delivered": sns_delivered, "errors": errors})
+    print(
+        "variation_reprocess_completed mode=send "
+        f"candidates={len(rows)} eligible={len(eligible)} telegram_delivered={telegram_delivered} "
+        f"sns_delivered={sns_delivered} errors={errors}"
+    )
+    return {"statusCode": 200, "body": json.dumps(summary)}
 
 
 def _format_variation_alert(kind: str, periods, row, inflation: Optional[float]) -> str:
@@ -3435,7 +3680,7 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
         }
 
     inflation = _inflation_percentage()
-    evaluated = sent = errors = 0
+    evaluated = telegram_delivered = sns_delivered = errors = 0
     for row in rows:
         evaluated += 1
         previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
@@ -3449,21 +3694,23 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
             str(row["dimension"]),
         )
         try:
-            delivery = _reserve_variation_alert(key)
-            message = _format_variation_alert(kind, periods, row, inflation)
-            delivered = False
-            if not delivery["telegram_sent"] and TELEGRAM_ALERT_CHAT_ID:
-                if send_telegram_message(TELEGRAM_ALERT_CHAT_ID, message, TELEGRAM_BOT_TOKEN, parse_mode=False):
-                    _mark_variation_delivery(key, "telegram")
-                    delivered = True
-            if not delivery["sns_sent"] and ALERT_SNS_TOPIC_ARN:
-                boto3.client("sns").publish(TopicArn=ALERT_SNS_TOPIC_ARN, Subject="Alerta de variación de gasto", Message=message)
-                _mark_variation_delivery(key, "sns")
-                delivered = True
-            sent += int(delivered)
+            telegram_sent, sns_sent = _deliver_variation_alert(
+                key,
+                _format_variation_alert(kind, periods, row, inflation),
+            )
+            telegram_delivered += int(telegram_sent)
+            sns_delivered += int(sns_sent)
         except Exception:
             errors += 1
-    print(f"variation_alert_completed kind={kind} evaluated={evaluated} alerts={sent} errors={errors}")
+            traceback.print_exc()
+    print(
+        "variation_alert_completed "
+        f"kind={kind} "
+        f"current_period={periods.current_start.isoformat()}:{periods.current_end.isoformat()} "
+        f"previous_period={periods.previous_start.isoformat()}:{periods.previous_end.isoformat()} "
+        f"evaluated={evaluated} telegram_delivered={telegram_delivered} "
+        f"sns_delivered={sns_delivered} errors={errors}"
+    )
     return {"statusCode": 200}
 
 
@@ -3751,6 +3998,8 @@ def lambda_handler(event, context):
             if action == "alert_unmapped" or (source == "aws.events" and event.get("detail-type") == "unmapped_alert"):
                 return run_daily_unmapped_alert(event, context)
 
+            if action == "alert_variations_reprocess":
+                return run_expense_variation_reprocess(event, context)
             if action == "alert_variations_weekly":
                 return run_expense_variation_alert("weekly", event, context)
             if action == "alert_variations_biweekly":

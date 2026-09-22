@@ -68,6 +68,9 @@ def load_lambda_module():
     fake_bigquery.ScalarQueryParameter = lambda name, _type, value: types.SimpleNamespace(
         name=name, value=value
     )
+    fake_bigquery.ArrayQueryParameter = lambda name, _type, values: types.SimpleNamespace(
+        name=name, value=values
+    )
     fake_service_account = types.ModuleType("google.oauth2.service_account")
     fake_cloud = types.ModuleType("google.cloud")
     fake_cloud.bigquery = fake_bigquery
@@ -170,6 +173,30 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         self.assertIn("`test-project.PRD.dim_comercio_mapping`", query)
         self.assertIn("'categoria' AS dimension_type", query)
         self.assertIn("'subcategoria' AS dimension_type", query)
+
+    def test_historical_variation_query_has_three_weekly_comparisons(self):
+        query, config = self.module._historical_variation_query(
+            date(2026, 1, 1),
+            date(2026, 3, 31),
+            ["WEEK_VS_WEEK", "WEEK_VS_2_WEEKS", "WEEK_VS_1_MONTH"],
+            use_mapping=True,
+            gastos_columns={"categoria", "subcategoria"},
+            mapping_columns={"comercio_raw", "comercio_depurado", "activo", "categoria", "subcategoria"},
+            limit=50,
+        )
+        self.assertNotIn("{", query)
+        self.assertIn("'WEEK_VS_WEEK'", query)
+        self.assertIn("'WEEK_VS_2_WEEKS'", query)
+        self.assertIn("'WEEK_VS_1_MONTH'", query)
+        self.assertEqual([parameter.name for parameter in config.query_parameters][-2:], [
+            "reprocess_limit",
+            "self_transfer_merchant",
+        ])
+        self.assertEqual(config.query_parameters[2].value, [
+            "WEEK_VS_WEEK",
+            "WEEK_VS_2_WEEKS",
+            "WEEK_VS_1_MONTH",
+        ])
 
     def test_confirmed_callback_writes_once_and_retry_does_not_duplicate(self):
         token = "zPq8Z9u5E2J7S3rK6T1vM4nQ"
