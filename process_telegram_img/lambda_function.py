@@ -209,7 +209,10 @@ def extract_receipt_with_tabscanner(s3_key: str, TABSCANNER_API_KEY, s3_client, 
         process_endpoint = "https://api.tabscanner.com/api/2/process"
         headers = {"apikey": TABSCANNER_API_KEY}
         files = {"file": ("receipt.jpg", image_bytes, "image/jpeg")}
-        payload = {"documentType": "receipt"}
+        # TabScanner procesa asíncronamente: /process acepta la imagen y
+        # devuelve un token que luego se consulta en /result. La región ayuda
+        # con formatos argentinos de fecha y números.
+        payload = {"documentType": "receipt", "region": "ar"}
         
         response = requests.post(
             process_endpoint, 
@@ -220,7 +223,11 @@ def extract_receipt_with_tabscanner(s3_key: str, TABSCANNER_API_KEY, s3_client, 
         )
         result = response.json()
         
-        if result.get("status") != "pending" and result.get("status") != "done":
+        # No usar el texto de `status` para controlar el flujo. TabScanner
+        # devuelve `status: success` al aceptar una subida; el contrato
+        # estable es el campo numérico `code` (200/300 = aceptado).
+        process_code = result.get("code")
+        if process_code not in (200, 300) or not result.get("token"):
             raise Exception(f"Error en TabScanner process: {result}")
         
         token = result.get("token")
@@ -228,19 +235,20 @@ def extract_receipt_with_tabscanner(s3_key: str, TABSCANNER_API_KEY, s3_client, 
         
         # Esperar y obtener resultado (con retry)
         result_endpoint = f"https://api.tabscanner.com/api/result/{token}"
-        max_retries = 10
+        max_retries = 60
         
         for i in range(max_retries):
-            time.sleep(2)  # Esperar 2 segundos entre intentos
+            time.sleep(1)
             response = requests.get(result_endpoint, headers=headers, timeout=30)
             result = response.json()
-            
-            if result.get("status") == "done":
+
+            result_code = result.get("code")
+            if result_code == 202:
                 break
-            elif result.get("status") == "failed":
+            if result_code != 301:
                 raise Exception(f"TabScanner falló: {result}")
-        
-        if result.get("status") != "done":
+
+        if result.get("code") != 202:
             raise Exception("TabScanner timeout")
         
         # Convertir resultado de TabScanner a nuestro formato
