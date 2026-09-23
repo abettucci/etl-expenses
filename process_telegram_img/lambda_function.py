@@ -91,7 +91,12 @@ def extract_receipt_data(s3_key: str, OPENAI_API_KEY, TABSCANNER_API_KEY, s3_cli
         
         if use_fallback and TABSCANNER_API_KEY:
             print("🔄 Intentando con TabScanner...")
-            return extract_receipt_with_tabscanner(s3_key, s3_client, S3_BUCKET_TICKETS)
+            return extract_receipt_with_tabscanner(
+                s3_key,
+                TABSCANNER_API_KEY,
+                s3_client,
+                S3_BUCKET_TICKETS,
+            )
         else:
             raise openai_error
 
@@ -436,7 +441,14 @@ def lambda_handler(event, context):
             raise ValueError("s3_key es requerido")
         
         # Extraer datos del ticket
-        extracted_data = extract_receipt_data(s3_key, OPENAI_API_KEY, TABSCANNER_API_KEY, s3_client, S3_BUCKET_TICKETS, use_fallback=True)
+        extracted_data = extract_receipt_data(
+            s3_key,
+            OPENAI_API_KEY,
+            TABSCANNER_API_KEY,
+            s3_client,
+            s3_bucket,
+            use_fallback=use_fallback,
+        )
 
         # bq_client = get_bigquery_client(GCP_PROJECT_ID, BQ_LOCATION)
         # # Convertir a DataFrame

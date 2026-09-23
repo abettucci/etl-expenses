@@ -2327,8 +2327,17 @@ def format_step_function_response(sfn_result: dict) -> str:
     Formatea el resultado de la Step Function para enviar al usuario por Telegram.
     """
     if not sfn_result.get("success", False):
-        error_msg = sfn_result.get("error_message", "Error desconocido")
-        return f"❌ Error procesando el ticket:\n{error_msg}"
+        # El Cause de Step Functions puede contener stack traces, nombres internos
+        # y datos de infraestructura. Se deja sólo en CloudWatch y no se expone
+        # a Telegram.
+        print(
+            "ticket_processing_failed "
+            f"step_function_error={sfn_result.get('error_message', 'unknown')}"
+        )
+        return (
+            "❌ No pude procesar el ticket en este momento. "
+            "Probá enviar una foto más nítida o intentá nuevamente en unos minutos."
+        )
     
     extracted_data = sfn_result.get("extracted_data", {})
     rows_inserted = sfn_result.get("rows_inserted", 0)
@@ -2427,7 +2436,11 @@ def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
         print(f"❌ Error procesando foto: {e}")
         import traceback
         traceback.print_exc()
-        return f"❌ Error procesando el ticket: {str(e)}", True
+        return (
+            "❌ No pude procesar el ticket en este momento. "
+            "Probá enviar una foto más nítida o intentá nuevamente en unos minutos.",
+            True,
+        )
 
 def process_single_photo_ticket(s3_key: str, bq_client) -> tuple:
     """Procesa un ticket de una sola foto (flujo original)"""
@@ -2446,7 +2459,13 @@ def process_single_photo_ticket(s3_key: str, bq_client) -> tuple:
         return response, True
     except Exception as e:
         print(f"❌ Error en process_single_photo_ticket: {e}")
-        return f"❌ Error procesando el ticket: {str(e)}", True
+        import traceback
+        traceback.print_exc()
+        return (
+            "❌ No pude procesar el ticket en este momento. "
+            "Probá enviar una foto más nítida o intentá nuevamente en unos minutos.",
+            True,
+        )
 
 def process_complete_ticket(merged_data: dict, bq_client, photo_count: int) -> tuple:
     """Procesa un ticket completo (puede ser de múltiples fotos)"""
@@ -2471,7 +2490,11 @@ def process_complete_ticket(merged_data: dict, bq_client, photo_count: int) -> t
         print(f"❌ Error procesando ticket completo: {e}")
         import traceback
         traceback.print_exc()
-        return f"❌ Error procesando el ticket: {str(e)}", True
+        return (
+            "❌ No pude procesar el ticket en este momento. "
+            "Probá enviar una foto más nítida o intentá nuevamente en unos minutos.",
+            True,
+        )
 
 def get_bigquery_client():
     """Inicializa cliente de BigQuery con credenciales de Secrets Manager"""
