@@ -81,10 +81,9 @@ def update_secret(updated_token_json, SECRET_NAME, REGION_NAME):
     )
 
 def auth_google(SECRET_NAME):
-    SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", 
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/bigquery"]
+    # Esta Lambda sólo consulta Gmail. BigQuery se autentica por separado con
+    # la cuenta de servicio de gcp_sa_api_credentials.
+    SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
     REGION_NAME = 'us-east-2'    
     token_info = get_secret(SECRET_NAME, REGION_NAME)
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
