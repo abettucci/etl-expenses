@@ -218,7 +218,7 @@ TABLE_METADATA = {
         "semantic_hints": [
             "Esta tabla contiene TODOS los gastos bancarios",
             "Si el usuario pregunta por 'gastos del banco' o 'banco santander' o 'santander', usar esta tabla SIN filtros adicionales de banco",
-            "El total de gastos es la suma de MONTO",
+            "Para totales expresados en ARS usar MONTO_ARS. Nunca sumar MONTO de registros USD con registros ARS.",
             "Cuando se pregunte por fechas, siempre convertir el campo FECHA_PAGO con la funcion PARSE_DATE(%d/%m/%Y', FECHA_PAGO)",
             "Cuando se pregunte por horarios, siempre convertir el campo HORA_PAGO con la funcion PARSE_TIME('%H:%S', HORA_PAGO)"
         ],
@@ -232,7 +232,7 @@ TABLE_METADATA = {
             "MONTO": {
                 "type": "STRING", 
                 "format": "número con decimales",
-                "description": "Monto del gasto. Castear a FLOAT64 para operaciones: CAST(MONTO AS FLOAT64)",
+                "description": "Monto original en la moneda indicada por DIVISA. Para totales en ARS usar MONTO_ARS; MONTO sólo puede usarse directamente si DIVISA es ARS.",
                 "example": "1500.50"
             },
             "COMERCIO": {
@@ -249,6 +249,11 @@ TABLE_METADATA = {
                 "type": "STRING",
                 "description": "Moneda de la transacción",
                 "example": "ARS"
+            },
+            "MONTO_ARS": {
+                "type": "NUMERIC",
+                "description": "Monto convertido a ARS. Para USD usa la cotización oficial vendedora BCRA vigente en la fecha de compra; para ARS equivale al monto original.",
+                "example": "1500.50"
             }
         }
     },
@@ -493,7 +498,7 @@ SQL_EXAMPLES = """
 
     1. Pregunta: "¿Cuánto gasté en los últimos 3 meses?"
     SQL:
-    SELECT SUM(CAST(MONTO AS FLOAT64)) AS total_gasto
+    SELECT SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))) AS total_gasto_ars
     FROM `{project}.{dataset}.bank_payments`
     WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
 
@@ -507,7 +512,7 @@ SQL_EXAMPLES = """
 
     3. Pregunta: "Gastos por comercio este mes"
     SQL:
-    SELECT COMERCIO, SUM(CAST(MONTO AS FLOAT64)) AS total, COUNT(*) AS cantidad_transacciones
+    SELECT COMERCIO, SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))) AS total_ars, COUNT(*) AS cantidad_transacciones
     FROM `{project}.{dataset}.bank_payments`
     WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
     GROUP BY COMERCIO
@@ -516,7 +521,7 @@ SQL_EXAMPLES = """
 
     4. Pregunta: "¿Cuánto gasté este mes en Cabify?" (o cualquier comercio específico que NO sea Carrefour)
     SQL:
-    SELECT SUM(CAST(b.MONTO AS FLOAT64)) AS total_gasto
+    SELECT SUM(COALESCE(CAST(b.MONTO_ARS AS FLOAT64), IF(UPPER(b.DIVISA) = 'ARS', CAST(b.MONTO AS FLOAT64), NULL))) AS total_gasto_ars
     FROM `{project}.{dataset}.bank_payments` b
     JOIN `{project}.{dataset}.dim_comercio_mapping` m
       ON m.flow = 'bank_payments'
@@ -2634,7 +2639,7 @@ REGLAS CRÍTICAS:
 1. NUNCA agregues filtros que el usuario no pidió explícitamente
 2. Si el usuario pregunta por "gastos del banco" o "banco santander", usa bank_payments SIN filtros de banco (toda la tabla ES del banco santander)
 3. Para campos de fecha tipo STRING con formato dd/mm/yyyy, SIEMPRE usar: PARSE_DATE('%d/%m/%Y', campo_fecha)
-4. Para campos MONTO tipo STRING, SIEMPRE usar: CAST(MONTO AS FLOAT64)
+4. Para totales de bank_payments expresados en ARS usar SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))). MONTO es el importe original y no se puede sumar si mezcla USD y ARS.
 5. Usa fechas relativas (CURRENT_DATE(), DATE_SUB, DATE_TRUNC)
 6. LIMIT 20 siempre
 
@@ -2721,7 +2726,8 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
             8. Limita los resultados a máximo 20 filas con LIMIT 20.
             9. Para filtros de fecha, usa funciones de BigQuery como DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH).
             10. No uses fechas hardcodeadas, usa funciones relativas (CURRENT_DATE(), DATE_SUB, etc).
-            11. Para formatear números usa FORMAT() o CAST().
+            11. En bank_payments, al sumar o comparar gastos en ARS usar MONTO_ARS. Si MONTO_ARS es NULL, sólo podés usar MONTO como fallback cuando DIVISA = 'ARS'; nunca sumes USD sin conversión.
+            12. Para formatear números usa FORMAT() o CAST().
 
             Genera solo el SQL, sin explicaciones adicionales:
         """
@@ -2982,7 +2988,7 @@ LIMIT 1
 def sql_quick_mes() -> str:
     return f"""
 SELECT 'Banco (tarjeta)' AS fuente,
-  ROUND(SUM(CAST(MONTO AS FLOAT64)), 2) AS total_ars,
+  ROUND(SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))), 2) AS total_ars,
   COUNT(*) AS movimientos
 FROM {bq_fqn("bank_payments")}
 WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
@@ -3181,7 +3187,7 @@ def run_monthly_budget_alert(event, context) -> dict:
     try:
         bq_client = get_bigquery_client()
         sql = f"""
-        SELECT ROUND(SUM(CAST(MONTO AS FLOAT64)), 2) AS total_ars
+        SELECT ROUND(SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))), 2) AS total_ars
         FROM {bq_fqn("bank_payments")}
         WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
         """

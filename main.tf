@@ -1167,6 +1167,49 @@ resource "aws_lambda_function" "load_receipt_to_bq" {
   }
 }
 
+# 4.12.1 Cotización USD/ARS oficial vendedor del BCRA y backfill de gastos.
+# La ejecución diaria también convierte sólo filas nuevas (MONTO_ARS nulo).
+# Para la historia completa se invoca una vez con {"action":"backfill_expenses", ...}.
+resource "aws_lambda_function" "exchange_rates_bcra" {
+  function_name = "exchange_rates_bcra"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:exchange_rates_bcra-latest"
+
+  memory_size = 512
+  timeout     = 300
+
+  environment {
+    variables = {
+      GCP_PROJECT_ID = var.GCP_PROJECT_ID
+      BQ_DATASET_PROD = "PRD"
+      BQ_LOCATION     = "US"
+      FX_TABLE        = "fx_usd_ars_bcra"
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "exchange_rates_bcra_daily" {
+  name                = "exchange-rates-bcra-daily"
+  description         = "Sincroniza USD oficial vendedor BCRA para el ETL"
+  schedule_expression = "cron(0 13 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "exchange_rates_bcra_daily" {
+  rule      = aws_cloudwatch_event_rule.exchange_rates_bcra_daily.name
+  target_id = "exchangeRatesBcra"
+  arn       = aws_lambda_function.exchange_rates_bcra.arn
+  input     = jsonencode({ action = "sync_and_backfill", lookback_days = 7 })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_exchange_rates_bcra" {
+  statement_id  = "AllowExecutionFromEventBridgeExchangeRatesBcra"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.exchange_rates_bcra.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.exchange_rates_bcra_daily.arn
+}
+
 # 4.13 Lambda para procesar las transferencias de mercado pago
 resource "aws_lambda_function" "mp_transfers_processor" {
   description   = "Transforma los avisos de transferencias de Mercado Pago al formato intermedio del ETL"
