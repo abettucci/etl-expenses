@@ -115,20 +115,61 @@ def backfill_expenses(client: bigquery.Client) -> dict:
         ensure_conversion_columns(client, table_id)
         amount = f"SAFE_CAST(target.`{amount_column}` AS NUMERIC)"
         currency = f"UPPER(TRIM(CAST(target.`{currency_column}` AS STRING)))"
-        latest_rate = f"(SELECT tipo_cambio_ars FROM `{fx_table_id}` fx WHERE fx.fecha_cotizacion <= {date_expression} ORDER BY fx.fecha_cotizacion DESC LIMIT 1)"
-        latest_date = f"(SELECT fecha_cotizacion FROM `{fx_table_id}` fx WHERE fx.fecha_cotizacion <= {date_expression} ORDER BY fx.fecha_cotizacion DESC LIMIT 1)"
-        job = client.query(f"""
+        source_date_expression = date_expression.replace("target.", "")
+        source_currency = currency.replace("target.", "")
+
+        # ARS no requiere join: se conserva el monto original como monto_ars.
+        ars_job = client.query(f"""
           UPDATE `{table_id}` AS target SET
-            tipo_cambio_ars = IF({currency} IN ('USD', 'U$S', 'US$'), {latest_rate}, NULL),
-            fecha_tipo_cambio = IF({currency} IN ('USD', 'U$S', 'US$'), {latest_date}, NULL),
-            monto_ars = IF({currency} IN ('USD', 'U$S', 'US$'), {amount} * {latest_rate}, {amount}),
-            fuente_tipo_cambio = IF({currency} IN ('USD', 'U$S', 'US$'), '{FX_SOURCE}', 'ORIGINAL_ARS')
+            tipo_cambio_ars = NULL,
+            fecha_tipo_cambio = NULL,
+            monto_ars = {amount},
+            fuente_tipo_cambio = 'ORIGINAL_ARS'
           WHERE {amount} IS NOT NULL
-            AND ({currency} NOT IN ('USD', 'U$S', 'US$') OR {date_expression} IS NOT NULL)
+            AND {currency} NOT IN ('USD', 'U$S', 'US$')
             AND monto_ars IS NULL
         """)
-        job.result()
-        updated = job.num_dml_affected_rows or 0
+        ars_job.result()
+
+        # BigQuery no permite subqueries correlacionadas a otra tabla en UPDATE.
+        # Primero se resuelve una única cotización por fecha y luego se actualiza
+        # por JOIN; QUALIFY conserva la última fecha publicada (fines de semana
+        # y feriados incluidos) sin multiplicar filas del gasto.
+        usd_job = client.query(f"""
+          WITH expense_dates AS (
+            SELECT DISTINCT
+              {source_date_expression} AS fecha_gasto
+            FROM `{table_id}`
+            WHERE {source_currency} IN ('USD', 'U$S', 'US$')
+              AND {source_date_expression} IS NOT NULL
+              AND monto_ars IS NULL
+          ),
+          rate_by_expense_date AS (
+            SELECT
+              expense_dates.fecha_gasto,
+              fx.tipo_cambio_ars,
+              fx.fecha_cotizacion
+            FROM expense_dates
+            JOIN `{fx_table_id}` AS fx
+              ON fx.fecha_cotizacion <= expense_dates.fecha_gasto
+            QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY expense_dates.fecha_gasto
+              ORDER BY fx.fecha_cotizacion DESC
+            ) = 1
+          )
+          UPDATE `{table_id}` AS target
+          SET
+            tipo_cambio_ars = rate.tipo_cambio_ars,
+            fecha_tipo_cambio = rate.fecha_cotizacion,
+            monto_ars = {amount} * rate.tipo_cambio_ars,
+            fuente_tipo_cambio = '{FX_SOURCE}'
+          FROM rate_by_expense_date AS rate
+          WHERE {currency} IN ('USD', 'U$S', 'US$')
+            AND {date_expression} = rate.fecha_gasto
+            AND target.monto_ars IS NULL
+        """)
+        usd_job.result()
+        updated = (ars_job.num_dml_affected_rows or 0) + (usd_job.num_dml_affected_rows or 0)
         print(f"fx_backfill_completed table={table_name} updated={updated}")
         result["updated_tables"].append({"table": table_name, "updated": updated})
     return result
