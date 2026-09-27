@@ -136,15 +136,21 @@ def backfill_expenses(client: bigquery.Client) -> dict:
         # por JOIN; QUALIFY conserva la última fecha publicada (fines de semana
         # y feriados incluidos) sin multiplicar filas del gasto.
         usd_job = client.query(f"""
-          WITH expense_dates AS (
-            SELECT DISTINCT
-              {source_date_expression} AS fecha_gasto
-            FROM `{table_id}`
-            WHERE {source_currency} IN ('USD', 'U$S', 'US$')
-              AND {source_date_expression} IS NOT NULL
-              AND monto_ars IS NULL
-          ),
-          rate_by_expense_date AS (
+          UPDATE `{table_id}` AS target
+          SET
+            tipo_cambio_ars = rate.tipo_cambio_ars,
+            fecha_tipo_cambio = rate.fecha_cotizacion,
+            monto_ars = {amount} * rate.tipo_cambio_ars,
+            fuente_tipo_cambio = '{FX_SOURCE}'
+          FROM (
+            WITH expense_dates AS (
+              SELECT DISTINCT
+                {source_date_expression} AS fecha_gasto
+              FROM `{table_id}`
+              WHERE {source_currency} IN ('USD', 'U$S', 'US$')
+                AND {source_date_expression} IS NOT NULL
+                AND monto_ars IS NULL
+            )
             SELECT
               expense_dates.fecha_gasto,
               fx.tipo_cambio_ars,
@@ -156,14 +162,7 @@ def backfill_expenses(client: bigquery.Client) -> dict:
               PARTITION BY expense_dates.fecha_gasto
               ORDER BY fx.fecha_cotizacion DESC
             ) = 1
-          )
-          UPDATE `{table_id}` AS target
-          SET
-            tipo_cambio_ars = rate.tipo_cambio_ars,
-            fecha_tipo_cambio = rate.fecha_cotizacion,
-            monto_ars = {amount} * rate.tipo_cambio_ars,
-            fuente_tipo_cambio = '{FX_SOURCE}'
-          FROM rate_by_expense_date AS rate
+          ) AS rate
           WHERE {currency} IN ('USD', 'U$S', 'US$')
             AND {date_expression} = rate.fecha_gasto
             AND target.monto_ars IS NULL
