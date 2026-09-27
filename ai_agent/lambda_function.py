@@ -3325,6 +3325,16 @@ def _variation_dimension_ctes(
     )
     category_expr = f"COALESCE({mapped_category_expr}, {raw_category_expr})"
     subcategory_expr = f"COALESCE({mapped_subcategory_expr}, {raw_subcategory_expr})"
+    # La vista mezcla TIMESTAMP/DATE serializados con valores vacíos en algunos
+    # flujos. DATE(g.fecha) falla ante ''. Se normaliza de forma segura para
+    # que una fila inválida no cancele todo el análisis de variaciones.
+    expense_date_expr = """
+      COALESCE(
+        SAFE_CAST(NULLIF(TRIM(CAST(g.fecha AS STRING)), '') AS DATE),
+        DATE(SAFE_CAST(NULLIF(TRIM(CAST(g.fecha AS STRING)), '') AS TIMESTAMP)),
+        SAFE.PARSE_DATE('%d/%m/%Y', NULLIF(TRIM(CAST(g.fecha AS STRING)), ''))
+      )
+    """
     mapping_join = f"""
       LEFT JOIN {bq_fqn(MAPPING_TABLE)} m
         ON UPPER(g.comercio) = UPPER(m.comercio_raw)
@@ -3338,7 +3348,7 @@ def _variation_dimension_ctes(
         {merchant_expr} AS merchant,
         {category_expr} AS category,
         {subcategory_expr} AS subcategory,
-        DATE(g.fecha) AS expense_date,
+        {expense_date_expr} AS expense_date,
         SAFE_CAST(g.monto_total AS FLOAT64) AS amount
       FROM {bq_fqn(GASTOS_TOTALES_VIEW)} g
       {mapping_join}
