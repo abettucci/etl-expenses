@@ -68,7 +68,6 @@ ALERT_VARIATION_PERCENT_DEFAULT = float(os.environ.get("ALERT_VARIATION_PERCENT"
 ALERT_VARIATION_ARS_DEFAULT = float(os.environ.get("ALERT_VARIATION_ARS", "5000"))
 ALERT_VARIATION_TABLE = os.environ.get("ALERT_VARIATION_TABLE", "expense_variation_alerts")
 ALERT_VARIATION_SETTINGS_TABLE = os.environ.get("ALERT_VARIATION_SETTINGS_TABLE", "alert_variation_settings")
-ALERT_SNS_TOPIC_ARN = os.environ.get("ALERT_SNS_TOPIC_ARN", "").strip()
 MAPPING_TABLE = os.environ.get("MAPPING_TABLE", "dim_comercio_mapping")
 UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
 MANUAL_EXPENSES_TABLE = "manual_expenses"
@@ -3539,23 +3538,23 @@ def _format_historical_variation_alert(row) -> str:
     )
 
 
-def _deliver_variation_alert(key: str, message: str) -> tuple[bool, bool]:
-    """Deliver one alert idempotently and report each channel separately."""
+def _deliver_variation_alert(key: str, message: str) -> bool:
+    """Deliver one variation alert through Telegram, idempotently."""
     delivery = _reserve_variation_alert(key)
-    telegram_delivered = sns_delivered = False
-    if not delivery["telegram_sent"] and TELEGRAM_ALERT_CHAT_ID:
-        if send_telegram_message(TELEGRAM_ALERT_CHAT_ID, message, TELEGRAM_BOT_TOKEN, parse_mode=False):
-            _mark_variation_delivery(key, "telegram")
-            telegram_delivered = True
-    if not delivery["sns_sent"] and ALERT_SNS_TOPIC_ARN:
-        boto3.client("sns").publish(
-            TopicArn=ALERT_SNS_TOPIC_ARN,
-            Subject="Alerta de variación de gasto",
-            Message=message,
-        )
-        _mark_variation_delivery(key, "sns")
-        sns_delivered = True
-    return telegram_delivered, sns_delivered
+    if delivery["telegram_sent"]:
+        print("variation_alert_telegram_skipped reason=already_delivered")
+        return False
+    if not TELEGRAM_ALERT_CHAT_ID:
+        print("variation_alert_telegram_skipped reason=missing_chat_id")
+        return False
+    if not TELEGRAM_BOT_TOKEN:
+        print("variation_alert_telegram_skipped reason=missing_bot_token")
+        return False
+    if send_telegram_message(TELEGRAM_ALERT_CHAT_ID, message, TELEGRAM_BOT_TOKEN, parse_mode=False):
+        _mark_variation_delivery(key, "telegram")
+        return True
+    print("variation_alert_telegram_failed")
+    return False
 
 
 def _serialize_historical_variation(row) -> dict:
@@ -3639,7 +3638,7 @@ def run_expense_variation_reprocess(event, context) -> dict:
         print(f"variation_reprocess_completed mode=dry_run candidates={len(rows)} eligible={len(eligible)}")
         return {"statusCode": 200, "body": json.dumps(summary)}
 
-    telegram_delivered = sns_delivered = errors = 0
+    telegram_delivered = errors = 0
     for row in eligible:
         key = _alert_key(
             f"backfill:{row['comparison_type']}",
@@ -3649,17 +3648,16 @@ def run_expense_variation_reprocess(event, context) -> dict:
             str(row["dimension"]),
         )
         try:
-            telegram_sent, sns_sent = _deliver_variation_alert(key, _format_historical_variation_alert(row))
+            telegram_sent = _deliver_variation_alert(key, _format_historical_variation_alert(row))
             telegram_delivered += int(telegram_sent)
-            sns_delivered += int(sns_sent)
         except Exception:
             errors += 1
             traceback.print_exc()
-    summary.update({"telegram_delivered": telegram_delivered, "sns_delivered": sns_delivered, "errors": errors})
+    summary.update({"telegram_delivered": telegram_delivered, "errors": errors})
     print(
         "variation_reprocess_completed mode=send "
         f"candidates={len(rows)} eligible={len(eligible)} telegram_delivered={telegram_delivered} "
-        f"sns_delivered={sns_delivered} errors={errors}"
+        f"errors={errors}"
     )
     return {"statusCode": 200, "body": json.dumps(summary)}
 
@@ -3719,7 +3717,7 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
         }
 
     inflation = _inflation_percentage()
-    evaluated = telegram_delivered = sns_delivered = errors = 0
+    evaluated = telegram_delivered = errors = 0
     for row in rows:
         evaluated += 1
         previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
@@ -3733,12 +3731,11 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
             str(row["dimension"]),
         )
         try:
-            telegram_sent, sns_sent = _deliver_variation_alert(
+            telegram_sent = _deliver_variation_alert(
                 key,
                 _format_variation_alert(kind, periods, row, inflation),
             )
             telegram_delivered += int(telegram_sent)
-            sns_delivered += int(sns_sent)
         except Exception:
             errors += 1
             traceback.print_exc()
@@ -3748,7 +3745,7 @@ def run_expense_variation_alert(kind: str, event, context) -> dict:
         f"current_period={periods.current_start.isoformat()}:{periods.current_end.isoformat()} "
         f"previous_period={periods.previous_start.isoformat()}:{periods.previous_end.isoformat()} "
         f"evaluated={evaluated} telegram_delivered={telegram_delivered} "
-        f"sns_delivered={sns_delivered} errors={errors}"
+        f"errors={errors}"
     )
     return {"statusCode": 200}
 

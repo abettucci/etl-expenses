@@ -881,7 +881,6 @@ resource "aws_lambda_function" "ai_agent" {
       ALERT_VARIATION_PERCENT      = "10"
       ALERT_VARIATION_ARS          = "5000"
       ALERT_VARIATION_TABLE        = aws_dynamodb_table.expense_variation_alerts.name
-      ALERT_SNS_TOPIC_ARN          = aws_sns_topic.stepfunction_alerts.arn
       S3_PREFIX_EXPORTS           = "exports/"
       EXPORT_MAX_ROWS             = "3000"
       GOOGLE_STT_USAGE_TABLE       = aws_dynamodb_table.google_stt_monthly_usage.name

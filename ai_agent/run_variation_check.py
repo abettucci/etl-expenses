@@ -4,14 +4,14 @@
 This reuses run_expense_variation_alert() exactly as EventBridge calls it in
 production (action=alert_variations_weekly / alert_variations_monthly) — same
 BigQuery query, same configurable thresholds (alert_variation_settings), same
-DynamoDB idempotency (expense_variation_alerts) and same Telegram/SNS delivery.
+DynamoDB idempotency (expense_variation_alerts) and same Telegram delivery.
 Running this script twice for the same period is safe: alerts already marked
 as delivered in DynamoDB are skipped, not resent.
 
 Required environment variables (same ones the Lambda has via Terraform):
   TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID, GCP_PROJECT_ID,
   and valid AWS credentials (Secrets Manager: gcp_sa_api_credentials,
-  DynamoDB: expense_variation_alerts). ALERT_SNS_TOPIC_ARN is optional.
+  DynamoDB: expense_variation_alerts).
 
 Usage:
   python3 run_variation_check.py            # both weekly and monthly
