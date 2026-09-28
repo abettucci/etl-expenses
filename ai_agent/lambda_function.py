@@ -3518,23 +3518,32 @@ def _comparison_label(comparison_type: str) -> str:
     return _REPROCESS_COMPARISON_TYPES.get(comparison_type, comparison_type)
 
 
+def _variation_dimension_metadata(dimension_type: str) -> tuple[str, str]:
+    """Return a clear, user-facing heading and field label for an alert."""
+    return {
+        "comercio": ("🏪 <b>Variación Comercio</b>", "Comercio"),
+        "categoria": ("📂 <b>Variación Categoría</b>", "Categoría"),
+        "subcategoria": ("🏷️ <b>Variación Subcategoría</b>", "Subcategoría"),
+    }.get(dimension_type, ("📈 <b>Variación de gasto</b>", "Detalle"))
+
+
 def _format_historical_variation_alert(row) -> str:
     previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
     increase, percent = current_amount - previous_amount, (current_amount / previous_amount - 1) * 100
-    dimension_label = {
-        "comercio": "Comercio",
-        "categoria": "Categoría",
-        "subcategoria": "Subcategoría",
-    }.get(str(row["dimension_type"]), "Dimensión")
+    heading, dimension_label = _variation_dimension_metadata(str(row["dimension_type"]))
+    dimension = html.escape(str(row["dimension"]))
+    source = html.escape(str(row["source"]))
     return (
-        "⚠️ Alerta histórica de variación de gasto\n\n"
-        f"Comparación: {_comparison_label(str(row['comparison_type']))}\n"
-        f"{dimension_label}: {row['dimension']} ({row['source']})\n"
-        f"Período anterior: {row['previous_start'].strftime('%d/%m/%Y')}–{row['previous_end'].strftime('%d/%m/%Y')}\n"
-        f"Período actual: {row['current_start'].strftime('%d/%m/%Y')}–{row['current_end'].strftime('%d/%m/%Y')}\n"
-        f"Anterior: $ {_format_number_ar(previous_amount)}\n"
-        f"Actual: $ {_format_number_ar(current_amount)}\n"
-        f"Aumento: $ {_format_number_ar(increase)} ({percent:.1f}%)"
+        "⚠️ <b>Alerta histórica de gasto</b>\n"
+        f"{heading}\n\n"
+        f"🔎 <b>{dimension_label}:</b> {dimension}\n"
+        f"🧾 <b>Fuente:</b> <code>{source}</code>\n"
+        f"🗓️ <b>Comparación:</b> {_comparison_label(str(row['comparison_type']))}\n"
+        f"↩️ <b>Período anterior:</b> {row['previous_start'].strftime('%d/%m/%Y')} — {row['previous_end'].strftime('%d/%m/%Y')}\n"
+        f"➡️ <b>Período actual:</b> {row['current_start'].strftime('%d/%m/%Y')} — {row['current_end'].strftime('%d/%m/%Y')}\n\n"
+        f"💵 <b>Antes:</b> $ {_format_number_ar(previous_amount)}\n"
+        f"💳 <b>Ahora:</b> $ {_format_number_ar(current_amount)}\n"
+        f"🔺 <b>Aumento:</b> +$ {_format_number_ar(increase)} (<b>{percent:.1f}%</b>)"
     )
 
 
@@ -3550,7 +3559,7 @@ def _deliver_variation_alert(key: str, message: str) -> bool:
     if not TELEGRAM_BOT_TOKEN:
         print("variation_alert_telegram_skipped reason=missing_bot_token")
         return False
-    if send_telegram_message(TELEGRAM_ALERT_CHAT_ID, message, TELEGRAM_BOT_TOKEN, parse_mode=False):
+    if send_telegram_message(TELEGRAM_ALERT_CHAT_ID, message, TELEGRAM_BOT_TOKEN, parse_mode="HTML"):
         _mark_variation_delivery(key, "telegram")
         return True
     print("variation_alert_telegram_failed")
@@ -3666,21 +3675,23 @@ def _format_variation_alert(kind: str, periods, row, inflation: Optional[float])
     previous_amount, current_amount = float(row["previous_amount"]), float(row["current_amount"])
     increase, percent = current_amount - previous_amount, (current_amount / previous_amount - 1) * 100
     period_label = {"weekly": "semana", "biweekly": "período de 2 semanas", "monthly": "mes"}[kind]
-    dimension_label = {
-        "comercio": "Comercio",
-        "categoria": "Categoría",
-        "subcategoria": "Subcategoría",
-    }.get(str(row["dimension_type"]), "Dimensión")
+    heading, dimension_label = _variation_dimension_metadata(str(row["dimension_type"]))
+    dimension = html.escape(str(row["dimension"]))
+    source = html.escape(str(row["source"]))
     text = (
-        f"⚠️ Alerta de variación de gasto\n\n{dimension_label}: {row['dimension']} ({row['source']})\n"
-        f"{period_label.capitalize()} anterior: $ {_format_number_ar(previous_amount)}\n"
-        f"{period_label.capitalize()} actual: $ {_format_number_ar(current_amount)}\n"
-        f"Aumento: $ {_format_number_ar(increase)} ({percent:.1f}%)\n"
-        f"Período: {periods.current_start.strftime('%d/%m')}–{periods.current_end.strftime('%d/%m/%Y')}"
+        "⚠️ <b>Alerta de variación de gasto</b>\n"
+        f"{heading}\n\n"
+        f"🔎 <b>{dimension_label}:</b> {dimension}\n"
+        f"🧾 <b>Fuente:</b> <code>{source}</code>\n"
+        f"🗓️ <b>Comparación:</b> {period_label.capitalize()} vs período anterior\n"
+        f"📆 <b>Período actual:</b> {periods.current_start.strftime('%d/%m')} — {periods.current_end.strftime('%d/%m/%Y')}\n\n"
+        f"💵 <b>Antes:</b> $ {_format_number_ar(previous_amount)}\n"
+        f"💳 <b>Ahora:</b> $ {_format_number_ar(current_amount)}\n"
+        f"🔺 <b>Aumento:</b> +$ {_format_number_ar(increase)} (<b>{percent:.1f}%</b>)"
     )
     if inflation is not None and kind == "monthly":
         comparison = "supera" if percent > inflation else "no supera"
-        text += f"\nIPC configurado: {inflation:.1f}% — el aumento {comparison} el IPC."
+        text += f"\n\n📊 <b>IPC configurado:</b> {inflation:.1f}%\nEl aumento {comparison} el IPC."
     return text
 
 
