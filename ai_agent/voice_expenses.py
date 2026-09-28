@@ -1,8 +1,8 @@
-"""Validation rules for Telegram voice expenses.
+"""Validation rules for Telegram manual expenses.
 
 Only validated, structured data from this module is allowed to reach the
-manual-expenses write path.  Audio and transcriptions deliberately have no
-representation here so they cannot be persisted accidentally.
+manual-expenses write path. Raw audio, transcriptions and typed input are not
+fields of ``ManualExpenseIntent``, so they cannot be persisted accidentally.
 """
 
 from __future__ import annotations
@@ -50,6 +50,17 @@ _NATURAL_CORRECTION = re.compile(
     re.IGNORECASE,
 )
 
+_TYPED_EXPENSE_PREFIX = re.compile(
+    r"^\s*(?:gast[eé]|pagu[eé]|compr[eé]|anot[aá]|carg[aá]|agreg[aá]|registr[aá])"
+    r"(?:\s+(?:un|una|el)?\s*gasto)?\s*[:,-]?\s*",
+    re.IGNORECASE,
+)
+
+_TYPED_EXPENSE_AMOUNT = re.compile(
+    r"^\s*\$?\s*\d[\d.,]*\s*(?:pesos|ars)?\s+(?:en\s+)?\S+",
+    re.IGNORECASE,
+)
+
 
 class TelegramVoice(BaseModel):
     """Allowlisted metadata for a Telegram voice note.
@@ -80,6 +91,24 @@ class TelegramVoiceMessage(BaseModel):
     chat_id: int = Field(strict=True)
     message_id: int = Field(ge=1, strict=True)
     voice: TelegramVoice
+
+
+class TelegramManualExpenseMessage(BaseModel):
+    """Minimum validated Telegram data used to stage a typed manual expense."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: int = Field(strict=True)
+    message_id: int = Field(ge=1, strict=True)
+    text: str = Field(min_length=2, max_length=1000)
+
+    @field_validator("text")
+    @classmethod
+    def text_must_not_be_blank(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("empty text")
+        return normalized
 
 
 class TelegramFileResponse(BaseModel):
@@ -335,8 +364,37 @@ def extract_manual_expense_regex(transcript: str, today: date) -> ManualExpenseI
         return None
 
 
+def is_typed_manual_expense(text: object) -> bool:
+    """Return true only for clear typed-expense phrases, never generic queries."""
+    candidate = str(text or "").strip()
+    if not candidate or len(candidate) > 1000:
+        return False
+    if _TYPED_EXPENSE_PREFIX.match(candidate) or _TYPED_EXPENSE_AMOUNT.match(candidate):
+        return True
+    normalized = unicodedata.normalize("NFKD", candidate).encode("ascii", "ignore").decode("ascii").lower()
+    return bool(
+        re.search(r"\b(?:monto|importe)\s*[:=]", normalized)
+        and re.search(r"\b(?:comercio|merchant)\s*[:=]", normalized)
+    )
+
+
+def extract_typed_manual_expense_regex(text: str, today: date) -> ManualExpenseIntent | None:
+    """Parse common typed forms such as ``Gasté $12.500 en YPF`` safely."""
+    candidate = " ".join(str(text).split())
+    prefix = _TYPED_EXPENSE_PREFIX.match(candidate)
+    if prefix:
+        candidate = candidate[prefix.end():].strip()
+    candidate = re.sub(
+        r"^(\$?\s*\d[\d.,]*\s*(?:pesos|ars)?)\s+en\s+",
+        r"\1 ",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    return extract_manual_expense_regex(candidate, today)
+
+
 class PendingVoiceExpense(BaseModel):
-    """The short-lived confirmation record stored in DynamoDB."""
+    """The short-lived confirmation record for a voice or typed expense."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -344,6 +402,7 @@ class PendingVoiceExpense(BaseModel):
     chat_id: int = Field(strict=True)
     message_id: int = Field(ge=1, strict=True)
     expense_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
+    source: Literal["telegram_voice", "telegram_text"] = "telegram_voice"
     expense: ManualExpenseIntent
     expires_at: int = Field(ge=1)
 

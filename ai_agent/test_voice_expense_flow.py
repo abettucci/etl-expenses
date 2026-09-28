@@ -156,6 +156,32 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         self.assertIsNone(keyboard)
         download.assert_not_called()
 
+    def test_typed_expense_creates_preview_without_writing_to_bigquery(self):
+        message = {"message_id": 789, "text": "Gasté $ 12.500 en YPF"}
+        with patch.object(self.module, "_extract_typed_manual_expense", return_value=self.expense), \
+             patch.object(self.module, "_store_manual_expense") as store:
+            handled, text, keyboard = self.module.process_telegram_typed_expense(
+                self.event, message, 12345, message["text"],
+            )
+
+        self.assertTrue(handled)
+        self.assertIn("Buenos Aires Barbershop", text)
+        self.assertEqual(keyboard["inline_keyboard"][-1][0]["text"], "Confirmar")
+        self.assertEqual(self.table.item["source"], "telegram_text")
+        store.assert_not_called()
+
+    def test_typed_expense_parser_handles_verb_amount_merchant_and_date(self):
+        parsed = self.module.extract_typed_manual_expense_regex(
+            "Pagué $ 12.500 en YPF ayer", date(2026, 9, 27),
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(str(parsed.amount), "12500.00")
+        self.assertEqual(parsed.merchant, "ypf")
+        self.assertEqual(parsed.expense_date, date(2026, 9, 26))
+
+    def test_text_question_is_not_mistaken_for_an_expense(self):
+        self.assertFalse(self.module.is_typed_manual_expense("¿Cuánto gasté este mes?"))
+
     def test_variation_query_resolves_mapping_table_placeholder(self):
         periods = types.SimpleNamespace(
             current_start=date(2026, 9, 7),
