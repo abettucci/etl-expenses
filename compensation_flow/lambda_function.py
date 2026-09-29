@@ -62,6 +62,8 @@ def lambda_handler(event, context):
     
     # Extraer información del contexto
     body = event.get('body', {})
+    if not isinstance(body, dict):
+        body = {}
     etl_flow = body.get('etl_flow', event.get('etl_flow', 'UNKNOWN'))
     bucket = body.get('bucket', event.get('bucket', 'N/A'))
     key = body.get('key', event.get('key', 'N/A'))
@@ -69,7 +71,9 @@ def lambda_handler(event, context):
     # Para MP Reports que tienen estructura diferente
     file_name = event.get('file_name', key)
     
-    error_info = event.get('error-info', {})
+    error_info = event.get('error_info') or event.get('error-info') or {}
+    if not isinstance(error_info, dict):
+        error_info = {}
     error_type = error_info.get('Error', 'Unknown Error')
     error_cause = error_info.get('Cause', 'No details available')
     

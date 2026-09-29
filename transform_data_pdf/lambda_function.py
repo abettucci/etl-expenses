@@ -191,18 +191,19 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
 
 def process_pdf_file(s3, bucket, pdf_key):
     try:
+        if not isinstance(pdf_key, str) or not pdf_key:
+            raise ValueError(f"PDF key inválido: {pdf_key!r}")
+
         print(f"📄 Procesando: {pdf_key}")
         pdf_obj = s3.get_object(Bucket=bucket, Key=pdf_key)
         pdf_content = pdf_obj['Body'].read()
 
         if not pdf_content.startswith(b'%PDF'):
-            print(f"⚠️ El archivo {pdf_key} no es un PDF válido")
-            return False
+            raise ValueError(f"El archivo {pdf_key} no es un PDF válido")
         df = transform_pdf_to_dataframe(pdf_content, pdf_key)
 
         if df.empty:
-            print(f"⚠️ No se pudo extraer datos del PDF: {pdf_key}")
-            return False
+            raise ValueError(f"No se pudo extraer datos del PDF: {pdf_key}")
         
         # Guardar CSV
         csv_buffer = io.StringIO()
@@ -220,6 +221,7 @@ def process_pdf_file(s3, bucket, pdf_key):
 
     except Exception as e:
         print(f"❌ Error procesando {pdf_key}: {str(e)}")
+        raise
 
 def lambda_handler(event, context):
     try:

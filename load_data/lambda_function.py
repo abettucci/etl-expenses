@@ -690,19 +690,19 @@ def should_skip_processing(payload):
     }
     
     # Verificar sender
-    sender = payload.get('sender', '').lower()
+    sender = str(payload.get('sender') or '').lower()
     for pattern in skip_patterns['sender']:
         if pattern.lower() in sender:
             return True, f"Sender matches skip pattern: {pattern}"
     
     # Verificar subject
-    subject = payload.get('subject', '')
+    subject = str(payload.get('subject') or '')
     for pattern in skip_patterns['subject']:
         if pattern.lower() in subject.lower():
             return True, f"Subject matches skip pattern: {pattern}"
     
     # Verificar si el key contiene patrones de error
-    key = payload.get('key', '')
+    key = str(payload.get('key') or '')
     if 'error' in key.lower() or 'failed' in key.lower():
         return True, f"Key contains error pattern: {key}"
     

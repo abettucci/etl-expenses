@@ -254,50 +254,80 @@ def process_email(message_id, gmail_service):
 
 # Funcion para extraer los PDFs especificos de Gmail
 def download_pdf_from_email_urls(mail_data, sender_email, bucket_name, folder, s3_client):
-    raw_date = mail_data["date"]
+    raw_date = str(mail_data.get("date") or "")
+    if not raw_date:
+        print("carrefour_ticket_skipped reason=missing_date")
+        return None
+
     try:
         # Ejemplo: 2025-09-18T10:45:10  o  2025-09-18
         parsed_date = datetime.fromisoformat(raw_date.replace("Z", ""))
     except ValueError:
-        # fallback si no viene en formato ISO estándar
-        parsed_date = datetime.strptime(raw_date[:10], "%Y-%m-%d")
+        try:
+            # fallback si no viene en formato ISO estándar
+            parsed_date = datetime.strptime(raw_date[:10], "%Y-%m-%d")
+        except ValueError:
+            print(f"carrefour_ticket_skipped reason=invalid_date value={raw_date!r}")
+            return None
     date = parsed_date.strftime("%d-%m-%y")
     print('Analizando mail de fecha: ', date)
 
-    filename = f'Ticket_{date}.pdf'
+    message_id = str(mail_data.get("message_id") or "unknown")
+    filename = f'Ticket_{date}_{message_id}.pdf'
     s3_key = f'{folder}{filename}'
-    soup = BeautifulSoup(mail_data["html_body"], 'html.parser')
+    html_body = mail_data.get("html_body")
+    if not isinstance(html_body, str) or not html_body.strip():
+        print(f"carrefour_ticket_skipped reason=missing_html message_id={message_id}")
+        return None
 
-    if soup == "":
-        print(f"⚠️ No HTML content found in email for date {date}, skipping link extraction.")
-        return s3_key
+    soup = BeautifulSoup(html_body, 'html.parser')
 
     if sender_email == "atencion_clientes@m.contactocarrefour.com.ar":
         links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.contactocarrefour.com.ar/x/c/' in a['href']]
     else:
         links = [a['href'] for a in soup.find_all('a', href=True) if 'https://m.tarjetacarrefour.com.ar/x/c/' in a['href']]
+
+    if not links:
+        print(f"carrefour_ticket_skipped reason=no_ticket_link message_id={message_id}")
+        return None
     
     for url in links:
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=30)
             if response.content[:4] == b'%PDF' and len(response.content) > 1024 :
                 try:
                     s3_client.head_object(Bucket=bucket_name, Key=s3_key)
                     print("⚠️ El archivo ya existe en S3, se omite la subida.")
-                except s3_client.exceptions.ClientError as e:
+                    return s3_key
+                except ClientError as e:
                     if e.response['Error']['Code'] == '404':
                         # Subir archivo PDF a S3
                         s3_client.upload_fileobj(BytesIO(response.content), bucket_name, s3_key)
                         print(f"✅ Archivo subido a S3: {s3_key}")
+                        return s3_key
+                    raise
             else:
                 print(f"⚠️ Archivo inválido desde URL: {url}")
         except Exception as e:
             print(f"❌ Error al descargar desde URL {url}: {e}")
 
-    return s3_key
+    print(f"carrefour_ticket_skipped reason=no_valid_pdf message_id={message_id}")
+    return None
+
+
+def should_start_step_function(response):
+    """Return True only for dispatch results that contain a valid process flag."""
+    if not isinstance(response, dict):
+        return False
+
+    body = response.get("body")
+    if isinstance(body, dict):
+        return body.get("process") is True
+
+    return response.get("process") is True
 
 def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client, sender, subject):
     """Dispatch basado en subject y sender"""
@@ -347,6 +377,17 @@ def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client,
     elif (sender in MARKET_EMAIL_SENDERS and MARKET_SUBJECT in subject):
         print('Descargando el pdf del mail de carrefour...')
         s3_key = download_pdf_from_email_urls(mail_data, sender, MARKET_BUCKET, folder, s3_client)
+        if not s3_key:
+            return {
+                "statusCode": 200,
+                "body": {
+                    "process": False,
+                    "etl_flow": "TICKET",
+                    "bucket": MARKET_BUCKET,
+                    "reason": "No se encontró un PDF de ticket válido en el email de Carrefour",
+                },
+            }
+
         print(f"✅ Archivo subido a S3: {s3_key}")
 
         return  {
@@ -354,7 +395,8 @@ def dispatch_processor(mail_data, folder, MARKET_BUCKET, BANK_BUCKET, s3_client,
             "body": {
                 "key": s3_key,
                 "process": True,
-                "etl_flow": "TICKET"
+                "etl_flow": "TICKET",
+                "bucket": MARKET_BUCKET,
             }
         }
 
@@ -546,11 +588,7 @@ def reproceso_historico(table_name):
                     print(payload)
                     
                     # Si dispatch_processor retornó process=False, no ejecutar Step Function
-                    should_process = response.get('process') if isinstance(response, dict) else False
-                    if isinstance(response, dict) and 'body' in response and isinstance(response['body'], dict):
-                        should_process = response['body'].get('process', False)
-                    
-                    if not should_process:
+                    if not should_start_step_function(response):
                         print(f"⏭️ Mensaje {msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
                         continue
 
@@ -968,11 +1006,7 @@ def lambda_handler(event, context):
                             print(f'🚀 Payload para Step Function: {payload}')
 
                             # Si dispatch_processor retornó process=False, no ejecutar Step Function
-                            should_process = response.get('process') if isinstance(response, dict) else False
-                            if isinstance(response, dict) and 'body' in response and isinstance(response['body'], dict):
-                                should_process = response['body'].get('process', False)
-
-                            if not should_process:
+                            if not should_start_step_function(response):
                                 print(f"⏭️ Mensaje {mail_msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
                                 continue
 
@@ -1108,6 +1142,10 @@ def lambda_handler(event, context):
                             # Ejecutar Step Function
                             payload = response
                             print(f'🚀 Payload para Step Function: {payload}')
+
+                            if not should_start_step_function(response):
+                                print(f"⏭️ Mensaje {mail_msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
+                                continue
 
                             # Determinar Step Function basado en labels actuales
                             if 'Avisos Gastos Santander' in all_labels_names:
@@ -1254,6 +1292,10 @@ def lambda_handler(event, context):
                             # Ejecutar Step Function
                             payload = response
                             print(f'🚀 Payload para Step Function: {payload}')
+
+                            if not should_start_step_function(response):
+                                print(f"⏭️ Mensaje {mail_msg_id} no requiere procesamiento por Step Function (dispatch_processor retornó process=False)")
+                                continue
 
                             if 'Avisos Gastos Santander' in labels_names:
                                 step_function_arn = BANK_STEP_FUNCTION_ARN
