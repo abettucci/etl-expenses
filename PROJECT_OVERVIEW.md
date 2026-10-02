@@ -294,7 +294,6 @@ ean: STRING
 product_id: INT64           -- FK a dim_producto
 grupo_producto: STRING      -- Fuzzy matching
 total_ticket_bruto: FLOAT64
-total_ticket_meli: FLOAT64  -- 30% del total
 ```
 
 #### **mp_data** (Transacciones MercadoPago)
@@ -583,4 +582,3 @@ aws lambda list-functions --query "Functions[?starts_with(FunctionName, 'extract
 *AWS Lambda • BigQuery • Terraform • Docker • Python • OpenAI*
 
 </div>
-

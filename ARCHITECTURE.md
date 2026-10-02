@@ -307,7 +307,7 @@ load_data:
 - `cantidad`, `peso`
 - `precio_unit`, `monto_total`
 - `ean`, `product_id`, `grupo_producto`
-- `total_ticket_bruto`, `total_ticket_meli`
+- `total_ticket_bruto`
 
 ---
 
@@ -1052,4 +1052,3 @@ Este proyecto es privado y de uso personal. No está disponible bajo ninguna lic
 *Pipeline ETL serverless para análisis financiero personal*
 
 </div>
-

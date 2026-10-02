@@ -367,11 +367,6 @@ TABLE_METADATA = {
                 "description": "Cantidad comprada en peso (kilogramos)",
                 "example": "2.0"
             },
-            "total_ticket_meli": {
-                "type": "FLOAT64",
-                "description": "Monto total del ticket considerando el descuento de Mercado Libre.",
-                "example": "2.0"
-            },
             "total_ticket_bruto": {
                 "type": "FLOAT64",
                 "description": "Monto total del ticket.",

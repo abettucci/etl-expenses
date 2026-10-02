@@ -253,7 +253,6 @@ def column_name_mapping(df):
         "MONTO_NETO_DE_OPERACION": "REAL_AMOUNT",
         "CUPON_DE_DESCUENTO": "COUPON_AMOUNT",
         "DATOS_EXTRA": "METADATA",
-        "COMISION_DE_MERCADO_LIBRE_MAS_IVA": "MKP_FEE_AMOUNT",
         "COMISION_POR_OFRECER_CUOTAS_SIN_INTERES": "FINANCING_FEE_AMOUNT",
         "COSTO_DE_ENVIO": "SHIPPING_FEE_AMOUNT",
         "IMPUESTOS_COBRADOS_POR_RETENCIONES_IIBB": "TAXES_AMOUNT",
@@ -996,7 +995,7 @@ def lambda_handler(event, context):
                     ['nro_ticket'],
                     ['categoria', 'producto', 'cantidad', 'peso', 'precio_unit', 
                      'monto_total', 'ean', 'product_id', 'grupo_producto', 
-                     'nro_ticket', 'fecha', 'total_ticket_bruto', 'total_ticket_meli']
+                     'nro_ticket', 'fecha', 'total_ticket_bruto']
                 )
                 verify_table_count(bq_client, BQ_DATASET_PROD, 'carrefour_data')
                 

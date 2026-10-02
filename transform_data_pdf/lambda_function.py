@@ -176,7 +176,6 @@ def transform_pdf_to_dataframe(pdf_content, pdf_key):
                 if not df.empty and 'monto_total' in df.columns:
                     total_bruto = df['monto_total'].sum() - suma_total_descuentos
                     df['total_ticket_bruto'] = round(total_bruto, 2)
-                    df['total_ticket_meli'] = round(total_bruto * 0.3, 2)
                 
                 df['ean'] = df['ean'].astype(str)
                 df['grupo_producto'] = df['grupo_producto'].astype(str)
