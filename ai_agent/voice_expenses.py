@@ -204,6 +204,30 @@ def parse_voice_expense_correction(text: object) -> dict[str, object] | None:
     # expense query remains untouched and can continue through the SQL flow.
     raw_text = _CORRECTION_PREFIX.sub("", raw_text, count=1)
 
+    # People naturally send several corrections in one sentence, e.g.
+    # "Agregale categoría: Limpieza y subcategoría: Laundry y en comercio
+    # pone: Laverrap".  Normalize only known field clauses into the same
+    # labelled grammar below.  This remains deliberately conservative: words
+    # inside a merchant name are never treated as a new field unless followed
+    # by an explicit label or "pone".
+    field_pattern = (
+        r"(?:comercio|merchant|monto|importe|fecha|categor[ií]a|subcategor[ií]a)"
+    )
+    raw_text = re.sub(
+        rf"\s+(?:y|e)\s+(?=(?:en\s+)?(?:el\s+|la\s+)?{field_pattern}"
+        r"(?:\s+(?:pone(?:le)?|es|sea))?\s*[:=;])",
+        "\n",
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    raw_text = re.sub(
+        rf"(?:en\s+)?(?:el\s+|la\s+)?({field_pattern})\s+"
+        r"(?:pone(?:le)?|es|sea)\s*[:=]?\s*",
+        r"\1: ",
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+
     labels = {
         "comercio": "merchant",
         "merchant": "merchant",

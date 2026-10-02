@@ -102,6 +102,16 @@ class ManualExpenseIntentTest(unittest.TestCase):
             {"merchant": "Exclusive Car Wash"},
         )
 
+    def test_parses_multiple_natural_clauses_in_one_correction(self):
+        patch = parse_voice_expense_correction(
+            "Agregale categoria: Limpieza y subcategoria: Laundry y en comercio pone: Laverrap"
+        )
+        self.assertEqual(patch, {
+            "category": "Limpieza",
+            "subcategory": "Laundry",
+            "merchant": "Laverrap",
+        })
+
     def test_suggests_classification_from_recognized_merchant_without_persisting_it(self):
         self.assertEqual(
             suggest_manual_expense_classification("Exclusive Car Wash"),

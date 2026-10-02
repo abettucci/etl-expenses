@@ -224,6 +224,73 @@ class VoiceExpenseFlowTest(unittest.TestCase):
             "WEEK_VS_1_MONTH",
         ])
 
+    def test_telegram_variation_command_uses_the_read_only_template(self):
+        class ReadOnlyBigQuery:
+            def __init__(self):
+                self.queries = []
+
+            def query(self, query, job_config):
+                self.queries.append(query)
+                return types.SimpleNamespace(result=lambda: [{
+                    "source": "bank_payments",
+                    "dimension_type": "categoria",
+                    "dimension": "Software",
+                    "previous_amount": 1000,
+                    "current_amount": 1500,
+                }])
+
+        client = ReadOnlyBigQuery()
+        with patch.object(
+            self.module,
+            "get_bigquery_table_columns",
+            side_effect=[
+                {"comercio_raw", "comercio_depurado", "activo", "categoria", "subcategoria"},
+                {"categoria", "subcategoria"},
+            ],
+        ):
+            response = self.module.run_telegram_variation_comparison(
+                "/variacion 2026-10-01 2026-09-30", client,
+            )
+
+        self.assertIn("Variación Categoría", response)
+        self.assertIn("Software", response)
+        self.assertEqual(len(client.queries), 1)
+        self.assertTrue(client.queries[0].lstrip().startswith("WITH"))
+        self.assertNotIn("UPDATE", client.queries[0].upper())
+        self.assertNotIn("INSERT", client.queries[0].upper())
+
+    def test_variation_alerts_use_clear_dimension_headings_and_html_format(self):
+        historical = self.module._format_historical_variation_alert({
+            "comparison_type": "WEEK_VS_WEEK",
+            "source": "bank_payments",
+            "dimension_type": "categoria",
+            "dimension": "Servicios",
+            "previous_amount": 1000,
+            "current_amount": 1500,
+            "previous_start": date(2026, 9, 1),
+            "previous_end": date(2026, 9, 7),
+            "current_start": date(2026, 9, 8),
+            "current_end": date(2026, 9, 14),
+        })
+        scheduled = self.module._format_variation_alert(
+            "weekly",
+            types.SimpleNamespace(
+                current_start=date(2026, 9, 8), current_end=date(2026, 9, 14),
+                previous_start=date(2026, 9, 1), previous_end=date(2026, 9, 7),
+            ),
+            {
+                "source": "bank_payments", "dimension_type": "subcategoria",
+                "dimension": "Servicios › Streaming", "previous_amount": 1000,
+                "current_amount": 1500,
+            },
+            None,
+        )
+
+        self.assertIn("<b>Variación Categoría</b>", historical)
+        self.assertIn("<b>Categoría:</b> Servicios", historical)
+        self.assertIn("<b>Variación Subcategoría</b>", scheduled)
+        self.assertIn("🚨 <b>Alerta de variación de gasto</b>", scheduled)
+
     def test_confirmed_callback_writes_once_and_retry_does_not_duplicate(self):
         token = "zPq8Z9u5E2J7S3rK6T1vM4nQ"
         self.table.item = {
@@ -350,6 +417,20 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         self.assertIn("Exclusive Car Wash", text)
         self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "me:confirm")
         self.assertEqual(self.edit_table.item["edit_candidate"]["merchant"], "Exclusive Car Wash")
+
+    def test_confirmed_expense_accepts_conversational_change_with_value(self):
+        self.module._save_recent_manual_expense(
+            12345, 456, "5c5d5605-c512-4a54-93a4-e9c7f0ba9ffd", self.expense,
+        )
+
+        handled, text, keyboard = self.module.handle_confirmed_manual_expense_edit(
+            self.event, 12345, "cambia el comercio a Laverrap",
+        )
+
+        self.assertTrue(handled)
+        self.assertIn("¿Aplicar estos cambios", text)
+        self.assertIn("Laverrap", text)
+        self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "me:confirm")
 
     def test_confirming_edit_updates_the_specific_expense_and_keeps_audit_path(self):
         expense_id = "5c5d5605-c512-4a54-93a4-e9c7f0ba9ffd"

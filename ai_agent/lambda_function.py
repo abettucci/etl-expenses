@@ -25,6 +25,7 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 from pydantic import ValidationError
 from variation_alerts import completed_comparison_periods, exceeds_variation_threshold
+from variation_commands import USAGE as VARIATION_COMMAND_USAGE, VariationCommandError, parse_variation_command
 from voice_expenses import (
     ManualExpenseIntent,
     PendingVoiceExpense,
@@ -1295,7 +1296,10 @@ def _is_confirmed_expense_edit_request(text: str) -> bool:
         character for character in unicodedata.normalize("NFKD", text.lower())
         if not unicodedata.combining(character)
     )
-    return bool(re.search(r"\b(?:editar|edita|corregir|corrige)\b", normalized)) and (
+    return bool(re.search(
+        r"\b(?:editar|edita|corregir|corrige|cambiar|cambia|modificar|modifica|actualizar|actualiza|arreglar|arregla)\b",
+        normalized,
+    )) and (
         "gasto" in normalized or _edit_field_from_text(normalized) is not None
     )
 
@@ -1304,8 +1308,11 @@ def _parse_edit_patch(text: str, selected_field: str | None) -> dict[str, object
     # A command such as "Corregir último gasto\nComercio: ..." keeps the
     # explicit label, while a field selected from a button also accepts the
     # new value alone (for example, "Exclusive Car Wash").
+    direct_patch = parse_voice_expense_correction(text)
+    if direct_patch is not None:
+        return direct_patch
     labelled_text = re.sub(
-        r"^\s*(?:quiero\s+)?(?:editar|edita|corregir|corrige)\b[^\n]*\n?",
+        r"^\s*(?:quiero\s+)?(?:editar|edita|corregir|corrige|cambiar|cambia|modificar|modifica|actualizar|actualiza|arreglar|arregla)\b[^\n]*\n?",
         "", text, flags=re.IGNORECASE,
     )
     patch = parse_voice_expense_correction(labelled_text)
@@ -3154,6 +3161,35 @@ def send_telegram_message(chat_id, text, token, parse_mode="Markdown", reply_mar
                 print(f"telegram_message_send_retry_failed: {type(e2).__name__}: {e2} | response_body={body2_text}")
         return None
 
+
+_TELEGRAM_COMMAND_MENU = [
+    {"command": "start", "description": "Bienvenida y accesos rápidos"},
+    {"command": "help", "description": "Ver ayuda y ejemplos"},
+    {"command": "ultimo_gasto", "description": "Último movimiento banco/tarjeta"},
+    {"command": "ultimo_mp", "description": "Última transacción Mercado Pago"},
+    {"command": "mes", "description": "Resumen del mes actual"},
+    {"command": "variacion", "description": "Comparar gastos entre períodos"},
+    {"command": "umbral_variacion", "description": "Ver umbrales de alertas"},
+    {"command": "pendientes_comercio", "description": "Ver comercios sin clasificar"},
+    {"command": "exportar", "description": "Exportar gastos a CSV"},
+]
+
+
+def register_telegram_command_menu() -> bool:
+    """Idempotently publish the command menu when a person opens bot help.
+
+    The API call contains only command names and descriptions. It never logs
+    credentials or expense data, and failure must not block /start or /help.
+    """
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
+    try:
+        response = requests.post(url, json={"commands": _TELEGRAM_COMMAND_MENU}, timeout=10)
+        response.raise_for_status()
+        return bool(response.json().get("ok"))
+    except Exception as exc:
+        print(f"telegram_command_menu_registration_failed: {type(exc).__name__}")
+        return False
+
 def send_telegram_document(chat_id, file_bytes: bytes, filename: str, caption: str, token: str):
     url = f"https://api.telegram.org/bot{token}/sendDocument"
     try:
@@ -3476,6 +3512,78 @@ def _variation_query(
     return query, config
 
 
+def _format_variation_command_response(command, rows) -> str:
+    """Format a direct Telegram comparison; rows are read-only BQ results."""
+    periods = command.periods
+    current_label = f"{periods.current_start.strftime('%d/%m/%Y')} — {periods.current_end.strftime('%d/%m/%Y')}"
+    previous_label = f"{periods.previous_start.strftime('%d/%m/%Y')} — {periods.previous_end.strftime('%d/%m/%Y')}"
+    if not rows:
+        return (
+            "📊 <b>Comparador de variación de gastos</b>\n\n"
+            f"🗓️ <b>{command.period_kind} actual:</b> {current_label}\n"
+            f"↩️ <b>Comparado con:</b> {previous_label}\n\n"
+            "✅ No encontré aumentos para comercio, categoría o subcategoría con gasto previo."
+        )
+
+    ranked_rows = sorted(
+        rows,
+        key=lambda row: float(row["current_amount"]) - float(row["previous_amount"]),
+        reverse=True,
+    )[:12]
+    items = []
+    for row in ranked_rows:
+        previous_amount = float(row["previous_amount"])
+        current_amount = float(row["current_amount"])
+        increase = current_amount - previous_amount
+        percentage = (increase / previous_amount) * 100
+        heading, dimension_label = _variation_dimension_metadata(str(row["dimension_type"]))
+        dimension = html.escape(str(row["dimension"]))
+        source = html.escape(str(row["source"]))
+        items.append(
+            f"{heading}\n"
+            f"<b>{dimension_label}:</b> {dimension}\n"
+            f"<b>Antes:</b> $ {_format_number_ar(previous_amount)} · "
+            f"<b>Ahora:</b> $ {_format_number_ar(current_amount)}\n"
+            f"🔺 <b>+$ {_format_number_ar(increase)} ({percentage:.1f}%)</b> · "
+            f"<code>{source}</code>"
+        )
+    return (
+        "📊 <b>Comparador de variación de gastos</b>\n"
+        "Solo muestra aumentos; este comando no crea alertas ni modifica datos.\n\n"
+        f"🗓️ <b>{command.period_kind} actual:</b> {current_label}\n"
+        f"↩️ <b>Comparado con:</b> {previous_label}\n\n"
+        + "\n\n".join(items)
+        + ("\n\nℹ️ Se muestran los 12 aumentos nominales más altos." if len(rows) > 12 else "")
+    )
+
+
+def run_telegram_variation_comparison(payload: str, bq_client) -> str:
+    """Run the existing parameterized query for an explicit read-only preview."""
+    try:
+        command = parse_variation_command(payload)
+    except VariationCommandError as exc:
+        message = str(exc)
+        return f"❌ <b>Formato de /variacion inválido.</b>\n\n{html.escape(message or VARIATION_COMMAND_USAGE)}"
+
+    try:
+        mapping_columns = {name.lower() for name in get_bigquery_table_columns(bq_client, MAPPING_TABLE)}
+        gastos_columns = {name.lower() for name in get_bigquery_table_columns(bq_client, GASTOS_TOTALES_VIEW)}
+        use_mapping = {"comercio_raw", "comercio_depurado", "activo"}.issubset(mapping_columns)
+        query, config = _variation_query(
+            command.periods,
+            use_mapping=use_mapping,
+            gastos_columns=gastos_columns,
+            mapping_columns=mapping_columns,
+        )
+        rows = list(bq_client.query(query, job_config=config).result())
+    except Exception as exc:
+        print(f"telegram_variation_command_query_failed: {type(exc).__name__}: {exc}")
+        return "❌ No pude comparar esos períodos en este momento. Intentá nuevamente en unos minutos."
+
+    print(f"telegram_variation_command_completed kind={command.period_kind} candidates={len(rows)}")
+    return _format_variation_command_response(command, rows)
+
+
 _REPROCESS_COMPARISON_TYPES = {
     "WEEK_VS_WEEK": "Semana vs semana anterior",
     "WEEK_VS_2_WEEKS": "Semana vs hace 2 semanas",
@@ -3597,7 +3705,7 @@ def _format_historical_variation_alert(row) -> str:
     dimension = html.escape(str(row["dimension"]))
     source = html.escape(str(row["source"]))
     return (
-        "⚠️ <b>Alerta histórica de gasto</b>\n"
+        "⏮️ <b>Alerta histórica · Variación de gasto</b>\n"
         f"{heading}\n\n"
         f"🔎 <b>{dimension_label}:</b> {dimension}\n"
         f"🧾 <b>Fuente:</b> <code>{source}</code>\n"
@@ -3742,7 +3850,7 @@ def _format_variation_alert(kind: str, periods, row, inflation: Optional[float])
     dimension = html.escape(str(row["dimension"]))
     source = html.escape(str(row["source"]))
     text = (
-        "⚠️ <b>Alerta de variación de gasto</b>\n"
+        "🚨 <b>Alerta de variación de gasto</b>\n"
         f"{heading}\n\n"
         f"🔎 <b>{dimension_label}:</b> {dimension}\n"
         f"🧾 <b>Fuente:</b> <code>{source}</code>\n"
@@ -4263,6 +4371,7 @@ def lambda_handler(event, context):
         # =========================================
         
         if text == "/start":
+            register_telegram_command_menu()
             welcome_message = """ 
                 🤖*Bot de Consultas de Datos con IA*
                 ¡Hola! Soy tu asistente inteligente para gestionar tus gastos.
@@ -4285,7 +4394,12 @@ def lambda_handler(event, context):
 • Notas de voz, por ejemplo: “42.000 pesos peluquería”
 • Gastos por texto, por ejemplo: “Gasté $ 12.500 en YPF”
 
-                ⚡ *Atajos:* /ultimo_gasto · /ultimo_mp · /mes · /exportar banco
+                ⚡ *Atajos:* /ultimo_gasto · /ultimo_mp · /mes · /variacion · /exportar banco
+
+                📊 *Comparar variaciones:*
+                • /variacion 2026-10-01 2026-09-30
+                • /variacion semana 2026-09-21 2026-09-14
+                • /variacion mes 2026-09 2026-08
 
                 ¡Escribí tu pregunta o enviame una foto de un ticket!
             """
@@ -4298,6 +4412,7 @@ def lambda_handler(event, context):
             return {"statusCode": 200}
         
         if text == "/help":
+            register_telegram_command_menu()
             help_message = """📚 *Ayuda del Bot*
 
 *Consultas de texto:*
@@ -4329,6 +4444,17 @@ Ejemplos:
 • /ultimo\_mp - Última transacción Mercado Pago
 • /mes - Resumen mes actual (banco + Carrefour)
 • /exportar [banco|carrefour|mp] - Exportar CSV
+
+*Comparador de variación (solo lectura):*
+• /variacion <fecha_actual> <fecha_anterior>
+  Ej: /variacion 2026-10-01 2026-09-30
+• /variacion <inicio_actual>..<fin_actual> <inicio_anterior>..<fin_anterior>
+  Ej: /variacion 2026-10-01..2026-10-07 2026-09-24..2026-09-30
+• /variacion semana <una_fecha_semana_actual> <una_fecha_semana_anterior>
+  Ej: /variacion semana 2026-09-21 2026-09-14
+• /variacion mes <mes_actual> <mes_anterior>
+  Ej: /variacion mes 2026-09 2026-08
+Muestra aumentos por comercio, categoría y subcategoría; no envía alertas ni cambia datos.
 
 *Mapeo de comercios:*
 • /pendientes\_comercio [bank|mp|all] - Ver comercios sin clasificar
@@ -4543,6 +4669,12 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                     f"Detalle: {str(e)}"
                 )
                 send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            return {"statusCode": 200}
+
+        if re.match(r"^/variacion(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
+            command_text = re.sub(r"^/variacion@\w+", "/variacion", text, flags=re.IGNORECASE)
+            response_text = run_telegram_variation_comparison(command_text, bq_client)
+            send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
             return {"statusCode": 200}
 
         if text.startswith("/umbral_variacion"):
