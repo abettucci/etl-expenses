@@ -72,9 +72,9 @@ function App() {
 }
 
 function Home({ balance, onExpense, onPremium, onGift }: { balance: number; onExpense: () => void; onPremium: () => void; onGift: () => void }) { return <>
-  <div className="eyebrow">Hola, Betu <span>〰</span></div><h1>Compartir gastos<br /><em>sin pensar de más.</em></h1>
+  <div className="eyebrow">La cuenta del grupo <span>〰</span></div><h1>Que la plata<br /><em>no corte el plan.</em></h1>
   <section className="hero-panel stagger"><div className="group-line"><div><span className="kicker">GRUPO ACTUAL</span><h2>Militantes del mood</h2></div><span className="members">♧ 4</span></div><div className="hero-actions"><button onClick={onExpense}>＋<span>Agregar gasto</span></button><button className="pink" onClick={onGift}>♔<span>Regalo de Fran</span></button></div><div className="balance"><span>MI BALANCE</span><strong>− {money.format(6175)}</strong><small>Te queda una liquidación pendiente</small></div><div className="settlement"><Avatar name="B" /><p><b>Betu</b> le debe a <b>matias.arbues7</b><strong>{money.format(6175)}</strong></p><button>Resolver →</button></div></section>
-  <section className="feature-card"><span className="action-icon">⌘</span><div><h3>Tu bolsillo, con contexto</h3><p>Centralizá gastos, tickets y hábitos personales.</p></div><button onClick={onPremium}>Probar Premium <b>→</b></button></section>
+  <section className="feature-card"><span className="action-icon">⌘</span><div><h3>Tu plata, con memoria</h3><p>Gastos compartidos, tickets y hábitos en una sola vista.</p></div><button onClick={onPremium}>Ver mi panorama <b>→</b></button></section>
   <div className="metrics"><div><span>GASTO DEL GRUPO</span><strong>{money.format(balance)}</strong><small>últimos 7 días</small></div><div><span>PRÓXIMO HITO</span><strong>Fran · 21 sep</strong><small>Regalo en marcha</small></div></div>
 </> }
 
