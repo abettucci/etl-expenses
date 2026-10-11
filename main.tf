@@ -106,6 +106,13 @@ variable "OPENAI_API_KEY" {
   sensitive   = true
 }
 
+variable "GOOGLE_PLACES_API_KEY" {
+  description = "Google Places API key used only as an optional merchant-enrichment fallback"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "CIFRADO_SECRET_MP" {
   description = "CIFRADO_SECRET_MP"
   type        = string
@@ -803,7 +810,9 @@ resource "aws_lambda_function" "load_report_and_pdf" {
       BQ_DATASET_PROD    = "PRD"
       BQ_LOCATION        = "US"
       MP_REPORTS_BUCKET  = aws_s3_bucket.mp_reports.bucket
-      OPENAI_API_KEY     = var.OPENAI_API_KEY
+      MAPPING_REVIEW_TABLE           = "comercio_mapping_review_queue"
+      MERCHANT_SUGGESTIONS_ENABLED   = "true"
+      MERCHANT_SUGGESTIONS_QUEUE_URL = aws_sqs_queue.merchant_mapping_suggestions.url
     }
   }
 }
@@ -885,8 +894,24 @@ resource "aws_lambda_function" "ai_agent" {
       EXPORT_MAX_ROWS             = "3000"
       GOOGLE_STT_USAGE_TABLE       = aws_dynamodb_table.google_stt_monthly_usage.name
       GOOGLE_STT_FREE_TIER_SECONDS = "3600"
+      MAPPING_REVIEW_TABLE           = "comercio_mapping_review_queue"
+      MAPPING_REVIEW_STATE_TABLE     = aws_dynamodb_table.telegram_mapping_review_state.name
+      MERCHANT_SUGGESTIONS_QUEUE_URL = aws_sqs_queue.merchant_mapping_suggestions.url
+      MERCHANT_SUGGESTIONS_ENABLED   = "true"
+      MERCHANT_AUTO_APPLY_ENABLED    = "true"
+      MERCHANT_PLACES_ENABLED        = "true"
+      GOOGLE_PLACES_API_KEY          = var.GOOGLE_PLACES_API_KEY
     }
   }
+}
+
+resource "aws_lambda_event_source_mapping" "merchant_mapping_suggestions" {
+  event_source_arn = aws_sqs_queue.merchant_mapping_suggestions.arn
+  function_name    = aws_lambda_function.ai_agent.arn
+  batch_size       = 1
+  enabled          = true
+
+  depends_on = [aws_iam_role_policy.lambda_merchant_mapping_sqs]
 }
 
 resource "aws_cloudwatch_event_rule" "ai_agent_budget_alert" {
@@ -958,6 +983,44 @@ resource "aws_dynamodb_table" "telegram_recent_manual_expenses" {
   tags = {
     Name = "telegram-recent-manual-expenses"
   }
+}
+
+# Estado efímero de la corrección de un comercio; expira automáticamente.
+resource "aws_dynamodb_table" "telegram_mapping_review_state" {
+  name         = "telegram_mapping_review_state"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "chat_id"
+
+  attribute {
+    name = "chat_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "telegram-mapping-review-state"
+  }
+}
+
+# La clasificación queda fuera del camino crítico del ETL.
+resource "aws_sqs_queue" "merchant_mapping_suggestions_dlq" {
+  name                      = "merchant-mapping-suggestions-dlq"
+  message_retention_seconds = 1209600
+}
+
+resource "aws_sqs_queue" "merchant_mapping_suggestions" {
+  name                       = "merchant-mapping-suggestions"
+  visibility_timeout_seconds = 5400
+  message_retention_seconds  = 345600
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.merchant_mapping_suggestions_dlq.arn
+    maxReceiveCount     = 3
+  })
 }
 
 resource "aws_dynamodb_table" "google_stt_monthly_usage" {
@@ -1422,6 +1485,7 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
           aws_dynamodb_table.telegram_recent_manual_expenses.arn,
           aws_dynamodb_table.expense_variation_alerts.arn,
           aws_dynamodb_table.google_stt_monthly_usage.arn,
+          aws_dynamodb_table.telegram_mapping_review_state.arn,
         ]
       }
     ]
@@ -1431,6 +1495,31 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
 resource "aws_iam_role_policy_attachment" "lambda_dynamo_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_dynamo_policy.arn
+}
+
+resource "aws_iam_role_policy" "lambda_merchant_mapping_sqs" {
+  name = "lambda-merchant-mapping-sqs"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = [
+          aws_sqs_queue.merchant_mapping_suggestions.arn,
+          aws_sqs_queue.merchant_mapping_suggestions_dlq.arn
+        ]
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role_policy" "ai_agent_variation_sns" {

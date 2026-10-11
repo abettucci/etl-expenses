@@ -8,15 +8,11 @@ import json
 import re
 import requests
 import unicodedata
+import hashlib
 from rapidfuzz import fuzz
 from datetime import datetime
 from google.cloud import bigquery
 from google.oauth2 import service_account
-
-try:
-    import openai as _openai
-except ImportError:
-    _openai = None
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
@@ -30,9 +26,9 @@ MP_REPORTS_BUCKET = os.environ.get("MP_REPORTS_BUCKET")
 PARAMETER_NAME = "/mercado_pago/token"
 MAPPING_TABLE = "dim_comercio_mapping"
 UNMAPPED_TABLE = "comercio_unmapped_queue"
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-_openai_client = _openai.OpenAI(api_key=OPENAI_API_KEY) if (_openai and OPENAI_API_KEY) else None
+MAPPING_REVIEW_TABLE = os.environ.get("MAPPING_REVIEW_TABLE", "comercio_mapping_review_queue")
+MERCHANT_SUGGESTIONS_QUEUE_URL = os.environ.get("MERCHANT_SUGGESTIONS_QUEUE_URL", "").strip()
+MERCHANT_SUGGESTIONS_ENABLED = os.environ.get("MERCHANT_SUGGESTIONS_ENABLED", "false").lower() == "true"
 
 # --------------------------
 # Inicialización de BigQuery Client
@@ -336,9 +332,15 @@ def ensure_comercio_tables(client):
       comercio_depurado STRING,
       categoria STRING,
       subcategoria STRING,
+      comercio_raw STRING,
       prioridad INT64,
       activo BOOL,
-      ins_dttm TIMESTAMP
+      ins_dttm TIMESTAMP,
+      mapping_source STRING,
+      confidence FLOAT64,
+      review_status STRING,
+      candidate_id STRING,
+      updated_at TIMESTAMP
     )
     """
     create_unmapped = f"""
@@ -351,8 +353,93 @@ def ensure_comercio_tables(client):
       resolved BOOL
     )
     """
+    create_review_queue = f"""
+    CREATE TABLE IF NOT EXISTS `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_REVIEW_TABLE}` (
+      candidate_id STRING,
+      flow STRING,
+      comercio_raw STRING,
+      comercio_normalizado STRING,
+      first_seen TIMESTAMP,
+      last_seen TIMESTAMP,
+      appearance_count INT64,
+      status STRING,
+      suggested_match_type STRING,
+      suggested_match_value STRING,
+      suggested_comercio_depurado STRING,
+      suggested_categoria STRING,
+      suggested_subcategoria STRING,
+      confidence FLOAT64,
+      suggestion_source STRING,
+      rationale STRING,
+      evidence_json STRING,
+      place_id STRING,
+      notified_at TIMESTAMP,
+      reviewed_at TIMESTAMP,
+      reviewed_by STRING,
+      updated_at TIMESTAMP
+    )
+    PARTITION BY DATE(first_seen)
+    CLUSTER BY status, flow
+    """
     client.query(create_mapping).result()
     client.query(create_unmapped).result()
+    client.query(create_review_queue).result()
+
+    # Existing installations predate the provenance/review columns. BigQuery's
+    # ADD COLUMN IF NOT EXISTS keeps this migration safe and repeatable.
+    for column_definition in (
+        "comercio_raw STRING",
+        "mapping_source STRING",
+        "confidence FLOAT64",
+        "review_status STRING",
+        "candidate_id STRING",
+        "updated_at TIMESTAMP",
+    ):
+        client.query(
+            f"ALTER TABLE `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}` "
+            f"ADD COLUMN IF NOT EXISTS {column_definition}"
+        ).result()
+
+    # Idempotently seed the new deduplicated queue from the historical backlog.
+    # GREATEST avoids increasing counters every time this setup function runs.
+    migrate_legacy = f"""
+    MERGE `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_REVIEW_TABLE}` AS target
+    USING (
+      SELECT
+        SUBSTR(TO_HEX(SHA256(CONCAT(
+          LOWER(flow), '|',
+          REGEXP_REPLACE(UPPER(IFNULL(comercio_normalizado, '')), r'[^A-Z0-9]+', '')
+        ))), 1, 20) AS candidate_id,
+        flow,
+        ARRAY_AGG(comercio_raw IGNORE NULLS ORDER BY ins_dttm DESC LIMIT 1)[SAFE_OFFSET(0)] AS comercio_raw,
+        comercio_normalizado,
+        MIN(ins_dttm) AS first_seen,
+        MAX(ins_dttm) AS last_seen,
+        COUNT(*) AS appearance_count
+      FROM `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{UNMAPPED_TABLE}`
+      WHERE IFNULL(resolved, FALSE) = FALSE
+        AND NULLIF(TRIM(comercio_normalizado), '') IS NOT NULL
+      GROUP BY flow, comercio_normalizado
+    ) AS source
+    ON target.candidate_id = source.candidate_id
+    WHEN MATCHED THEN UPDATE SET
+      comercio_raw = source.comercio_raw,
+      last_seen = GREATEST(target.last_seen, source.last_seen),
+      appearance_count = GREATEST(IFNULL(target.appearance_count, 0), source.appearance_count),
+      updated_at = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN INSERT (
+      candidate_id, flow, comercio_raw, comercio_normalizado, first_seen, last_seen,
+      appearance_count, status, updated_at
+    ) VALUES (
+      source.candidate_id, source.flow, source.comercio_raw, source.comercio_normalizado,
+      source.first_seen, source.last_seen, source.appearance_count, 'pending', CURRENT_TIMESTAMP()
+    )
+    """
+    review_has_rows = list(client.query(
+        f"SELECT candidate_id FROM `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_REVIEW_TABLE}` LIMIT 1"
+    ).result())
+    if not review_has_rows:
+        client.query(migrate_legacy).result()
 
 def upsert_mappings(client, rows):
     if not rows:
@@ -511,145 +598,128 @@ def apply_comercio_mapping(df, mapping_rows, flow_name):
         df.loc[mask, "categoria"] = m.get("categoria") or df.loc[mask, "categoria"]
         df.loc[mask, "subcategoria"] = m.get("subcategoria") or df.loc[mask, "subcategoria"]
 
-    unmapped = df[df["categoria"] == "sin_clasificar"][["COMERCIO", "comercio_normalizado"]].drop_duplicates()
+    unmapped = (
+        df[df["categoria"] == "sin_clasificar"][["COMERCIO", "comercio_normalizado"]]
+        .groupby(["COMERCIO", "comercio_normalizado"], dropna=False)
+        .size()
+        .reset_index(name="_appearance_count")
+    )
     return df, unmapped
-
-def auto_classify_with_llm(comercio_raw: str, flow: str) -> dict | None:
-    """
-    Usa GPT-4o-mini para extraer un match_value genérico, nombre limpio,
-    categoría y subcategoría a partir de un nombre crudo de comercio bancario.
-    Ejemplo: "CABIFY AR 234541NDAOMFO" → {match_value:"CABIFY", comercio_depurado:"Cabify", ...}
-    Retorna None si OpenAI no está disponible o falla.
-    """
-    if not _openai_client or not comercio_raw:
-        return None
-
-    prompt = f"""Raw bank merchant name: "{comercio_raw}"
-Flow: "{flow}" (bank_payments = tarjeta/débito Santander, mp_data = Mercado Pago, etc.)
-
-Extract:
-1. match_value: UPPERCASE prefix without spaces/symbols/IDs that matches ALL transactions from this merchant via LIKE '%match_value%'.
-   Examples: "CABIFY AR 234541NDAOMFO" → "CABIFY", "MERPAGO*RAPPI*12345" → "RAPPI", "DLOCAL*NETFLIX" → "NETFLIX"
-2. comercio_depurado: clean readable Spanish name. Examples: "Cabify", "Rappi", "Netflix"
-3. categoria: spending category in Spanish. Examples: "Transporte", "Comida", "Entretenimiento", "Salud", "Servicios"
-4. subcategoria: subcategory. Examples: "Ride", "Delivery", "Streaming", "Supermercado"
-
-Return ONLY valid JSON: {{"match_value": "...", "comercio_depurado": "...", "categoria": "...", "subcategoria": "..."}}"""
-
-    try:
-        resp = _openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=100,
-        )
-        raw = resp.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
-    except Exception as e:
-        print(f"⚠️ LLM auto-classify falló para '{comercio_raw}': {e}")
-        return None
-
-
-def auto_insert_mapping(client, suggestion: dict, flow: str) -> bool:
-    """
-    Inserta una nueva regla en dim_comercio_mapping si no existe ya para ese flow + match_value.
-    Retorna True si insertó, False si la regla ya existía (no duplica).
-    """
-    match_value = normalize_text(suggestion.get("match_value", ""))
-    if not match_value:
-        return False
-
-    check_q = f"""
-    SELECT COUNT(*) AS n
-    FROM `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}`
-    WHERE flow = @flow AND match_value = @mv AND activo = TRUE
-    """
-    cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("flow", "STRING", flow),
-        bigquery.ScalarQueryParameter("mv",   "STRING", match_value),
-    ])
-    try:
-        count = list(client.query(check_q, job_config=cfg).result())[0]["n"]
-        if count > 0:
-            print(f"ℹ️ Mapping ya existe: {flow} | {match_value}")
-            return False
-    except Exception as e:
-        print(f"⚠️ Error verificando mapping existente: {e}")
-        return False
-
-    row = {
-        "flow":              flow,
-        "match_type":        "contains",
-        "match_value":       match_value,
-        "comercio_raw":      suggestion.get("match_value", ""),
-        "comercio_depurado": suggestion.get("comercio_depurado", ""),
-        "categoria":         suggestion.get("categoria", "sin_clasificar"),
-        "subcategoria":      suggestion.get("subcategoria", ""),
-        "prioridad":         0,
-        "activo":            True,
-        "ins_dttm":          datetime.utcnow(),
-    }
-    try:
-        table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_TABLE}"
-        cfg2 = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", autodetect=True)
-        client.load_table_from_dataframe(pd.DataFrame([row]), table_id, job_config=cfg2).result()
-        print(f"✅ Auto-mapping insertado: {flow} | {match_value} → {suggestion.get('comercio_depurado')} ({suggestion.get('categoria')})")
-        return True
-    except Exception as e:
-        print(f"⚠️ Error insertando auto-mapping '{match_value}': {e}")
-        return False
-
 
 def append_unmapped_queue(client, unmapped_df, flow_name):
     """
-    Inserta comercios no mapeados en comercio_unmapped_queue para auditoría.
-    Para cada comercio sin mapear llama al LLM para auto-clasificarlo e insertarlo
-    en dim_comercio_mapping. Retorna la lista de nuevas reglas creadas (para
-    re-aplicar al batch actual).
+    Upsert deduplicado de comercios pendientes y encola sólo candidatos nuevos.
+
+    La ingesta no llama a IA ni crea mapeos: si BigQuery o SQS fallan, se registra
+    el error pero no se modifica el lote financiero ya procesado.
     """
     if unmapped_df.empty:
         return []
 
-    new_rules = []
-    rows = []
-    for _, r in unmapped_df.iterrows():
-        comercio_raw = str(r.get("COMERCIO", ""))
-        comercio_norm = str(r.get("comercio_normalizado", ""))
-
-        # Auto-clasificar con LLM e insertar en dim_comercio_mapping si es nuevo
-        suggestion = auto_classify_with_llm(comercio_raw, flow_name)
-        if suggestion:
-            inserted = auto_insert_mapping(client, suggestion, flow_name)
-            if inserted:
-                # Convertir a formato de mapping_row compatible con apply_comercio_mapping
-                new_rules.append({
-                    "flow":              flow_name,
-                    "match_type":        "contains",
-                    "match_value":       normalize_text(suggestion.get("match_value", "")),
-                    "comercio_raw":      suggestion.get("match_value", ""),
-                    "comercio_depurado": suggestion.get("comercio_depurado", ""),
-                    "categoria":         suggestion.get("categoria", "sin_clasificar"),
-                    "subcategoria":      suggestion.get("subcategoria", ""),
-                    "prioridad":         0,
-                })
-
-        rows.append({
-            "flow":                flow_name,
-            "comercio_raw":        comercio_raw,
-            "comercio_normalizado": comercio_norm,
-            "sample_record":       json.dumps({"comercio": comercio_raw}, ensure_ascii=False),
-            "ins_dttm":            datetime.utcnow(),
-            "resolved":            False,
+    now = datetime.utcnow()
+    aggregated: dict[str, dict] = {}
+    for _, row in unmapped_df.iterrows():
+        raw = str(row.get("COMERCIO", "") or "").strip()
+        normalized = str(row.get("comercio_normalizado", "") or "").strip()
+        normalized = normalized or normalize_text(raw)
+        if not normalized:
+            continue
+        digest = hashlib.sha256(
+            f"{flow_name.strip().lower()}|{normalize_text(normalized)}".encode("utf-8")
+        ).hexdigest()[:20]
+        current = aggregated.setdefault(digest, {
+            "candidate_id": digest,
+            "flow": flow_name,
+            "comercio_raw": raw,
+            "comercio_normalizado": normalized,
+            "first_seen": now,
+            "last_seen": now,
+            "appearance_count": 0,
+            "status": "pending",
+            "updated_at": now,
         })
+        current["appearance_count"] += max(1, int(row.get("_appearance_count", 1) or 1))
+        if raw:
+            current["comercio_raw"] = raw
 
-    dfq = pd.DataFrame(rows)
-    table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{UNMAPPED_TABLE}"
-    cfg = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", autodetect=True)
-    client.load_table_from_dataframe(dfq, table_id, job_config=cfg).result()
+    if not aggregated:
+        return []
 
-    return new_rules
+    candidate_ids = list(aggregated)
+    existing_query = f"""
+    SELECT candidate_id
+    FROM `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_REVIEW_TABLE}`
+    WHERE candidate_id IN UNNEST(@candidate_ids)
+    """
+    existing_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ArrayQueryParameter("candidate_ids", "STRING", candidate_ids),
+    ])
+    existing_ids = {
+        str(row["candidate_id"])
+        for row in client.query(existing_query, job_config=existing_config).result()
+    }
+
+    staging_table_id, _ = load_to_staging(
+        client, pd.DataFrame(list(aggregated.values())), "merchant_review_candidates"
+    )
+    merge_query = f"""
+    MERGE `{GCP_PROJECT_ID}.{BQ_DATASET_PROD}.{MAPPING_REVIEW_TABLE}` AS target
+    USING `{staging_table_id}` AS source
+    ON target.candidate_id = source.candidate_id
+    WHEN MATCHED THEN UPDATE SET
+      comercio_raw = source.comercio_raw,
+      comercio_normalizado = source.comercio_normalizado,
+      last_seen = source.last_seen,
+      appearance_count = IFNULL(target.appearance_count, 0) + source.appearance_count,
+      status = IF(target.status IN ('confirmed', 'corrected', 'auto_applied'), target.status, 'pending'),
+      updated_at = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN INSERT (
+      candidate_id, flow, comercio_raw, comercio_normalizado, first_seen, last_seen,
+      appearance_count, status, updated_at
+    ) VALUES (
+      source.candidate_id, source.flow, source.comercio_raw, source.comercio_normalizado,
+      source.first_seen, source.last_seen, source.appearance_count, source.status, CURRENT_TIMESTAMP()
+    )
+    """
+    try:
+        client.query(merge_query).result()
+    finally:
+        try:
+            client.delete_table(staging_table_id, not_found_ok=True)
+        except Exception as exc:
+            print(f"merchant_review_staging_cleanup_failed type={type(exc).__name__}")
+
+    new_ids = [item for item in candidate_ids if item not in existing_ids]
+    if MERCHANT_SUGGESTIONS_ENABLED and MERCHANT_SUGGESTIONS_QUEUE_URL and new_ids:
+        sqs = boto3.client("sqs")
+        for item in new_ids:
+            try:
+                sqs.send_message(
+                    QueueUrl=MERCHANT_SUGGESTIONS_QUEUE_URL,
+                    MessageBody=json.dumps({"candidate_id": item}),
+                )
+            except Exception as exc:
+                print(
+                    "merchant_suggestion_enqueue_failed "
+                    f"candidate_id={item} error_type={type(exc).__name__}"
+                )
+    print(
+        "merchant_review_queue_updated "
+        f"flow={flow_name} candidates={len(candidate_ids)} new={len(new_ids)}"
+    )
+    return []
+
+
+def safe_append_unmapped_queue(client, unmapped_df, flow_name):
+    """Keep merchant enrichment failures outside the financial ETL result."""
+    try:
+        return append_unmapped_queue(client, unmapped_df, flow_name)
+    except Exception as exc:
+        print(
+            "merchant_review_queue_failed "
+            f"flow={flow_name} error_type={type(exc).__name__}"
+        )
+        return []
 
 def should_skip_processing(payload):
     """
@@ -849,7 +919,7 @@ def lambda_handler(event, context):
             resolve_comercio_column(df)
             mp_rules = load_mapping_for_flow(bq_client, "mp_data")
             df, unmapped = apply_comercio_mapping(df, mp_rules, "mp_data")
-            new_rules = append_unmapped_queue(bq_client, unmapped, "mp_data")
+            new_rules = safe_append_unmapped_queue(bq_client, unmapped, "mp_data")
             if new_rules:
                 df, _ = apply_comercio_mapping(df, new_rules, "mp_data")
             
@@ -884,7 +954,7 @@ def lambda_handler(event, context):
                 print("⚠️ Columna RECEPTOR no encontrada en mp_transfer_data, COMERCIO queda vacío")
             mp_transfer_rules = load_mapping_for_flow(bq_client, "mp_transfer_data")
             df, unmapped = apply_comercio_mapping(df, mp_transfer_rules, "mp_transfer_data")
-            new_rules = append_unmapped_queue(bq_client, unmapped, "mp_transfer_data")
+            new_rules = safe_append_unmapped_queue(bq_client, unmapped, "mp_transfer_data")
             if new_rules:
                 df, _ = apply_comercio_mapping(df, new_rules, "mp_transfer_data")
 
@@ -923,7 +993,7 @@ def lambda_handler(event, context):
                 print("⚠️ Columna DESTINATARIO no encontrada en bank_transfers, COMERCIO queda vacío")
             bank_transfer_rules = load_mapping_for_flow(bq_client, "bank_transfers")
             df, unmapped = apply_comercio_mapping(df, bank_transfer_rules, "bank_transfers")
-            new_rules = append_unmapped_queue(bq_client, unmapped, "bank_transfers")
+            new_rules = safe_append_unmapped_queue(bq_client, unmapped, "bank_transfers")
             if new_rules:
                 df, _ = apply_comercio_mapping(df, new_rules, "bank_transfers")
 
@@ -1052,7 +1122,7 @@ def lambda_handler(event, context):
             resolve_comercio_column(df_bank)
             bank_rules = load_mapping_for_flow(bq_client, "bank_payments")
             df_bank, unmapped = apply_comercio_mapping(df_bank, bank_rules, "bank_payments")
-            new_rules = append_unmapped_queue(bq_client, unmapped, "bank_payments")
+            new_rules = safe_append_unmapped_queue(bq_client, unmapped, "bank_payments")
             if new_rules:
                 df_bank, _ = apply_comercio_mapping(df_bank, new_rules, "bank_payments")
             

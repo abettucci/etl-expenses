@@ -7,7 +7,7 @@ import sys
 import types
 import unittest
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 
 AI_AGENT_DIR = Path(__file__).parent
@@ -198,13 +198,80 @@ class VoiceExpenseFlowTest(unittest.TestCase):
         self.assertEqual(mapping["match_norm"], "UDEMYONLINECOURSE")
         self.assertEqual(mapping["match_type"], "contains")
 
+    def test_mapping_command_accepts_optional_subcategory(self):
+        mapping = self.module.parse_mapping_command(
+            "bank|UDEMY ONLINE COURSE|UDEMY|Educación"
+        )
+        self.assertEqual(mapping["subcategoria"], "")
+        self.assertEqual(mapping["match_type"], "contains")
+
+        exact = self.module.parse_mapping_command(
+            "bank|UDEMY ONLINE COURSE|UDEMY|Educación|exact"
+        )
+        self.assertEqual(exact["subcategoria"], "")
+        self.assertEqual(exact["match_type"], "exact")
+
     def test_mapping_command_rejects_invalid_shape_and_type(self):
         with self.assertRaises(ValueError):
-            self.module.parse_mapping_command("bank|UDEMY|UDEMY|Educación")
+            self.module.parse_mapping_command("bank|UDEMY|UDEMY")
         with self.assertRaises(ValueError):
             self.module.parse_mapping_command(
                 "bank|UDEMY|UDEMY|Educación|Cursos|anything-goes"
             )
+
+    def test_mapping_review_confirmation_keeps_subcategory_optional(self):
+        candidate = {
+            "candidate_id": "candidate123",
+            "flow": "bank_payments",
+            "comercio_raw": "UDEMY ONLINE COURSE",
+            "status": "suggested",
+            "suggested_match_type": "exact",
+            "suggested_match_value": "UDEMYONLINECOURSE",
+            "suggested_comercio_depurado": "Udemy",
+            "suggested_categoria": "Educación",
+            "suggested_subcategoria": None,
+            "confidence": 88.0,
+            "suggestion_source": "llm",
+        }
+        update = {
+            "callback_query": {
+                "id": "callback-review",
+                "data": "mr:ok:candidate123",
+                "message": {"chat": {"id": 12345}},
+            }
+        }
+        with patch.object(self.module, "_mapping_candidate", return_value=candidate), \
+             patch.object(self.module, "apply_mapping_backfill") as apply, \
+             patch.object(self.module, "telegram_answer_callback"):
+            result = self.module.handle_mapping_review_callback(self.event, update, object())
+
+        self.assertEqual(result, {"statusCode": 200})
+        apply.assert_called_once()
+        self.assertEqual(apply.call_args.kwargs["subcategoria"], "")
+        self.assertEqual(apply.call_args.kwargs["review_status"], "confirmed")
+
+    def test_mapping_review_rejection_does_not_create_a_mapping(self):
+        update = {
+            "callback_query": {
+                "id": "callback-reject",
+                "data": "mr:no:candidate123",
+                "message": {"chat": {"id": 12345}},
+            }
+        }
+        with patch.object(self.module, "_mapping_candidate", return_value={"status": "suggested"}), \
+             patch.object(self.module, "_set_mapping_candidate_status") as set_status, \
+             patch.object(self.module, "apply_mapping_backfill") as apply, \
+             patch.object(self.module, "telegram_answer_callback"):
+            result = self.module.handle_mapping_review_callback(self.event, update, object())
+
+        self.assertEqual(result, {"statusCode": 200})
+        set_status.assert_called_once_with(
+            ANY,
+            "candidate123",
+            "rejected",
+            "telegram:12345",
+        )
+        apply.assert_not_called()
 
     def test_recent_mappings_contains_copyable_edit_template(self):
         class ReadOnlyBigQuery:

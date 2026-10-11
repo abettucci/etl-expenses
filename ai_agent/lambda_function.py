@@ -42,6 +42,14 @@ from voice_expenses import (
     parse_voice_expense_correction,
     suggest_manual_expense_values,
 )
+from merchant_mapping_reviews import (
+    MappingSuggestion,
+    is_auto_applicable,
+    parse_human_correction,
+    parse_json_object,
+    suggestion_from_structured_payload,
+    suggest_from_existing_mappings,
+)
 
 # Pandas - para conversión a DataFrame
 try:
@@ -74,6 +82,14 @@ ALERT_VARIATION_TABLE = os.environ.get("ALERT_VARIATION_TABLE", "expense_variati
 ALERT_VARIATION_SETTINGS_TABLE = os.environ.get("ALERT_VARIATION_SETTINGS_TABLE", "alert_variation_settings")
 MAPPING_TABLE = os.environ.get("MAPPING_TABLE", "dim_comercio_mapping")
 UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
+MAPPING_REVIEW_TABLE = os.environ.get("MAPPING_REVIEW_TABLE", "comercio_mapping_review_queue")
+MAPPING_REVIEW_STATE_TABLE = os.environ.get("MAPPING_REVIEW_STATE_TABLE", "telegram_mapping_review_state")
+MERCHANT_SUGGESTIONS_QUEUE_URL = os.environ.get("MERCHANT_SUGGESTIONS_QUEUE_URL", "").strip()
+MERCHANT_SUGGESTIONS_ENABLED = os.environ.get("MERCHANT_SUGGESTIONS_ENABLED", "false").lower() == "true"
+MERCHANT_AUTO_APPLY_ENABLED = os.environ.get("MERCHANT_AUTO_APPLY_ENABLED", "false").lower() == "true"
+MERCHANT_PLACES_ENABLED = os.environ.get("MERCHANT_PLACES_ENABLED", "false").lower() == "true"
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "").strip()
+MAPPING_REVIEW_TTL_SECONDS = 30 * 60
 MANUAL_EXPENSES_TABLE = "manual_expenses"
 GASTOS_TOTALES_VIEW = os.environ.get("GASTOS_TOTALES_VIEW", "gastos_totales")
 SELF_TRANSFER_MERCHANT = os.environ.get("SELF_TRANSFER_MERCHANT", "Agustin Ignacio Bettucci")
@@ -3166,6 +3182,7 @@ _TELEGRAM_COMMAND_MENU = [
     {"command": "variacion", "description": "Comparar gastos entre períodos"},
     {"command": "umbral_variacion", "description": "Ver umbrales de alertas"},
     {"command": "pendientes_comercio", "description": "Ver comercios sin clasificar"},
+    {"command": "sugerir_mapeos", "description": "Analizar pendientes en segundo plano"},
     {"command": "mapear_comercio", "description": "Crear o editar una regla de comercio"},
     {"command": "editar_mapeo", "description": "Actualizar una regla existente"},
     {"command": "mapeos_recientes", "description": "Ver las últimas reglas de comercios"},
@@ -3984,15 +4001,10 @@ def run_daily_unmapped_alert(event, context) -> dict:
         
         # Consultar comercios no mapeados agrupados por flow
         sql = f"""
-        SELECT 
-            flow,
-            comercio_raw,
-            COUNT(*) AS apariciones,
-            MAX(ins_dttm) AS last_seen
-        FROM {bq_fqn(UNMAPPED_TABLE)}
-        WHERE IFNULL(resolved, FALSE) = FALSE
-          AND IFNULL(comercio_normalizado, '') != ''
-        GROUP BY flow, comercio_raw
+        SELECT flow, comercio_raw, appearance_count AS apariciones, last_seen
+        FROM {bq_fqn(MAPPING_REVIEW_TABLE)}
+        WHERE status IN ('pending', 'suggested', 'needs_manual')
+          AND NULLIF(TRIM(comercio_normalizado), '') IS NOT NULL
         ORDER BY apariciones DESC, last_seen DESC
         LIMIT 10
         """
@@ -4008,10 +4020,10 @@ def run_daily_unmapped_alert(event, context) -> dict:
         count_sql = f"""
         SELECT 
             flow,
-            COUNT(DISTINCT comercio_raw) AS total_pendientes
-        FROM {bq_fqn(UNMAPPED_TABLE)}
-        WHERE IFNULL(resolved, FALSE) = FALSE
-          AND IFNULL(comercio_normalizado, '') != ''
+            COUNT(*) AS total_pendientes
+        FROM {bq_fqn(MAPPING_REVIEW_TABLE)}
+        WHERE status IN ('pending', 'suggested', 'needs_manual')
+          AND NULLIF(TRIM(comercio_normalizado), '') IS NOT NULL
         GROUP BY flow
         """
         count_job = bq_client.query(count_sql)
@@ -4042,7 +4054,8 @@ def run_daily_unmapped_alert(event, context) -> dict:
         
         lines.append("")
         lines.append("<i>Usá /pendientes_comercio para ver más</i>")
-        lines.append("<i>Usá /mapear_comercio flow|match|depurado|cat|subcat</i>")
+        lines.append("<i>Usá /sugerir_mapeos 10 all para analizarlos</i>")
+        lines.append("<i>El campo subcategoría es opcional</i>")
         
         msg = "\n".join(lines)
         sent = send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
@@ -4088,18 +4101,21 @@ def mapping_help_message() -> str:
 Una regla transforma el texto que llega desde el banco o Mercado Pago en un nombre limpio y una clasificación. Para <b>editar</b> una regla existente, reenviá el mismo <i>flow + match + tipo</i> y cambiá solo el campo equivocado: el bot actualiza la regla, no crea un duplicado.
 
 <b>Formato</b>
-<code>/mapear_comercio flow|match|depurado|categoria|subcategoria|[tipo]</code>
+<code>/mapear_comercio flow|match|depurado|categoria|[subcategoria]|[tipo]</code>
 
 <b>Campos</b>
 • <b>flow</b>: origen. Usá <code>bank</code>, <code>mp</code>, <code>bank_transfer</code>, <code>mp_transfer</code>, <code>supermarket</code> o <code>carrefour</code>.
 • <b>match</b>: fragmento tal como llega en el movimiento; es la clave para reconocerlo.
 • <b>depurado</b>: nombre corto que querés ver, por ejemplo <code>UDEMY</code>.
 • <b>categoria</b>: grupo principal, por ejemplo <code>Educación</code>.
-• <b>subcategoria</b>: detalle, por ejemplo <code>Cursos Online</code>.
+• <b>subcategoria</b> (opcional): detalle, por ejemplo <code>Cursos Online</code>. Puede quedar vacía.
 • <b>tipo</b> (opcional): <code>contains</code> busca el fragmento; <code>exact</code> exige coincidencia exacta; <code>fuzzy</code> permite similitud. Por defecto usa <code>contains</code>.
 
 <b>Ejemplo</b>
 <code>/mapear_comercio bank|UDEMY ONLINE COURSE|UDEMY|Educación|Cursos Online</code>
+
+Sin subcategoría:
+<code>/mapear_comercio bank|UDEMY ONLINE COURSE|UDEMY|Educación</code>
 
 Para quitar “Libre” de “UDEMY Libre”, reenviá la misma regla cambiando solo el tercer campo por <code>UDEMY</code>."""
 
@@ -4141,11 +4157,21 @@ def _validate_mapping_match_type(value: str) -> str:
 def parse_mapping_command(payload: str) -> dict[str, str]:
     """Shared parser so create and edit have the same deterministic validation."""
     parts = [part.strip() for part in (payload or "").split("|")]
-    if len(parts) not in {5, 6}:
-        raise ValueError("Formato inválido: se requieren 5 campos y un sexto tipo opcional.")
-    flow_raw, match_value, comercio_depurado, categoria, subcategoria = parts[:5]
-    if not match_value or not comercio_depurado or not categoria or not subcategoria:
-        raise ValueError("match, depurado, categoría y subcategoría son obligatorios.")
+    if len(parts) not in {4, 5, 6}:
+        raise ValueError("Formato inválido: se requieren 4 campos; subcategoría y tipo son opcionales.")
+    flow_raw, match_value, comercio_depurado, categoria = parts[:4]
+    subcategoria = ""
+    match_type = "contains"
+    if len(parts) == 5:
+        try:
+            match_type = _validate_mapping_match_type(parts[4])
+        except ValueError:
+            subcategoria = parts[4]
+    elif len(parts) == 6:
+        subcategoria = parts[4]
+        match_type = _validate_mapping_match_type(parts[5])
+    if not match_value or not comercio_depurado or not categoria:
+        raise ValueError("match, depurado y categoría son obligatorios; subcategoría es opcional.")
     if any(len(value) > 120 for value in (match_value, comercio_depurado, categoria, subcategoria)):
         raise ValueError("Cada campo puede tener como máximo 120 caracteres.")
     return {
@@ -4155,7 +4181,7 @@ def parse_mapping_command(payload: str) -> dict[str, str]:
         "comercio_depurado": comercio_depurado,
         "categoria": categoria,
         "subcategoria": subcategoria,
-        "match_type": _validate_mapping_match_type(parts[5] if len(parts) == 6 else "contains"),
+        "match_type": match_type,
     }
 
 
@@ -4198,7 +4224,7 @@ def mapping_saved_message(mapping: dict[str, str]) -> str:
 • <b>Texto a reconocer:</b> <code>{html.escape(mapping['match_value'])}</code>
 • <b>Nombre visible:</b> {html.escape(mapping['comercio_depurado'])}
 • <b>Categoría:</b> {html.escape(mapping['categoria'])}
-• <b>Subcategoría:</b> {html.escape(mapping['subcategoria'])}
+• <b>Subcategoría:</b> {html.escape(mapping['subcategoria']) if mapping['subcategoria'] else '—'}
 • <b>Tipo:</b> <code>{html.escape(mapping['match_type'])}</code>
 
 La regla se aplicará a los nuevos registros del próximo ETL y a consultas que usan <code>dim_comercio_mapping</code>."""
@@ -4209,12 +4235,11 @@ def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> st
     if flow and flow.lower() != "all":
         where_flow = "AND flow = @flow"
     q = f"""
-    SELECT flow, comercio_raw, COUNT(*) AS apariciones, MAX(ins_dttm) AS last_seen
-    FROM {bq_fqn(UNMAPPED_TABLE)}
-    WHERE IFNULL(resolved, FALSE) = FALSE
-      AND IFNULL(comercio_normalizado, '') != ''
+    SELECT flow, comercio_raw, appearance_count AS apariciones, last_seen
+    FROM {bq_fqn(MAPPING_REVIEW_TABLE)}
+    WHERE status IN ('pending', 'suggested', 'needs_manual')
+      AND NULLIF(TRIM(comercio_normalizado), '') IS NOT NULL
       {where_flow}
-    GROUP BY flow, comercio_raw
     ORDER BY apariciones DESC, last_seen DESC
     LIMIT @lim
     """
@@ -4232,7 +4257,7 @@ def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> st
             f"(x{int(r['apariciones'])})"
         )
     lines.append(
-        "\n<i>Usá:</i> /mapear_comercio flow|match_value|comercio_depurado|categoria|subcategoria"
+        "\n<i>Usá:</i> /mapear_comercio flow|match_value|comercio_depurado|categoria|[subcategoria]"
     )
     return "\n".join(lines)
 
@@ -4270,7 +4295,7 @@ def list_recent_mappings(bq_client, limit: int = 10) -> str:
         match = str(_mapping_row_value(row, "match_value", ""))
         depurado = str(_mapping_row_value(row, "comercio_depurado", ""))
         categoria = str(_mapping_row_value(row, "categoria", ""))
-        subcategoria = str(_mapping_row_value(row, "subcategoria", ""))
+        subcategoria = str(_mapping_row_value(row, "subcategoria", "") or "")
         match_type = str(_mapping_row_value(row, "match_type", "contains") or "contains")
         template = (
             f"/editar_mapeo {flow}|{match}|{depurado}|{categoria}|{subcategoria}|{match_type}"
@@ -4278,7 +4303,7 @@ def list_recent_mappings(bq_client, limit: int = 10) -> str:
         lines.extend([
             f"<b>{index}. {html.escape(depurado)}</b> · <code>{html.escape(flow)}</code>",
             f"Match: <code>{html.escape(match)}</code> · {html.escape(match_type)}",
-            f"{html.escape(categoria)} › {html.escape(subcategoria)}",
+            f"{html.escape(categoria)} › {html.escape(subcategoria) if subcategoria else 'Sin subcategoría'}",
             f"<code>{html.escape(template)}</code>",
             "",
         ])
@@ -4319,11 +4344,16 @@ def list_mapping_categories(bq_client, limit: int = 40) -> str:
     lines.extend([
         "",
         "Estas opciones se obtienen de reglas ya existentes. Podés escribir una nueva si no aparece en la lista.",
-        "<i>Formato:</i> <code>/mapear_comercio flow|match|depurado|categoria|subcategoria</code>",
+        "<i>Formato:</i> <code>/mapear_comercio flow|match|depurado|categoria|[subcategoria]</code>",
     ])
     return "\n".join(lines)
 
-def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str, match_type: str = "contains", comercio_raw: str = None):
+def apply_mapping_backfill(
+    bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str,
+    subcategoria: str | None = None, match_type: str = "contains", comercio_raw: str = None,
+    *, candidate_id: str | None = None, mapping_source: str = "manual",
+    confidence: float | None = None, review_status: str = "confirmed",
+):
     """
     Guarda un mapeo en dim_comercio_mapping y marca los pendientes como resueltos.
     
@@ -4337,11 +4367,16 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
         match_value: texto a matchear (se normaliza automáticamente)
         comercio_depurado: nombre limpio del comercio
         categoria: categoría principal
-        subcategoria: subcategoría
+        subcategoria: subcategoría opcional
         match_type: 'contains' (default), 'exact', 'regex', 'fuzzy', 'fuzzy:85'
         comercio_raw: texto original del comercio (opcional, para referencia)
     """
     flow = flow.strip()
+    comercio_depurado = (comercio_depurado or "").strip()
+    categoria = (categoria or "").strip()
+    subcategoria = (subcategoria or "").strip() or None
+    if not comercio_depurado or not categoria:
+        raise ValueError("comercio_depurado y categoría son obligatorios.")
     match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
     if not match_norm:
         raise ValueError("match_value vacío o inválido.")
@@ -4368,6 +4403,10 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
         @cat AS categoria,
         @sub AS subcategoria,
         @raw AS comercio_raw,
+        @mapping_source AS mapping_source,
+        @confidence AS confidence,
+        @review_status AS review_status,
+        @candidate_id AS candidate_id,
         100 AS prioridad,
         TRUE AS activo
     ) s
@@ -4377,12 +4416,20 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
       categoria = s.categoria,
       subcategoria = s.subcategoria,
       comercio_raw = s.comercio_raw,
+      mapping_source = s.mapping_source,
+      confidence = s.confidence,
+      review_status = s.review_status,
+      candidate_id = s.candidate_id,
       prioridad = s.prioridad,
       activo = s.activo,
-      ins_dttm = CURRENT_TIMESTAMP()
+      ins_dttm = CURRENT_TIMESTAMP(),
+      updated_at = CURRENT_TIMESTAMP()
     WHEN NOT MATCHED THEN
-      INSERT (flow, match_type, match_value, comercio_depurado, categoria, subcategoria, comercio_raw, prioridad, activo, ins_dttm)
-      VALUES (s.flow, s.match_type, s.match_value, s.comercio_depurado, s.categoria, s.subcategoria, s.comercio_raw, s.prioridad, s.activo, CURRENT_TIMESTAMP())
+      INSERT (flow, match_type, match_value, comercio_depurado, categoria, subcategoria, comercio_raw,
+              mapping_source, confidence, review_status, candidate_id, prioridad, activo, ins_dttm, updated_at)
+      VALUES (s.flow, s.match_type, s.match_value, s.comercio_depurado, s.categoria, s.subcategoria, s.comercio_raw,
+              s.mapping_source, s.confidence, s.review_status, s.candidate_id, s.prioridad, s.activo,
+              CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
     """
     cfg = bigquery.QueryJobConfig(
         query_parameters=[
@@ -4393,9 +4440,29 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
             bigquery.ScalarQueryParameter("cat", "STRING", categoria),
             bigquery.ScalarQueryParameter("sub", "STRING", subcategoria),
             bigquery.ScalarQueryParameter("raw", "STRING", comercio_raw),
+            bigquery.ScalarQueryParameter("mapping_source", "STRING", mapping_source),
+            bigquery.ScalarQueryParameter("confidence", "FLOAT64", confidence),
+            bigquery.ScalarQueryParameter("review_status", "STRING", review_status),
+            bigquery.ScalarQueryParameter("candidate_id", "STRING", candidate_id),
         ]
     )
     bq_client.query(merge_q, job_config=cfg).result()
+
+    if candidate_id:
+        review_query = f"""
+        UPDATE {bq_fqn(MAPPING_REVIEW_TABLE)}
+        SET status = @review_status,
+            reviewed_at = CURRENT_TIMESTAMP(),
+            reviewed_by = @reviewed_by,
+            updated_at = CURRENT_TIMESTAMP()
+        WHERE candidate_id = @candidate_id
+        """
+        review_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("review_status", "STRING", review_status),
+            bigquery.ScalarQueryParameter("reviewed_by", "STRING", mapping_source),
+            bigquery.ScalarQueryParameter("candidate_id", "STRING", candidate_id),
+        ])
+        bq_client.query(review_query, job_config=review_config).result()
 
     # 2. Intentar marcar pendientes como resueltos en comercio_unmapped_queue
     # Nota: puede fallar si hay filas en streaming buffer (insertadas hace <30 min)
@@ -4412,6 +4479,565 @@ def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depu
     except Exception as e:
         # Si falla por streaming buffer, no es crítico - el mapeo ya está guardado
         print(f"⚠️ No se pudo marcar como resuelto en unmapped_queue (streaming buffer?): {e}")
+
+
+def _mapping_candidate(bq_client, candidate_id: str):
+    query = f"""
+    SELECT
+      candidate_id, flow, comercio_raw, comercio_normalizado, first_seen, last_seen,
+      appearance_count, status, suggested_match_type, suggested_match_value,
+      suggested_comercio_depurado, suggested_categoria, suggested_subcategoria,
+      confidence, suggestion_source, rationale, place_id, notified_at
+    FROM {bq_fqn(MAPPING_REVIEW_TABLE)}
+    WHERE candidate_id = @candidate_id
+    LIMIT 1
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("candidate_id", "STRING", candidate_id),
+    ])
+    rows = list(bq_client.query(query, job_config=config).result())
+    return rows[0] if rows else None
+
+
+def _active_mapping_rules(bq_client) -> list[dict]:
+    query = f"""
+    SELECT
+      flow, match_type, match_value, comercio_raw, comercio_depurado, categoria,
+      subcategoria, prioridad, activo, review_status
+    FROM {bq_fqn(MAPPING_TABLE)}
+    WHERE IFNULL(activo, TRUE) = TRUE
+      AND IFNULL(review_status, 'confirmed') IN ('confirmed', 'corrected', 'manual')
+    """
+    return [dict(row) for row in bq_client.query(query).result()]
+
+
+def _mapping_taxonomy(bq_client) -> list[tuple[str, str]]:
+    query = f"""
+    SELECT DISTINCT categoria, IFNULL(subcategoria, '') AS subcategoria
+    FROM {bq_fqn(MAPPING_TABLE)}
+    WHERE IFNULL(activo, TRUE) = TRUE
+      AND NULLIF(TRIM(categoria), '') IS NOT NULL
+    ORDER BY categoria, subcategoria
+    """
+    return [
+        (str(_mapping_row_value(row, "categoria", "")), str(_mapping_row_value(row, "subcategoria", "")))
+        for row in bq_client.query(query).result()
+    ]
+
+
+def _set_mapping_candidate_suggestion(
+    bq_client, candidate_id: str, suggestion: MappingSuggestion | None, status: str,
+    evidence: dict | None = None,
+) -> None:
+    suggestion_data = suggestion.as_dict() if suggestion else {}
+    query = f"""
+    UPDATE {bq_fqn(MAPPING_REVIEW_TABLE)}
+    SET status = @status,
+        suggested_match_type = @match_type,
+        suggested_match_value = @match_value,
+        suggested_comercio_depurado = @depurado,
+        suggested_categoria = @categoria,
+        suggested_subcategoria = @subcategoria,
+        confidence = @confidence,
+        suggestion_source = @source,
+        rationale = @rationale,
+        evidence_json = @evidence_json,
+        place_id = @place_id,
+        updated_at = CURRENT_TIMESTAMP()
+    WHERE candidate_id = @candidate_id
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("status", "STRING", status),
+        bigquery.ScalarQueryParameter("match_type", "STRING", suggestion_data.get("match_type")),
+        bigquery.ScalarQueryParameter("match_value", "STRING", suggestion_data.get("match_value")),
+        bigquery.ScalarQueryParameter("depurado", "STRING", suggestion_data.get("comercio_depurado")),
+        bigquery.ScalarQueryParameter("categoria", "STRING", suggestion_data.get("categoria")),
+        bigquery.ScalarQueryParameter("subcategoria", "STRING", suggestion_data.get("subcategoria") or None),
+        bigquery.ScalarQueryParameter("confidence", "FLOAT64", suggestion_data.get("confidence")),
+        bigquery.ScalarQueryParameter("source", "STRING", suggestion_data.get("source")),
+        bigquery.ScalarQueryParameter("rationale", "STRING", suggestion_data.get("rationale")),
+        bigquery.ScalarQueryParameter(
+            "evidence_json", "STRING", json.dumps(evidence or {}, ensure_ascii=False, default=str)
+        ),
+        bigquery.ScalarQueryParameter("place_id", "STRING", suggestion_data.get("place_id")),
+        bigquery.ScalarQueryParameter("candidate_id", "STRING", candidate_id),
+    ])
+    bq_client.query(query, job_config=config).result()
+
+
+def _set_mapping_candidate_status(
+    bq_client, candidate_id: str, status: str, reviewed_by: str | None = None,
+    *, mark_notified: bool = False,
+) -> None:
+    query = f"""
+    UPDATE {bq_fqn(MAPPING_REVIEW_TABLE)}
+    SET status = @status,
+        reviewed_at = IF(@reviewed_by IS NULL, reviewed_at, CURRENT_TIMESTAMP()),
+        reviewed_by = COALESCE(@reviewed_by, reviewed_by),
+        notified_at = IF(@mark_notified, CURRENT_TIMESTAMP(), notified_at),
+        updated_at = CURRENT_TIMESTAMP()
+    WHERE candidate_id = @candidate_id
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("status", "STRING", status),
+        bigquery.ScalarQueryParameter("reviewed_by", "STRING", reviewed_by),
+        bigquery.ScalarQueryParameter("mark_notified", "BOOL", mark_notified),
+        bigquery.ScalarQueryParameter("candidate_id", "STRING", candidate_id),
+    ])
+    bq_client.query(query, job_config=config).result()
+
+
+def _llm_mapping_suggestion(
+    comercio_raw: str, flow: str, taxonomy: list[tuple[str, str]],
+    places_context: dict | None = None,
+) -> MappingSuggestion | None:
+    if not taxonomy:
+        return None
+    taxonomy_text = "\n".join(
+        f"- {category} | {subcategory or '(sin subcategoría)'}"
+        for category, subcategory in taxonomy[:150]
+    )
+    context_text = ""
+    if places_context:
+        context_text = (
+            "\nContexto temporal de Google Places (puede ser impreciso): "
+            f"nombre={places_context.get('display_name', '')}; "
+            f"tipo={places_context.get('primary_type', '')}."
+        )
+    prompt = f"""Clasificá este descriptor de comercio sin inventar información financiera.
+Descriptor: {comercio_raw}
+Origen: {flow}{context_text}
+
+Elegí una categoría existente de la lista. La subcategoría es opcional: usá una de la
+lista o devolvé cadena vacía. Si el nombre real no es razonablemente inferible, devolvé {{}}.
+
+Taxonomía permitida:
+{taxonomy_text}
+
+Respondé sólo JSON:
+{{"comercio_depurado":"...","categoria":"...","subcategoria":""}}
+"""
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=160,
+        )
+        payload = parse_json_object(response.choices[0].message.content or "")
+        if not payload:
+            return None
+        source = "places+llm" if places_context else "llm"
+        return suggestion_from_structured_payload(
+            payload,
+            comercio_raw,
+            taxonomy,
+            source=source,
+            place_id=(places_context or {}).get("place_id"),
+        )
+    except Exception as exc:
+        print(f"merchant_mapping_llm_failed error_type={type(exc).__name__}")
+        return None
+
+
+def _google_places_lookup(comercio_raw: str) -> dict | None:
+    if not (MERCHANT_PLACES_ENABLED and GOOGLE_PLACES_API_KEY):
+        return None
+    try:
+        response = requests.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": "places.id,places.displayName,places.primaryType",
+            },
+            json={
+                "textQuery": comercio_raw,
+                "languageCode": "es",
+                "regionCode": "AR",
+                "maxResultCount": 1,
+            },
+            timeout=4,
+        )
+        response.raise_for_status()
+        place = (response.json().get("places") or [None])[0]
+        if not place:
+            return None
+        return {
+            "place_id": place.get("id"),
+            "display_name": (place.get("displayName") or {}).get("text", ""),
+            "primary_type": place.get("primaryType", ""),
+        }
+    except Exception as exc:
+        print(f"merchant_places_lookup_failed error_type={type(exc).__name__}")
+        return None
+
+
+def _mapping_review_keyboard(candidate_id: str, auto_applied: bool = False) -> dict:
+    if auto_applied:
+        return {"inline_keyboard": [[
+            {"text": "👍 Mantener", "callback_data": f"mr:ok:{candidate_id}"},
+            {"text": "✏️ Corregir", "callback_data": f"mr:edit:{candidate_id}"},
+            {"text": "↩️ Revertir", "callback_data": f"mr:undo:{candidate_id}"},
+        ]]}
+    return {"inline_keyboard": [[
+        {"text": "✅ Confirmar", "callback_data": f"mr:ok:{candidate_id}"},
+        {"text": "✏️ Corregir", "callback_data": f"mr:edit:{candidate_id}"},
+        {"text": "❌ Rechazar", "callback_data": f"mr:no:{candidate_id}"},
+    ]]}
+
+
+def _mapping_review_message(row, suggestion: MappingSuggestion, auto_applied: bool) -> str:
+    subcategory = suggestion.subcategoria or "Sin subcategoría"
+    action = "se aplicó automáticamente" if auto_applied else "necesita tu revisión"
+    return (
+        f"🧩 <b>Nuevo comercio: {action}</b>\n\n"
+        f"• <b>Original:</b> <code>{html.escape(str(_mapping_row_value(row, 'comercio_raw', '')))}</code>\n"
+        f"• <b>Comercio sugerido:</b> {html.escape(suggestion.comercio_depurado)}\n"
+        f"• <b>Categoría sugerida:</b> {html.escape(suggestion.categoria)}\n"
+        f"• <b>Subcategoría sugerida:</b> {html.escape(subcategory)}\n"
+        f"• <b>Confianza:</b> {suggestion.confidence:.0f}%\n"
+        f"• <b>Apariciones:</b> {int(_mapping_row_value(row, 'appearance_count', 1) or 1)}\n\n"
+        f"<i>{html.escape(suggestion.rationale)}</i>"
+    )
+
+
+def process_mapping_candidate(candidate_id: str, bq_client=None) -> dict:
+    bq_client = bq_client or get_bigquery_client()
+    row = _mapping_candidate(bq_client, candidate_id)
+    if not row:
+        print(f"merchant_mapping_candidate_missing candidate_id={candidate_id}")
+        return {"candidate_id": candidate_id, "status": "missing"}
+
+    status = str(_mapping_row_value(row, "status", "pending") or "pending")
+    if status in {"confirmed", "corrected", "rejected"}:
+        return {"candidate_id": candidate_id, "status": status}
+    if _mapping_row_value(row, "notified_at") is not None and status in {"suggested", "auto_applied", "needs_manual"}:
+        return {"candidate_id": candidate_id, "status": status, "already_notified": True}
+
+    raw = str(_mapping_row_value(row, "comercio_raw", ""))
+    flow = str(_mapping_row_value(row, "flow", ""))
+    suggestion, margin = suggest_from_existing_mappings(raw, flow, _active_mapping_rules(bq_client))
+    evidence = {"existing_mapping_margin": margin}
+
+    if suggestion is None or suggestion.confidence < 80:
+        taxonomy = _mapping_taxonomy(bq_client)
+        suggestion = _llm_mapping_suggestion(raw, flow, taxonomy)
+        if suggestion is None or suggestion.confidence < 80:
+            places = _google_places_lookup(raw)
+            if places:
+                evidence["places_used"] = True
+                suggestion = _llm_mapping_suggestion(raw, flow, taxonomy, places)
+
+    if suggestion is None:
+        _set_mapping_candidate_suggestion(bq_client, candidate_id, None, "needs_manual", evidence)
+        chat_id = TELEGRAM_ALLOWED_CHAT_ID or TELEGRAM_ALERT_CHAT_ID
+        if chat_id:
+            message = (
+                "🧩 <b>Nuevo comercio sin una sugerencia confiable</b>\n\n"
+                f"• <b>Original:</b> <code>{html.escape(raw)}</code>\n"
+                f"• <b>Apariciones:</b> {int(_mapping_row_value(row, 'appearance_count', 1) or 1)}\n\n"
+                "Podés corregirlo en lenguaje natural. La subcategoría es opcional."
+            )
+            keyboard = {"inline_keyboard": [[
+                {"text": "✏️ Completar", "callback_data": f"mr:edit:{candidate_id}"},
+                {"text": "❌ Descartar", "callback_data": f"mr:no:{candidate_id}"},
+            ]]}
+            sent = send_telegram_message(
+                chat_id, message, TELEGRAM_BOT_TOKEN, parse_mode="HTML", reply_markup=keyboard
+            )
+            if not sent:
+                raise RuntimeError(f"No se pudo notificar el candidato {candidate_id}")
+            _set_mapping_candidate_status(bq_client, candidate_id, "needs_manual", mark_notified=True)
+        print(f"merchant_mapping_needs_manual candidate_id={candidate_id}")
+        return {"candidate_id": candidate_id, "status": "needs_manual", "notified": bool(chat_id)}
+
+    auto_applied = MERCHANT_AUTO_APPLY_ENABLED and is_auto_applicable(suggestion, margin)
+    target_status = "auto_applied" if auto_applied else "suggested"
+    _set_mapping_candidate_suggestion(bq_client, candidate_id, suggestion, target_status, evidence)
+    if auto_applied:
+        apply_mapping_backfill(
+            bq_client,
+            flow=flow,
+            match_value=suggestion.match_value,
+            comercio_depurado=suggestion.comercio_depurado,
+            categoria=suggestion.categoria,
+            subcategoria=suggestion.subcategoria,
+            match_type=suggestion.match_type,
+            comercio_raw=raw,
+            candidate_id=candidate_id,
+            mapping_source=suggestion.source,
+            confidence=suggestion.confidence,
+            review_status="auto_applied",
+        )
+
+    chat_id = TELEGRAM_ALLOWED_CHAT_ID or TELEGRAM_ALERT_CHAT_ID
+    if not chat_id:
+        print(f"merchant_mapping_notification_skipped candidate_id={candidate_id} reason=no_chat_id")
+        return {"candidate_id": candidate_id, "status": target_status, "notified": False}
+    sent = send_telegram_message(
+        chat_id,
+        _mapping_review_message(row, suggestion, auto_applied),
+        TELEGRAM_BOT_TOKEN,
+        parse_mode="HTML",
+        reply_markup=_mapping_review_keyboard(candidate_id, auto_applied),
+    )
+    if not sent:
+        raise RuntimeError(f"No se pudo notificar el candidato {candidate_id}")
+    _set_mapping_candidate_status(bq_client, candidate_id, target_status, mark_notified=True)
+    print(
+        "merchant_mapping_candidate_processed "
+        f"candidate_id={candidate_id} status={target_status} source={suggestion.source} "
+        f"confidence={suggestion.confidence:.1f}"
+    )
+    return {"candidate_id": candidate_id, "status": target_status, "notified": True}
+
+
+def _mapping_review_state_table():
+    return boto3.resource("dynamodb").Table(MAPPING_REVIEW_STATE_TABLE)
+
+
+def _put_mapping_review_state(chat_id, candidate_id: str, draft: dict | None = None) -> None:
+    item = {
+        "chat_id": str(chat_id),
+        "candidate_id": candidate_id,
+        "expires_at": int(time.time()) + MAPPING_REVIEW_TTL_SECONDS,
+    }
+    if draft is not None:
+        item["draft_json"] = json.dumps(draft, ensure_ascii=False)
+    _mapping_review_state_table().put_item(Item=item)
+
+
+def _get_mapping_review_state(chat_id) -> dict | None:
+    item = _mapping_review_state_table().get_item(Key={"chat_id": str(chat_id)}).get("Item")
+    if not item:
+        return None
+    if int(item.get("expires_at", 0)) <= int(time.time()):
+        _mapping_review_state_table().delete_item(Key={"chat_id": str(chat_id)})
+        return None
+    return item
+
+
+def _delete_mapping_review_state(chat_id) -> None:
+    _mapping_review_state_table().delete_item(Key={"chat_id": str(chat_id)})
+
+
+def _parse_mapping_correction_with_llm(text: str) -> dict | None:
+    prompt = f"""Interpretá una corrección humana de un mapeo de comercio.
+Texto: {text}
+Devolvé sólo JSON con las claves mencionadas: comercio_depurado, categoria, subcategoria.
+La subcategoria puede ser una cadena vacía si pide quitarla. No inventes campos no mencionados.
+"""
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=120,
+        )
+        payload = parse_json_object(response.choices[0].message.content or "")
+        if not payload:
+            return None
+        allowed = {"comercio_depurado", "categoria", "subcategoria"}
+        clean = {
+            key: str(value).strip()
+            for key, value in payload.items()
+            if key in allowed and value is not None and len(str(value).strip()) <= 120
+        }
+        return clean or None
+    except Exception as exc:
+        print(f"merchant_mapping_correction_parse_failed error_type={type(exc).__name__}")
+        return None
+
+
+def handle_mapping_correction_input(event: dict, chat_id, text: str, bq_client) -> bool:
+    state = _get_mapping_review_state(chat_id)
+    if not state:
+        return False
+    if not _telegram_webhook_is_authorized(event, chat_id):
+        _delete_mapping_review_state(chat_id)
+        return True
+    candidate = _mapping_candidate(bq_client, str(state["candidate_id"]))
+    if not candidate:
+        _delete_mapping_review_state(chat_id)
+        send_telegram_message(chat_id, "Ese comercio ya no está disponible para editar.", TELEGRAM_BOT_TOKEN, parse_mode=False)
+        return True
+
+    changes = parse_human_correction(text) or _parse_mapping_correction_with_llm(text)
+    if not changes:
+        send_telegram_message(
+            chat_id,
+            "No pude identificar el cambio. Probá, por ejemplo: “cambiá el comercio a Udemy” o “categoría: Educación; subcategoría: ninguna”.",
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=False,
+        )
+        return True
+    draft = {
+        "flow": str(_mapping_row_value(candidate, "flow", "")),
+        "match_value": str(_mapping_row_value(candidate, "suggested_match_value", "") or _mapping_row_value(candidate, "comercio_normalizado", "")),
+        "match_type": str(_mapping_row_value(candidate, "suggested_match_type", "exact") or "exact"),
+        "comercio_raw": str(_mapping_row_value(candidate, "comercio_raw", "")),
+        "comercio_depurado": str(_mapping_row_value(candidate, "suggested_comercio_depurado", "") or _mapping_row_value(candidate, "comercio_raw", "")),
+        "categoria": str(_mapping_row_value(candidate, "suggested_categoria", "")),
+        "subcategoria": str(_mapping_row_value(candidate, "suggested_subcategoria", "") or ""),
+    }
+    draft.update(changes)
+    if not draft["comercio_depurado"] or not draft["categoria"]:
+        send_telegram_message(
+            chat_id,
+            "Todavía falta el nombre del comercio o la categoría. Indicámelos para continuar; la subcategoría puede quedar vacía.",
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=False,
+        )
+        return True
+    _put_mapping_review_state(chat_id, str(state["candidate_id"]), draft)
+    preview = (
+        "✏️ <b>Revisá la corrección</b>\n\n"
+        f"• Comercio: {html.escape(draft['comercio_depurado'])}\n"
+        f"• Categoría: {html.escape(draft['categoria'])}\n"
+        f"• Subcategoría: {html.escape(draft['subcategoria']) if draft['subcategoria'] else '—'}"
+    )
+    keyboard = {"inline_keyboard": [[
+        {"text": "💾 Guardar", "callback_data": f"mr:save:{state['candidate_id']}"},
+        {"text": "Cancelar", "callback_data": f"mr:cancel:{state['candidate_id']}"},
+    ]]}
+    send_telegram_message(chat_id, preview, TELEGRAM_BOT_TOKEN, parse_mode="HTML", reply_markup=keyboard)
+    return True
+
+
+def _stored_candidate_suggestion(row) -> MappingSuggestion | None:
+    depurado = str(_mapping_row_value(row, "suggested_comercio_depurado", "") or "")
+    categoria = str(_mapping_row_value(row, "suggested_categoria", "") or "")
+    if not depurado or not categoria:
+        return None
+    return MappingSuggestion(
+        match_type=str(_mapping_row_value(row, "suggested_match_type", "exact") or "exact"),
+        match_value=str(_mapping_row_value(row, "suggested_match_value", "") or ""),
+        comercio_depurado=depurado,
+        categoria=categoria,
+        subcategoria=str(_mapping_row_value(row, "suggested_subcategoria", "") or ""),
+        confidence=float(_mapping_row_value(row, "confidence", 0) or 0),
+        source=str(_mapping_row_value(row, "suggestion_source", "review") or "review"),
+        rationale=str(_mapping_row_value(row, "rationale", "") or ""),
+        place_id=str(_mapping_row_value(row, "place_id", "") or "") or None,
+    )
+
+
+def handle_mapping_review_callback(event: dict, data: dict, bq_client) -> dict:
+    callback = data.get("callback_query") or {}
+    callback_id = callback.get("id")
+    chat_id = callback.get("message", {}).get("chat", {}).get("id")
+    raw = str(callback.get("data") or "")
+    parts = raw.split(":", 2)
+    if len(parts) != 3 or not callback_id or not chat_id:
+        return {"statusCode": 200}
+    action, candidate_id = parts[1], parts[2]
+    if not _telegram_webhook_is_authorized(event, chat_id):
+        telegram_answer_callback(callback_id, "No autorizado")
+        return {"statusCode": 200}
+    row = _mapping_candidate(bq_client, candidate_id)
+    if not row:
+        telegram_answer_callback(callback_id, "El comercio ya no existe")
+        return {"statusCode": 200}
+    status = str(_mapping_row_value(row, "status", ""))
+
+    if action == "edit":
+        _put_mapping_review_state(chat_id, candidate_id)
+        telegram_answer_callback(callback_id, "Decime qué querés cambiar")
+        send_telegram_message(
+            chat_id,
+            "✏️ Escribime la corrección en lenguaje natural. Por ejemplo: “cambiá el comercio a Udemy”, “categoría: Educación” o “quitá la subcategoría”.",
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=False,
+        )
+        return {"statusCode": 200}
+    if action == "cancel":
+        _delete_mapping_review_state(chat_id)
+        telegram_answer_callback(callback_id, "Edición cancelada")
+        return {"statusCode": 200}
+    if action == "save":
+        state = _get_mapping_review_state(chat_id)
+        if not state or state.get("candidate_id") != candidate_id or not state.get("draft_json"):
+            telegram_answer_callback(callback_id, "La edición venció; volvé a intentar")
+            return {"statusCode": 200}
+        draft = json.loads(state["draft_json"])
+        apply_mapping_backfill(
+            bq_client, **draft, candidate_id=candidate_id,
+            mapping_source=f"telegram:{chat_id}", review_status="corrected",
+        )
+        _delete_mapping_review_state(chat_id)
+        telegram_answer_callback(callback_id, "Corrección guardada")
+        send_telegram_message(chat_id, "✅ Mapeo corregido. La subcategoría quedó opcional.", TELEGRAM_BOT_TOKEN, parse_mode=False)
+        return {"statusCode": 200}
+    if action in {"no", "undo"}:
+        if action == "undo":
+            query = f"""
+            UPDATE {bq_fqn(MAPPING_TABLE)}
+            SET activo = FALSE, review_status = 'rejected', updated_at = CURRENT_TIMESTAMP()
+            WHERE candidate_id = @candidate_id AND mapping_source = 'existing_mapping'
+            """
+            config = bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("candidate_id", "STRING", candidate_id),
+            ])
+            bq_client.query(query, job_config=config).result()
+        _set_mapping_candidate_status(bq_client, candidate_id, "rejected", f"telegram:{chat_id}")
+        telegram_answer_callback(callback_id, "Sugerencia rechazada")
+        return {"statusCode": 200}
+    if action == "ok":
+        if status in {"confirmed", "corrected"}:
+            telegram_answer_callback(callback_id, "Ya estaba confirmado")
+            return {"statusCode": 200}
+        suggestion = _stored_candidate_suggestion(row)
+        if not suggestion:
+            telegram_answer_callback(callback_id, "Faltan datos; usá Corregir")
+            return {"statusCode": 200}
+        if status != "auto_applied":
+            apply_mapping_backfill(
+                bq_client,
+                flow=str(_mapping_row_value(row, "flow", "")),
+                match_value=suggestion.match_value,
+                comercio_depurado=suggestion.comercio_depurado,
+                categoria=suggestion.categoria,
+                subcategoria=suggestion.subcategoria,
+                match_type=suggestion.match_type,
+                comercio_raw=str(_mapping_row_value(row, "comercio_raw", "")),
+                candidate_id=candidate_id,
+                mapping_source=f"telegram:{chat_id}",
+                confidence=suggestion.confidence,
+                review_status="confirmed",
+            )
+        else:
+            _set_mapping_candidate_status(bq_client, candidate_id, "confirmed", f"telegram:{chat_id}")
+        telegram_answer_callback(callback_id, "Mapeo confirmado")
+        return {"statusCode": 200}
+    telegram_answer_callback(callback_id, "Acción desconocida")
+    return {"statusCode": 200}
+
+
+def enqueue_mapping_review_candidates(bq_client, limit: int = 10, flow: str = "all") -> int:
+    if not (MERCHANT_SUGGESTIONS_ENABLED and MERCHANT_SUGGESTIONS_QUEUE_URL):
+        raise RuntimeError("Las sugerencias automáticas están desactivadas.")
+    limit = max(1, min(int(limit), 25))
+    flow_clause = "" if flow == "all" else "AND flow = @flow"
+    query = f"""
+    SELECT candidate_id
+    FROM {bq_fqn(MAPPING_REVIEW_TABLE)}
+    WHERE status IN ('pending', 'needs_manual')
+      {flow_clause}
+    ORDER BY appearance_count DESC, last_seen ASC
+    LIMIT @limit
+    """
+    parameters = [bigquery.ScalarQueryParameter("limit", "INT64", limit)]
+    if flow != "all":
+        parameters.append(bigquery.ScalarQueryParameter("flow", "STRING", _canonical_mapping_flow(flow)))
+    rows = list(bq_client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=parameters)).result())
+    sqs = boto3.client("sqs")
+    for row in rows:
+        sqs.send_message(
+            QueueUrl=MERCHANT_SUGGESTIONS_QUEUE_URL,
+            MessageBody=json.dumps({"candidate_id": str(_mapping_row_value(row, "candidate_id", ""))}),
+        )
+    return len(rows)
 
 VALID_DETAIL_SOURCES = {
     "bank_payments",
@@ -4470,6 +5096,21 @@ def apply_transaction_detail(bq_client, extraido_de: str, transaction_key: str, 
 def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
+
+        # Worker asíncrono de sugerencias. El batch de Terraform es 1 para que
+        # un candidato fallido pueda reintentarse sin duplicar otros mensajes.
+        if isinstance(event, dict) and event.get("Records"):
+            records = event.get("Records") or []
+            if records and all(record.get("eventSource") == "aws:sqs" for record in records):
+                bq_client = get_bigquery_client()
+                results = []
+                for record in records:
+                    payload = json.loads(record.get("body") or "{}")
+                    candidate_id = str(payload.get("candidate_id") or "").strip()
+                    if not candidate_id:
+                        raise ValueError("Mensaje SQS sin candidate_id")
+                    results.append(process_mapping_candidate(candidate_id, bq_client))
+                return {"statusCode": 200, "processed": results}
         
         # Manejar invocaciones programadas de EventBridge
         if isinstance(event, dict):
@@ -4512,6 +5153,8 @@ def lambda_handler(event, context):
             if raw_callback_data.startswith("me:"):
                 return handle_manual_expense_edit_callback(event, data)
             bq_client = get_bigquery_client()
+            if raw_callback_data.startswith("mr:"):
+                return handle_mapping_review_callback(event, data, bq_client)
             return handle_telegram_callback(data, bq_client, event)
         
         message = data.get("message") or {}
@@ -4606,6 +5249,9 @@ def lambda_handler(event, context):
             print(f"⚠️ Mensaje de texto {telegram_message_id} ya fue procesado o está siendo procesado, ignorando")
             return {"statusCode": 200}
 
+        if handle_mapping_correction_input(event, chat_id, text, bq_client):
+            return {"statusCode": 200}
+
         handled_correction, correction_response, correction_keyboard = handle_pending_voice_expense_correction(
             event, int(chat_id), text
         )
@@ -4681,7 +5327,7 @@ def lambda_handler(event, context):
         
         if text == "/help":
             register_telegram_command_menu()
-            help_message = """📚 *Ayuda del Bot*
+            help_message = r"""📚 *Ayuda del Bot*
 
 *Consultas de texto:*
 Escribí cualquier pregunta sobre tus gastos en lenguaje natural.
@@ -4726,11 +5372,13 @@ Muestra aumentos por comercio, categoría y subcategoría; no envía alertas ni 
 
 *Mapeo de comercios:*
 • /pendientes\_comercio [bank|mp|all] - Ver comercios sin clasificar
+• /sugerir\_mapeos [cantidad] [bank|mp|all] - Analizar hasta 25 pendientes
 • /mapear\_comercio - Guía, campos y opciones
-• /mapear\_comercio flow|match|depurado|cat|subcat|[tipo] - Crear o actualizar
+• /mapear\_comercio flow|match|depurado|cat|[subcat]|[tipo] - Crear o actualizar
 • /mapeos\_recientes [cantidad] - Ver y copiar reglas editables
-• /editar\_mapeo flow|match|depurado|cat|subcat|[tipo] - Corregir una regla
+• /editar\_mapeo flow|match|depurado|cat|[subcat]|[tipo] - Corregir una regla
 • /opciones\_mapeo - Ver categorías y subcategorías ya usadas
+La subcategoría es opcional.
 
 *Detalles manuales por transacción:*
 • /detalle <extraido\_de> <transaction\_key> <texto>
@@ -4804,6 +5452,27 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
             send_telegram_message(
                 chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML", reply_markup=_mapping_help_keyboard()
             )
+            return {"statusCode": 200}
+
+        if text.startswith("/sugerir_mapeos"):
+            if not _telegram_webhook_is_authorized(event, chat_id):
+                send_telegram_message(chat_id, "❌ No autorizado.", TELEGRAM_BOT_TOKEN, parse_mode=False)
+                return {"statusCode": 200}
+            try:
+                arguments = text.split()[1:]
+                limit = int(arguments[0]) if arguments else 10
+                flow = arguments[1].lower() if len(arguments) > 1 else "all"
+                if not 1 <= limit <= 25:
+                    raise ValueError("La cantidad debe estar entre 1 y 25.")
+                queued = enqueue_mapping_review_candidates(bq_client, limit, flow)
+                message = f"✅ Envié {queued} comercio(s) a analizar. Las sugerencias llegarán por separado."
+            except Exception as exc:
+                print(f"mapping_enqueue_command_failed error_type={type(exc).__name__}: {exc}")
+                message = (
+                    "❌ No pude iniciar el análisis. Usá: /sugerir_mapeos 10 all "
+                    "(cantidad máxima: 25)."
+                )
+            send_telegram_message(chat_id, message, TELEGRAM_BOT_TOKEN, parse_mode=False)
             return {"statusCode": 200}
 
         if text.startswith("/mapeos_recientes"):

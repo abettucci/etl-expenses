@@ -8,3 +8,4 @@ pandas==2.0.3
 pyarrow==14.0.1
 db-dtypes
 pydantic>=2,<3
+rapidfuzz==3.5.2
