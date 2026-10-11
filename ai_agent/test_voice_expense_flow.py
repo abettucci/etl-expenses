@@ -85,6 +85,14 @@ def load_lambda_module():
     fake_requests.post = lambda *_args, **_kwargs: None
 
     fake_variations = types.ModuleType("variation_alerts")
+    class FakeComparisonPeriods:
+        def __init__(self, current_start, current_end, previous_start, previous_end):
+            self.current_start = current_start
+            self.current_end = current_end
+            self.previous_start = previous_start
+            self.previous_end = previous_end
+
+    fake_variations.ComparisonPeriods = FakeComparisonPeriods
     fake_variations.completed_comparison_periods = lambda *_args, **_kwargs: None
     fake_variations.exceeds_variation_threshold = lambda *_args, **_kwargs: False
 
@@ -181,6 +189,64 @@ class VoiceExpenseFlowTest(unittest.TestCase):
 
     def test_text_question_is_not_mistaken_for_an_expense(self):
         self.assertFalse(self.module.is_typed_manual_expense("¿Cuánto gasté este mes?"))
+
+    def test_mapping_command_normalizes_alias_and_default_type(self):
+        mapping = self.module.parse_mapping_command(
+            "bank|UDEMY ONLINE COURSE|UDEMY|Educación|Cursos Online"
+        )
+        self.assertEqual(mapping["flow"], "bank_payments")
+        self.assertEqual(mapping["match_norm"], "UDEMYONLINECOURSE")
+        self.assertEqual(mapping["match_type"], "contains")
+
+    def test_mapping_command_rejects_invalid_shape_and_type(self):
+        with self.assertRaises(ValueError):
+            self.module.parse_mapping_command("bank|UDEMY|UDEMY|Educación")
+        with self.assertRaises(ValueError):
+            self.module.parse_mapping_command(
+                "bank|UDEMY|UDEMY|Educación|Cursos|anything-goes"
+            )
+
+    def test_recent_mappings_contains_copyable_edit_template(self):
+        class ReadOnlyBigQuery:
+            def query(self, _query, job_config):
+                self.parameter_names = [item.name for item in job_config.query_parameters]
+                return types.SimpleNamespace(result=lambda: [{
+                    "flow": "bank_payments",
+                    "match_type": "contains",
+                    "match_value": "UDEMYONLINECOURSE",
+                    "comercio_depurado": "UDEMY Libre",
+                    "categoria": "Educación",
+                    "subcategoria": "Cursos Online",
+                }])
+
+        client = ReadOnlyBigQuery()
+        response = self.module.list_recent_mappings(client)
+        self.assertIn("/editar_mapeo bank_payments|UDEMYONLINECOURSE|UDEMY Libre", response)
+        self.assertEqual(client.parameter_names, ["limit"])
+
+    def test_mapping_help_explains_editing_and_fields(self):
+        response = self.module.mapping_help_message()
+        self.assertIn("<b>flow</b>", response)
+        self.assertIn("<b>depurado</b>", response)
+        self.assertIn("UDEMY", response)
+
+    def test_mapping_recent_callback_is_authorized_and_read_only(self):
+        update = {
+            "callback_query": {
+                "id": "callback-mapping-recent",
+                "data": "cm:recent",
+                "message": {"chat": {"id": 12345}},
+            }
+        }
+        with patch.object(self.module, "list_recent_mappings", return_value="<b>Reglas</b>") as recent, \
+             patch.object(self.module, "telegram_answer_callback") as answer, \
+             patch.object(self.module, "send_telegram_message") as send:
+            result = self.module.handle_telegram_callback(update, object(), self.event)
+
+        self.assertEqual(result, {"statusCode": 200})
+        recent.assert_called_once()
+        answer.assert_called_once()
+        send.assert_called_once()
 
     def test_variation_query_resolves_mapping_table_placeholder(self):
         periods = types.SimpleNamespace(

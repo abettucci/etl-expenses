@@ -3166,6 +3166,10 @@ _TELEGRAM_COMMAND_MENU = [
     {"command": "variacion", "description": "Comparar gastos entre períodos"},
     {"command": "umbral_variacion", "description": "Ver umbrales de alertas"},
     {"command": "pendientes_comercio", "description": "Ver comercios sin clasificar"},
+    {"command": "mapear_comercio", "description": "Crear o editar una regla de comercio"},
+    {"command": "editar_mapeo", "description": "Actualizar una regla existente"},
+    {"command": "mapeos_recientes", "description": "Ver las últimas reglas de comercios"},
+    {"command": "opciones_mapeo", "description": "Ver categorías y subcategorías"},
     {"command": "exportar", "description": "Exportar gastos a CSV"},
 ]
 
@@ -3245,13 +3249,50 @@ def export_table_csv(chat_id: str, table_key: str, bq_client, token: str) -> boo
     send_telegram_document(chat_id, data, fname, cap, token)
     return True
 
-def handle_telegram_callback(data: dict, bq_client) -> dict:
+def handle_telegram_callback(data: dict, bq_client, event: dict | None = None) -> dict:
     cq = data.get("callback_query") or {}
     cq_id = cq.get("id")
     chat_id = cq.get("message", {}).get("chat", {}).get("id")
     raw = (cq.get("data") or "").strip()
     if not chat_id or not cq_id:
         return {"statusCode": 200}
+
+    if raw in MAPPING_CALLBACKS:
+        # Mapping menus expose financial metadata and must only be served to the
+        # same authenticated chat allowed to modify mappings.
+        if event is not None and not _telegram_webhook_is_authorized(event, chat_id):
+            print("mapping_callback_unauthorized")
+            telegram_answer_callback(cq_id, "No autorizado")
+            return {"statusCode": 200}
+
+        telegram_answer_callback(cq_id, "Preparando opciones")
+        try:
+            if raw == "cm:fields":
+                message = _mapping_fields_message()
+            elif raw == "cm:categories":
+                message = list_mapping_categories(bq_client)
+            elif raw == "cm:recent":
+                message = list_recent_mappings(bq_client)
+            else:
+                message = list_unmapped_comercios(bq_client, flow="all", limit=20)
+            send_telegram_message(
+                chat_id,
+                message,
+                TELEGRAM_BOT_TOKEN,
+                parse_mode="HTML",
+                reply_markup=_mapping_help_keyboard(),
+            )
+        except Exception as exc:
+            print(f"mapping_callback_failed: {type(exc).__name__}: {exc}")
+            send_telegram_message(
+                chat_id,
+                "❌ No pude obtener esas opciones ahora. Probá nuevamente en unos minutos.",
+                TELEGRAM_BOT_TOKEN,
+                parse_mode=False,
+                reply_markup=_mapping_help_keyboard(),
+            )
+        return {"statusCode": 200}
+
     telegram_answer_callback(cq_id, "Listo")
     if raw.startswith("q:"):
         key = raw[2:]
@@ -4018,6 +4059,151 @@ def run_daily_unmapped_alert(event, context) -> dict:
         traceback.print_exc()
         return {"statusCode": 200}
 
+MAPPING_FLOW_ALIASES = {
+    "bank": "bank_payments", "bank_payments": "bank_payments",
+    "bank_transfer": "bank_transfers", "bank_transfers": "bank_transfers",
+    "mp": "mp_data", "mp_data": "mp_data",
+    "transfer": "mp_transfer_data", "mp_transfer": "mp_transfer_data",
+    "mp_transfer_data": "mp_transfer_data",
+    "supermarket": "supermarket_receipts", "super": "supermarket_receipts",
+    "supermarket_receipts": "supermarket_receipts",
+    "carrefour": "carrefour_data", "carrefour_data": "carrefour_data",
+}
+MAPPING_CALLBACKS = {"cm:fields", "cm:categories", "cm:recent", "cm:pending"}
+
+
+def _mapping_help_keyboard() -> dict:
+    """Short callback data keeps within Telegram's 64-byte limit."""
+    return {"inline_keyboard": [
+        [{"text": "📚 Explicar campos", "callback_data": "cm:fields"},
+         {"text": "🏷 Categorías", "callback_data": "cm:categories"}],
+        [{"text": "🧾 Últimos mapeos", "callback_data": "cm:recent"},
+         {"text": "🧩 Pendientes", "callback_data": "cm:pending"}],
+    ]}
+
+
+def mapping_help_message() -> str:
+    return """🧩 <b>Mapear un comercio</b>
+
+Una regla transforma el texto que llega desde el banco o Mercado Pago en un nombre limpio y una clasificación. Para <b>editar</b> una regla existente, reenviá el mismo <i>flow + match + tipo</i> y cambiá solo el campo equivocado: el bot actualiza la regla, no crea un duplicado.
+
+<b>Formato</b>
+<code>/mapear_comercio flow|match|depurado|categoria|subcategoria|[tipo]</code>
+
+<b>Campos</b>
+• <b>flow</b>: origen. Usá <code>bank</code>, <code>mp</code>, <code>bank_transfer</code>, <code>mp_transfer</code>, <code>supermarket</code> o <code>carrefour</code>.
+• <b>match</b>: fragmento tal como llega en el movimiento; es la clave para reconocerlo.
+• <b>depurado</b>: nombre corto que querés ver, por ejemplo <code>UDEMY</code>.
+• <b>categoria</b>: grupo principal, por ejemplo <code>Educación</code>.
+• <b>subcategoria</b>: detalle, por ejemplo <code>Cursos Online</code>.
+• <b>tipo</b> (opcional): <code>contains</code> busca el fragmento; <code>exact</code> exige coincidencia exacta; <code>fuzzy</code> permite similitud. Por defecto usa <code>contains</code>.
+
+<b>Ejemplo</b>
+<code>/mapear_comercio bank|UDEMY ONLINE COURSE|UDEMY|Educación|Cursos Online</code>
+
+Para quitar “Libre” de “UDEMY Libre”, reenviá la misma regla cambiando solo el tercer campo por <code>UDEMY</code>."""
+
+
+def _mapping_fields_message() -> str:
+    return """✏️ <b>Cómo editar un mapeo</b>
+
+1. Ejecutá <code>/mapeos_recientes</code>.
+2. Copiá la plantilla de la regla que querés corregir.
+3. Reemplazá únicamente el valor equivocado y enviala con <code>/editar_mapeo</code>.
+
+Ejemplo:
+<code>/editar_mapeo bank_payments|UDEMYONLINECOURSE|UDEMY|Educación|Cursos Online|contains</code>
+
+La identidad de una regla es <b>flow + match + tipo</b>. Si conservás esos tres campos, se actualiza la regla existente."""
+
+
+def _canonical_mapping_flow(value: str) -> str:
+    flow = MAPPING_FLOW_ALIASES.get((value or "").strip().lower())
+    if not flow:
+        raise ValueError("flow inválido. Usá bank, mp, bank_transfer, mp_transfer, supermarket o carrefour.")
+    return flow
+
+
+def _normalize_mapping_match(value: str) -> str:
+    normalized = re.sub(r"[^A-Z0-9]+", "", (value or "").upper())
+    if not normalized:
+        raise ValueError("match no puede estar vacío.")
+    return normalized
+
+
+def _validate_mapping_match_type(value: str) -> str:
+    match_type = (value or "contains").strip().lower()
+    if match_type in {"contains", "exact", "regex", "fuzzy"} or re.fullmatch(r"fuzzy:(?:[1-9][0-9]?|100)", match_type):
+        return match_type
+    raise ValueError("tipo inválido. Usá contains, exact, regex, fuzzy o fuzzy:80.")
+
+
+def parse_mapping_command(payload: str) -> dict[str, str]:
+    """Shared parser so create and edit have the same deterministic validation."""
+    parts = [part.strip() for part in (payload or "").split("|")]
+    if len(parts) not in {5, 6}:
+        raise ValueError("Formato inválido: se requieren 5 campos y un sexto tipo opcional.")
+    flow_raw, match_value, comercio_depurado, categoria, subcategoria = parts[:5]
+    if not match_value or not comercio_depurado or not categoria or not subcategoria:
+        raise ValueError("match, depurado, categoría y subcategoría son obligatorios.")
+    if any(len(value) > 120 for value in (match_value, comercio_depurado, categoria, subcategoria)):
+        raise ValueError("Cada campo puede tener como máximo 120 caracteres.")
+    return {
+        "flow": _canonical_mapping_flow(flow_raw),
+        "match_value": match_value,
+        "match_norm": _normalize_mapping_match(match_value),
+        "comercio_depurado": comercio_depurado,
+        "categoria": categoria,
+        "subcategoria": subcategoria,
+        "match_type": _validate_mapping_match_type(parts[5] if len(parts) == 6 else "contains"),
+    }
+
+
+def _lookup_mapping_raw_value(bq_client, flow: str, match_norm: str) -> str | None:
+    query = f"""
+    SELECT comercio_raw FROM {bq_fqn(UNMAPPED_TABLE)}
+    WHERE flow = @flow AND comercio_normalizado = @match_norm
+    ORDER BY ins_dttm DESC LIMIT 1
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("flow", "STRING", flow),
+        bigquery.ScalarQueryParameter("match_norm", "STRING", match_norm),
+    ])
+    rows = list(bq_client.query(query, job_config=config).result())
+    if not rows:
+        return None
+    value = rows[0]["comercio_raw"] if isinstance(rows[0], dict) else rows[0].comercio_raw
+    return str(value).strip() or None
+
+
+def save_mapping_command(bq_client, payload: str) -> dict[str, str]:
+    mapping = parse_mapping_command(payload)
+    try:
+        comercio_raw = _lookup_mapping_raw_value(bq_client, mapping["flow"], mapping["match_norm"])
+    except Exception as exc:
+        print(f"mapping_raw_lookup_failed: {type(exc).__name__}: {exc}")
+        comercio_raw = None
+    apply_mapping_backfill(
+        bq_client, flow=mapping["flow"], match_value=mapping["match_value"],
+        comercio_depurado=mapping["comercio_depurado"], categoria=mapping["categoria"],
+        subcategoria=mapping["subcategoria"], match_type=mapping["match_type"], comercio_raw=comercio_raw,
+    )
+    return {**mapping, "comercio_raw": comercio_raw or mapping["match_value"]}
+
+
+def mapping_saved_message(mapping: dict[str, str]) -> str:
+    return f"""✅ <b>Mapeo guardado o actualizado.</b>
+
+• <b>Origen:</b> <code>{html.escape(mapping['flow'])}</code>
+• <b>Texto a reconocer:</b> <code>{html.escape(mapping['match_value'])}</code>
+• <b>Nombre visible:</b> {html.escape(mapping['comercio_depurado'])}
+• <b>Categoría:</b> {html.escape(mapping['categoria'])}
+• <b>Subcategoría:</b> {html.escape(mapping['subcategoria'])}
+• <b>Tipo:</b> <code>{html.escape(mapping['match_type'])}</code>
+
+La regla se aplicará a los nuevos registros del próximo ETL y a consultas que usan <code>dim_comercio_mapping</code>."""
+
+
 def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> str:
     where_flow = ""
     if flow and flow.lower() != "all":
@@ -4048,6 +4234,93 @@ def list_unmapped_comercios(bq_client, flow: str = "all", limit: int = 20) -> st
     lines.append(
         "\n<i>Usá:</i> /mapear_comercio flow|match_value|comercio_depurado|categoria|subcategoria"
     )
+    return "\n".join(lines)
+
+
+def _mapping_row_value(row, key: str, default=None):
+    """Read both BigQuery Row objects and dict fixtures without leaking provider details."""
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except (KeyError, TypeError):
+        return getattr(row, key, default)
+
+
+def list_recent_mappings(bq_client, limit: int = 10) -> str:
+    """Return editable templates for the most recently created or updated active rules."""
+    limit = max(1, min(int(limit), 20))
+    query = f"""
+    SELECT flow, match_type, match_value, comercio_depurado, categoria, subcategoria, ins_dttm
+    FROM {bq_fqn(MAPPING_TABLE)}
+    WHERE IFNULL(activo, TRUE) = TRUE
+    ORDER BY ins_dttm DESC
+    LIMIT @limit
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("limit", "INT64", limit),
+    ])
+    rows = list(bq_client.query(query, job_config=config).result())
+    if not rows:
+        return "ℹ️ Todavía no hay mapeos manuales para mostrar."
+
+    lines = ["🧾 <b>Últimos mapeos editables</b>", ""]
+    for index, row in enumerate(rows, start=1):
+        flow = str(_mapping_row_value(row, "flow", ""))
+        match = str(_mapping_row_value(row, "match_value", ""))
+        depurado = str(_mapping_row_value(row, "comercio_depurado", ""))
+        categoria = str(_mapping_row_value(row, "categoria", ""))
+        subcategoria = str(_mapping_row_value(row, "subcategoria", ""))
+        match_type = str(_mapping_row_value(row, "match_type", "contains") or "contains")
+        template = (
+            f"/editar_mapeo {flow}|{match}|{depurado}|{categoria}|{subcategoria}|{match_type}"
+        )
+        lines.extend([
+            f"<b>{index}. {html.escape(depurado)}</b> · <code>{html.escape(flow)}</code>",
+            f"Match: <code>{html.escape(match)}</code> · {html.escape(match_type)}",
+            f"{html.escape(categoria)} › {html.escape(subcategoria)}",
+            f"<code>{html.escape(template)}</code>",
+            "",
+        ])
+    lines.append("Copiá una plantilla, cambiá el dato que necesites y enviala. Conservá <b>flow + match + tipo</b> para actualizar esa misma regla.")
+    return "\n".join(lines)
+
+
+def list_mapping_categories(bq_client, limit: int = 40) -> str:
+    """Show real category/subcategory pairs already used by active mappings."""
+    limit = max(1, min(int(limit), 60))
+    query = f"""
+    SELECT categoria, subcategoria, COUNT(*) AS reglas
+    FROM {bq_fqn(MAPPING_TABLE)}
+    WHERE IFNULL(activo, TRUE) = TRUE
+      AND NULLIF(TRIM(categoria), '') IS NOT NULL
+    GROUP BY categoria, subcategoria
+    ORDER BY categoria ASC, reglas DESC, subcategoria ASC
+    LIMIT @limit
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("limit", "INT64", limit),
+    ])
+    rows = list(bq_client.query(query, job_config=config).result())
+    if not rows:
+        return "ℹ️ No hay categorías de mapeos manuales para mostrar todavía."
+
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        categoria = str(_mapping_row_value(row, "categoria", "Sin categoría") or "Sin categoría")
+        subcategoria = str(_mapping_row_value(row, "subcategoria", "Sin subcategoría") or "Sin subcategoría")
+        grouped.setdefault(categoria, []).append(subcategoria)
+
+    lines = ["🏷 <b>Categorías disponibles en tus mapeos</b>", ""]
+    for categoria, subcategorias in grouped.items():
+        unique_subcategorias = list(dict.fromkeys(subcategorias))
+        lines.append(f"<b>{html.escape(categoria)}</b>")
+        lines.append(" · ".join(html.escape(value) for value in unique_subcategorias))
+    lines.extend([
+        "",
+        "Estas opciones se obtienen de reglas ya existentes. Podés escribir una nueva si no aparece en la lista.",
+        "<i>Formato:</i> <code>/mapear_comercio flow|match|depurado|categoria|subcategoria</code>",
+    ])
     return "\n".join(lines)
 
 def apply_mapping_backfill(bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str, subcategoria: str, match_type: str = "contains", comercio_raw: str = None):
@@ -4239,7 +4512,7 @@ def lambda_handler(event, context):
             if raw_callback_data.startswith("me:"):
                 return handle_manual_expense_edit_callback(event, data)
             bq_client = get_bigquery_client()
-            return handle_telegram_callback(data, bq_client)
+            return handle_telegram_callback(data, bq_client, event)
         
         message = data.get("message") or {}
         if not isinstance(message, dict):
@@ -4453,7 +4726,11 @@ Muestra aumentos por comercio, categoría y subcategoría; no envía alertas ni 
 
 *Mapeo de comercios:*
 • /pendientes\_comercio [bank|mp|all] - Ver comercios sin clasificar
-• /mapear\_comercio flow|match|depurado|cat|subcat|[tipo]
+• /mapear\_comercio - Guía, campos y opciones
+• /mapear\_comercio flow|match|depurado|cat|subcat|[tipo] - Crear o actualizar
+• /mapeos\_recientes [cantidad] - Ver y copiar reglas editables
+• /editar\_mapeo flow|match|depurado|cat|subcat|[tipo] - Corregir una regla
+• /opciones\_mapeo - Ver categorías y subcategorías ya usadas
 
 *Detalles manuales por transacción:*
 • /detalle <extraido\_de> <transaction\_key> <texto>
@@ -4524,106 +4801,71 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
             }
             flow = flow_map.get(raw, "all")
             msg = list_unmapped_comercios(bq_client, flow=flow, limit=20)
-            send_telegram_message(chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+            send_telegram_message(
+                chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML", reply_markup=_mapping_help_keyboard()
+            )
             return {"statusCode": 200}
 
-        if text.startswith("/mapear_comercio"):
+        if text.startswith("/mapeos_recientes"):
             try:
-                payload = text[len("/mapear_comercio"):].strip()
-                parts = [p.strip() for p in payload.split("|")]
-                if len(parts) < 5:
-                    raise ValueError("Formato inválido (mínimo 5 campos)")
-                
-                flow_raw, match_value, depurado, categoria, subcategoria = parts[:5]
-                # Sexto parámetro opcional: match_type (default: contains)
-                match_type = parts[5].lower() if len(parts) > 5 else "contains"
-                
-                flow_alias = {
-                    "bank": "bank_payments",
-                    "bank_payments": "bank_payments",
-                    "bank_transfer": "bank_transfers",
-                    "bank_transfers": "bank_transfers",
-                    "mp": "mp_data",
-                    "mp_data": "mp_data",
-                    "transfer": "mp_transfer_data",
-                    "mp_transfer": "mp_transfer_data",
-                    "mp_transfer_data": "mp_transfer_data",
-                    "supermarket": "supermarket_receipts",
-                    "super": "supermarket_receipts",
-                    "supermarket_receipts": "supermarket_receipts",
-                    "carrefour": "carrefour_data",
-                    "carrefour_data": "carrefour_data",
-                }
-                flow = flow_alias.get(flow_raw.lower())
-                if not flow:
-                    raise ValueError("flow debe ser bank_payments/bank_transfers/mp_data/mp_transfer_data/supermarket_receipts/carrefour_data")
-                
-                # Buscar comercio_raw en unmapped_queue si existe
-                comercio_raw = None
-                try:
-                    match_norm = re.sub(r"[^A-Z0-9]+", "", match_value.upper())
-                    raw_q = f"""
-                    SELECT comercio_raw 
-                    FROM {bq_fqn(UNMAPPED_TABLE)}
-                    WHERE flow = @flow
-                      AND comercio_normalizado = @match_norm
-                    LIMIT 1
-                    """
-                    raw_cfg = bigquery.QueryJobConfig(
-                        query_parameters=[
-                            bigquery.ScalarQueryParameter("flow", "STRING", flow),
-                            bigquery.ScalarQueryParameter("match_norm", "STRING", match_norm),
-                        ]
-                    )
-                    raw_result = list(bq_client.query(raw_q, job_config=raw_cfg).result())
-                    if raw_result and raw_result[0].comercio_raw:
-                        comercio_raw = raw_result[0].comercio_raw
-                except Exception as e:
-                    print(f"⚠️ No se pudo obtener comercio_raw de unmapped_queue: {e}")
-                
-                apply_mapping_backfill(
-                    bq_client,
-                    flow=flow,
-                    match_value=match_value,
-                    comercio_depurado=depurado,
-                    categoria=categoria,
-                    subcategoria=subcategoria,
-                    match_type=match_type,
-                    comercio_raw=comercio_raw,
-                )
-                
-                # Mensaje de confirmación
-                raw_info = f"• comercio_raw: {comercio_raw}\n" if comercio_raw else ""
-                ok = (
-                    f"✅ Mapeo guardado en dim_comercio_mapping.\n\n"
-                    f"📋 Detalles:\n"
-                    f"• flow: {flow}\n"
-                    f"• match: {match_value}\n"
-                    f"• match_type: {match_type}\n"
-                    f"• depurado: {depurado}\n"
-                    f"• categoria: {categoria}\n"
-                    f"• subcategoria: {subcategoria}\n"
-                    f"{raw_info}\n"
-                    f"ℹ️ El mapeo se aplicará a nuevos registros en el próximo ETL.\n"
-                    f"Para consultas históricas, usá JOIN con dim_comercio_mapping."
-                )
-                send_telegram_message(chat_id, ok, TELEGRAM_BOT_TOKEN, parse_mode=False)
+                raw_limit = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else "10"
+                limit = int(raw_limit)
+                if not 1 <= limit <= 20:
+                    raise ValueError
+                msg = list_recent_mappings(bq_client, limit=limit)
             except Exception as e:
-                err = (
-                    "❌ No pude registrar el mapeo.\n\n"
-                    "Formato:\n"
-                    "/mapear_comercio flow|match|depurado|categoria|subcategoria|[tipo]\n\n"
-                    "Tipos de matching:\n"
-                    "• contains (default): busca substring\n"
-                    "• exact: coincidencia exacta\n"
-                    "• fuzzy: similitud >= 80%\n"
-                    "• fuzzy:85: similitud >= 85%\n\n"
-                    "Ejemplos:\n"
-                    "/mapear_comercio bank|MERPAGO*SHELL|Shell|nafta|combustible\n"
-                    "/mapear_comercio bank|SHELL|Shell|nafta|combustible|fuzzy:75\n\n"
-                    f"Detalle: {str(e)}"
+                msg = "❌ Indicá una cantidad del 1 al 20. Ejemplo: <code>/mapeos_recientes 10</code>"
+            send_telegram_message(
+                chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML", reply_markup=_mapping_help_keyboard()
+            )
+            return {"statusCode": 200}
+
+        if text == "/opciones_mapeo":
+            try:
+                msg = list_mapping_categories(bq_client)
+            except Exception as exc:
+                print(f"mapping_categories_command_failed: {type(exc).__name__}: {exc}")
+                msg = "❌ No pude obtener las categorías ahora. Probá nuevamente en unos minutos."
+            send_telegram_message(
+                chat_id, msg, TELEGRAM_BOT_TOKEN, parse_mode="HTML", reply_markup=_mapping_help_keyboard()
+            )
+            return {"statusCode": 200}
+
+        mapping_command = next(
+            (command for command in ("/mapear_comercio", "/editar_mapeo") if text == command or text.startswith(f"{command} ")),
+            None,
+        )
+        if mapping_command:
+            payload = text[len(mapping_command):].strip()
+            if not payload:
+                send_telegram_message(
+                    chat_id,
+                    mapping_help_message(),
+                    TELEGRAM_BOT_TOKEN,
+                    parse_mode="HTML",
+                    reply_markup=_mapping_help_keyboard(),
                 )
-                send_telegram_message(chat_id, err, TELEGRAM_BOT_TOKEN, parse_mode=False)
+                return {"statusCode": 200}
+
+            if not _telegram_webhook_is_authorized(event, chat_id):
+                print("mapping_write_unauthorized")
+                return {"statusCode": 200}
+
+            try:
+                mapping = save_mapping_command(bq_client, payload)
+                message = mapping_saved_message(mapping)
+            except ValueError as exc:
+                message = f"❌ <b>No pude registrar el mapeo.</b>\n\n{html.escape(str(exc))}\n\n{mapping_help_message()}"
+            except Exception as exc:
+                print(f"mapping_save_failed: {type(exc).__name__}: {exc}")
+                message = "❌ No pude guardar el mapeo ahora. Probá nuevamente en unos minutos."
+            send_telegram_message(
+                chat_id,
+                message,
+                TELEGRAM_BOT_TOKEN,
+                parse_mode="HTML",
+                reply_markup=_mapping_help_keyboard(),
+            )
             return {"statusCode": 200}
 
         if text.startswith("/detalle"):
