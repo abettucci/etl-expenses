@@ -1,15 +1,46 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
 
-type View = 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts'
+type View = 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
+type Forecast = {
+  mode?: 'live' | 'preview'
+  data_source?: string
+  currency: string
+  as_of: string
+  period: { history_start: string; history_end: string; forecast_month: string; months_observed: number }
+  forecast: { monthly_total: number; recurring_total: number; flexible_total: number; current_month_spent: number; projected_month_end: number; trend_vs_last_month: number | null; confidence: string }
+  monthly_history: Array<{ month: string; amount: number }>
+  categories: Array<{ category: string; expected_monthly: number; share: number }>
+  recurring: Array<{ merchant: string; category: string; expected_monthly: number; typical_charge: number; months_observed: number; observation_rate: number }>
+}
 
 const money = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 })
 const apiBase = import.meta.env.VITE_API_URL || ''
+const previewForecast: Forecast = {
+  mode: 'preview', currency: 'ARS', as_of: '2026-10-10',
+  period: { history_start: '2026-04-01', history_end: '2026-09-30', forecast_month: '2026-10-01', months_observed: 6 },
+  forecast: { monthly_total: 482000, recurring_total: 171500, flexible_total: 310500, current_month_spent: 168900, projected_month_end: 506700, trend_vs_last_month: 0.06, confidence: 'media' },
+  monthly_history: [
+    { month: '2026-04-01', amount: 421000 }, { month: '2026-05-01', amount: 448000 }, { month: '2026-06-01', amount: 465000 },
+    { month: '2026-07-01', amount: 439000 }, { month: '2026-08-01', amount: 508000 }, { month: '2026-09-01', amount: 471000 },
+  ],
+  categories: [
+    { category: 'Comida', expected_monthly: 157000, share: .33 }, { category: 'Servicios', expected_monthly: 119000, share: .25 },
+    { category: 'Transporte', expected_monthly: 73000, share: .15 }, { category: 'Educación', expected_monthly: 58000, share: .12 },
+    { category: 'Otros', expected_monthly: 75000, share: .15 },
+  ],
+  recurring: [
+    { merchant: 'Alquiler', category: 'Vivienda', expected_monthly: 92000, typical_charge: 92000, months_observed: 6, observation_rate: 1 },
+    { merchant: 'UDEMY', category: 'Educación', expected_monthly: 41000, typical_charge: 41000, months_observed: 5, observation_rate: .83 },
+    { merchant: 'Spotify', category: 'Servicios', expected_monthly: 8500, typical_charge: 8500, months_observed: 6, observation_rate: 1 },
+    { merchant: 'Internet', category: 'Servicios', expected_monthly: 30000, typical_charge: 30000, months_observed: 6, observation_rate: 1 },
+  ],
+}
 
 async function api(path: string, method = 'GET', body?: unknown) {
   if (!apiBase) return null
@@ -46,14 +77,15 @@ function App() {
   }
   return <main>
     <div className="aurora" /><div className="grain" />
-    <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>divi</span></button><div className="desktop-meta"><span className="pill live">● grupo activo</span><Avatar name="Betu" /><span>Betu</span></div></header>
+    <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>divi</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span><Avatar name="Betu" /><span>Betu</span></div></header>
     <section className="shell">
-      {view === 'home' && <Home balance={balance} onExpense={() => setOverlay('expense')} onPremium={() => setOverlay('premium')} onGift={() => setView('gifts')} />}
+      {view === 'home' && <Home balance={balance} onExpense={() => setOverlay('expense')} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
       {view === 'groups' && <Groups onExpense={() => setOverlay('expense')} onGift={() => setView('gifts')} />}
       {view === 'activity' && <Activity expenses={expenses} />}
       {view === 'wallet' && <Wallet onPremium={() => setOverlay('premium')} />}
       {view === 'settings' && <Settings notify={notify} />}
       {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onPool={() => setOverlay('pool')} />}
+      {view === 'panorama' && <Panorama />}
     </section>
     <nav className="dock" aria-label="Navegación principal">
       <button className={view === 'home' ? 'active' : ''} onClick={() => setView('home')}><span>⌂</span>Inicio</button>
@@ -71,12 +103,70 @@ function App() {
   </main>
 }
 
-function Home({ balance, onExpense, onPremium, onGift }: { balance: number; onExpense: () => void; onPremium: () => void; onGift: () => void }) { return <>
+function Home({ balance, onExpense, onPanorama, onGift }: { balance: number; onExpense: () => void; onPanorama: () => void; onGift: () => void }) { return <>
   <div className="eyebrow">La cuenta del grupo <span>〰</span></div><h1>Que la plata<br /><em>no corte el plan.</em></h1>
   <section className="hero-panel stagger"><div className="group-line"><div><span className="kicker">GRUPO ACTUAL</span><h2>Militantes del mood</h2></div><span className="members">♧ 4</span></div><div className="hero-actions"><button onClick={onExpense}>＋<span>Agregar gasto</span></button><button className="pink" onClick={onGift}>♔<span>Regalo de Fran</span></button></div><div className="balance"><span>MI BALANCE</span><strong>− {money.format(6175)}</strong><small>Te queda una liquidación pendiente</small></div><div className="settlement"><Avatar name="B" /><p><b>Betu</b> le debe a <b>matias.arbues7</b><strong>{money.format(6175)}</strong></p><button>Resolver →</button></div></section>
-  <section className="feature-card"><span className="action-icon">⌘</span><div><h3>Tu plata, con memoria</h3><p>Gastos compartidos, tickets y hábitos en una sola vista.</p></div><button onClick={onPremium}>Ver mi panorama <b>→</b></button></section>
+  <section className="feature-card"><span className="action-icon">⌘</span><div><h3>Tu plata, con memoria</h3><p>Gastos compartidos, tickets y hábitos en una sola vista.</p></div><button onClick={onPanorama}>Ver mi panorama <b>→</b></button></section>
   <div className="metrics"><div><span>GASTO DEL GRUPO</span><strong>{money.format(balance)}</strong><small>últimos 7 días</small></div><div><span>PRÓXIMO HITO</span><strong>Fran · 21 sep</strong><small>Regalo en marcha</small></div></div>
 </> }
+
+function monthShort(value: string) {
+  return new Intl.DateTimeFormat('es-AR', { month: 'short' }).format(new Date(`${value}T12:00:00`)).replace('.', '')
+}
+
+function Panorama() {
+  const [forecast, setForecast] = useState<Forecast>(previewForecast)
+  const [status, setStatus] = useState<'preview' | 'loading' | 'live'>('preview')
+  const [message, setMessage] = useState('Vista previa · conectá tu historial ETL para ver tus importes.')
+  const maxHistory = Math.max(...forecast.monthly_history.map(item => item.amount), 1)
+  const reload = async () => {
+    if (!apiBase) { setStatus('preview'); setMessage('Vista previa · configurá VITE_API_URL para conectar el panorama.'); return }
+    setStatus('loading')
+    try {
+      const result = await api('/v1/finance/forecast') as Forecast | null
+      if (result?.mode === 'live') {
+        setForecast(result)
+        setStatus('live')
+        setMessage(`Datos ETL agregados · ${result.period.months_observed} meses de historia.`)
+      } else {
+        setStatus('preview')
+        setMessage('Vista previa · el panorama aún no está habilitado para esta cuenta.')
+      }
+    } catch {
+      setStatus('preview')
+      setMessage('Vista previa · no pudimos conectar tu historial en este momento.')
+    }
+  }
+  useEffect(() => { void reload() }, [])
+  const trend = forecast.forecast.trend_vs_last_month
+
+  return <>
+    <div className="panorama-title"><div><span className="kicker">ESPACIO PERSONAL · ETL</span><h1>Tu flujo de plata,<br /><em>antes de que pase.</em></h1><p>Una proyección mensual construida con los gastos que ya registraste.</p></div><button className="sync-button" onClick={() => void reload()} disabled={status === 'loading'}>{status === 'loading' ? 'Sincronizando…' : '↻ Sincronizar panorama'}</button></div>
+    <div className={`forecast-status ${status}`}><span>{status === 'live' ? '●' : '◌'}</span>{message}</div>
+
+    <section className="signal-flow" aria-label="Flujo de señales del ETL">
+      <div className="signal-copy"><span className="kicker">SEÑALES QUE SUMAN</span><h2>Del movimiento<br />a la claridad.</h2><p>El panorama no te pide cargar todo de nuevo: ordena las señales que ya llegan a tu sistema.</p></div>
+      <div className="signal-sources">
+        <article><span>✉</span><div><b>Correo</b><small>Comprobantes y avisos</small></div><i>→</i></article>
+        <article><span>▤</span><div><b>Tickets</b><small>Fotos y PDFs procesados</small></div><i>→</i></article>
+        <article><span>◉</span><div><b>Telegram</b><small>Voz y gastos manuales</small></div><i>→</i></article>
+      </div>
+      <div className="signal-core"><Mark /><span>ETL</span><small>normaliza</small></div>
+      <div className="signal-output"><span className="kicker">OCTUBRE</span><b>Flujo previsto</b><strong>{money.format(forecast.forecast.monthly_total)}</strong><small>{forecast.period.months_observed} meses de señales comparables</small><div><i style={{ width: `${Math.min((forecast.forecast.recurring_total / Math.max(forecast.forecast.monthly_total, 1)) * 100, 100)}%` }} /></div></div>
+    </section>
+
+    <section className="forecast-grid">
+      <article className="forecast-hero"><div><span className="kicker">PROYECCIÓN DEL MES</span><strong>{money.format(forecast.forecast.projected_month_end)}</strong><p>Estimación de cierre usando tu ritmo actual y los últimos {forecast.period.months_observed} meses completos.</p></div><div className="forecast-orbit"><i /><i /><b>◔</b></div><footer><span>Ya registrado <b>{money.format(forecast.forecast.current_month_spent)}</b></span><span className={trend !== null && trend > 0 ? 'up' : ''}>{trend === null ? 'sin comparación' : `${trend > 0 ? '↗' : '↘'} ${Math.abs(trend * 100).toFixed(0)}% vs. mes anterior`}</span></footer></article>
+      <article className="cash-card"><span className="kicker">CAJA MENSUAL ESTIMADA</span><h2>Lo que suele<br />salir de tu cuenta.</h2><div className="cash-line"><span><i className="recurring-dot" />Recurrente</span><b>{money.format(forecast.forecast.recurring_total)}</b></div><div className="cash-line"><span><i className="flexible-dot" />Flexible</span><b>{money.format(forecast.forecast.flexible_total)}</b></div><div className="cash-total"><span>Promedio mensual</span><strong>{money.format(forecast.forecast.monthly_total)}</strong></div></article>
+      <article className="history-card"><header><div><span className="kicker">HISTORIAL</span><h2>Ritmo mensual</h2></div><span>{forecast.forecast.confidence} confianza</span></header><div className="history-bars">{forecast.monthly_history.map(item => <div key={item.month}><i style={{ height: `${Math.max((item.amount / maxHistory) * 100, 8)}%` }} title={money.format(item.amount)} /><span>{monthShort(item.month)}</span></div>)}</div></article>
+    </section>
+
+    <section className="panorama-detail-grid">
+      <article className="category-card"><header><div><span className="kicker">POR CATEGORÍA</span><h2>Tu base mensual</h2></div><span>promedio</span></header>{forecast.categories.map((item, index) => <div className="category-row" key={item.category}><span className={`category-swatch c${index}`} /><b>{item.category}</b><i><em style={{ width: `${Math.round(item.share * 100)}%` }} /></i><strong>{money.format(item.expected_monthly)}</strong></div>)}</article>
+      <article className="recurring-card"><header><div><span className="kicker">RECURRENTES DETECTADOS</span><h2>Pagos que vuelven</h2></div><span>◌ {forecast.recurring.length}</span></header>{forecast.recurring.length ? forecast.recurring.map(item => <div className="recurring-row" key={`${item.merchant}-${item.category}`}><span>↻</span><div><b>{item.merchant}</b><small>{item.category} · {item.months_observed}/{forecast.period.months_observed} meses</small></div><strong>{money.format(item.expected_monthly)}</strong></div>) : <p className="empty-state">Con más meses de historia vamos a poder identificar tus gastos recurrentes.</p>}<footer>Los recurrentes se infieren por su repetición. Podés revisarlos antes de tomarlos como compromiso fijo.</footer></article>
+    </section>
+  </>
+}
 
 function Groups({ onExpense, onGift }: { onExpense: () => void; onGift: () => void }) { return <><div className="page-title"><div><span className="kicker">TU GENTE</span><h1>Mis grupos</h1></div><button className="outline">＋ Crear grupo</button></div><section className="group-grid"><button className="group-card selected" onClick={onExpense}><span className="orb cyan">♧</span><div><h2>Militantes del mood</h2><p>4 personas · ARS</p></div><strong>− $ 6.175</strong><i>→</i></button><button className="group-card" onClick={onGift}><span className="orb pink">♔</span><div><h2>Cumple de Fran</h2><p>Regalo compartido · 8 días</p></div><strong className="mint">$ 32.000</strong><i>→</i></button></section><section className="insight"><span>✦</span><div><h3>El cumpleaños se acerca</h3><p>Fran ya cargó 3 ideas. Coordiná el regalo sin spoilers ni duplicados.</p></div><button onClick={onGift}>Ver wishlist →</button></section></> }
 

@@ -9,3 +9,4 @@ pandas
 pyjwt
 google-cloud-pubsub
 google-cloud-bigquery
+boto3

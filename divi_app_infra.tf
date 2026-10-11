@@ -63,8 +63,21 @@ variable "divi_mp_oauth_redirect_uri" {
   sensitive = true
 }
 
+# The ETL warehouse is personal financial data. Forecast access remains off
+# until a Cognito subject is explicitly linked to that data source.
+variable "divi_finance_forecast_enabled" {
+  type    = bool
+  default = false
+}
+
+variable "divi_finance_forecast_owner_sub" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 locals {
-  divi_google_enabled      = var.divi_google_client_id != "" && var.divi_google_client_secret != ""
+  divi_google_enabled     = var.divi_google_client_id != "" && var.divi_google_client_secret != ""
   divi_identity_providers = local.divi_google_enabled ? ["COGNITO", "Google"] : ["COGNITO"]
 }
 
@@ -227,10 +240,16 @@ resource "aws_lambda_function" "divi_app_api" {
 
   environment {
     variables = {
-      APP_TABLE           = aws_dynamodb_table.divi_application.name
-      FRONTEND_ORIGIN     = var.divi_frontend_origin
-      MP_SECRET_ARN       = aws_secretsmanager_secret.divi_mercadopago.arn
-      MP_WEBHOOK_BASE_URL = aws_apigatewayv2_api.divi.api_endpoint
+      APP_TABLE                      = aws_dynamodb_table.divi_application.name
+      FRONTEND_ORIGIN                = var.divi_frontend_origin
+      MP_SECRET_ARN                  = aws_secretsmanager_secret.divi_mercadopago.arn
+      MP_WEBHOOK_BASE_URL            = aws_apigatewayv2_api.divi.api_endpoint
+      FINANCE_FORECAST_ENABLED       = tostring(var.divi_finance_forecast_enabled)
+      FINANCE_FORECAST_OWNER_SUB     = var.divi_finance_forecast_owner_sub
+      FINANCE_FORECAST_GCP_SECRET_ID = "gcp_sa_api_credentials"
+      GCP_PROJECT_ID                 = var.GCP_PROJECT_ID
+      BQ_DATASET_PROD                = "PRD"
+      BQ_LOCATION                    = "US"
     }
   }
 

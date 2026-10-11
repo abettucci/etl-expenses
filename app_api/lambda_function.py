@@ -17,6 +17,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import boto3
 import requests
@@ -24,10 +25,19 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from domain import simplify_debts, split_expense
+from forecast import build_monthly_forecast, monthly_expenses_query
 
 TABLE_NAME = os.environ["APP_TABLE"]
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
 MP_WEBHOOK_BASE_URL = os.environ.get("MP_WEBHOOK_BASE_URL", "")
+FORECAST_ENABLED = os.environ.get("FINANCE_FORECAST_ENABLED", "false").lower() == "true"
+FORECAST_OWNER_SUB = os.environ.get("FINANCE_FORECAST_OWNER_SUB", "").strip()
+FORECAST_GCP_SECRET_ID = os.environ.get("FINANCE_FORECAST_GCP_SECRET_ID", "gcp_sa_api_credentials").strip()
+FORECAST_GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "").strip()
+FORECAST_BQ_DATASET = os.environ.get("BQ_DATASET_PROD", "PRD").strip()
+FORECAST_BQ_LOCATION = os.environ.get("BQ_LOCATION", "US").strip()
+FORECAST_GASTOS_VIEW = os.environ.get("FINANCE_FORECAST_GASTOS_VIEW", "gastos_totales").strip()
+FORECAST_MAPPING_TABLE = os.environ.get("FINANCE_FORECAST_MAPPING_TABLE", "dim_comercio_mapping").strip()
 
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME)
@@ -125,6 +135,114 @@ def ensure_profile(identity: dict[str, str]) -> dict[str, Any]:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
     return get_item(f"USER#{identity['user_id']}", "PROFILE")
+
+
+def _forecast_lookback_months() -> int:
+    try:
+        months = int(os.environ.get("FINANCE_FORECAST_LOOKBACK_MONTHS", "6"))
+    except ValueError as exc:
+        raise ApiError(503, "La configuración del panorama financiero es inválida") from exc
+    if not 3 <= months <= 12:
+        raise ApiError(503, "La configuración del panorama financiero es inválida")
+    return months
+
+
+def _forecast_bigquery_client():
+    """Create a read-only reporting client only after the endpoint is requested."""
+    if not FORECAST_GCP_SECRET_ID or not FORECAST_GCP_PROJECT_ID:
+        raise ApiError(503, "El panorama financiero todavía no está conectado")
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+
+        secret = boto3.client("secretsmanager").get_secret_value(
+            SecretId=FORECAST_GCP_SECRET_ID
+        )["SecretString"]
+        credentials = service_account.Credentials.from_service_account_info(
+            json.loads(secret),
+            scopes=["https://www.googleapis.com/auth/bigquery"],
+        )
+        return bigquery.Client(
+            project=FORECAST_GCP_PROJECT_ID,
+            credentials=credentials,
+            location=FORECAST_BQ_LOCATION,
+        ), bigquery
+    except ApiError:
+        raise
+    except Exception as exc:
+        print(f"forecast_bigquery_client_failed: {type(exc).__name__}")
+        raise ApiError(503, "El panorama financiero todavía no está disponible") from exc
+
+
+def finance_forecast(identity: dict[str, str]) -> dict[str, Any]:
+    """Return an aggregate cash-flow forecast for the explicitly linked owner.
+
+    Divi has no general ETL-to-Cognito identity mapping yet. Until it does,
+    serving warehouse history to arbitrary authenticated accounts would be an
+    access-control bug. The route is therefore opt-in and constrained to one
+    configured Cognito subject.
+    """
+    if not FORECAST_ENABLED or not FORECAST_OWNER_SUB:
+        raise ApiError(503, "El panorama financiero todavía no está conectado")
+    if not hmac.compare_digest(identity["user_id"], FORECAST_OWNER_SUB):
+        raise ApiError(403, "Tu cuenta todavía no tiene una fuente financiera vinculada")
+
+    client, bigquery = _forecast_bigquery_client()
+    lookback_months = _forecast_lookback_months()
+    today = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+    history_start = date(today.year, today.month, 1)
+    for _ in range(lookback_months):
+        history_start = date(
+            history_start.year - (history_start.month == 1),
+            12 if history_start.month == 1 else history_start.month - 1,
+            1,
+        )
+
+    try:
+        gastos_schema = {
+            field.name.lower()
+            for field in client.get_table(
+                f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_GASTOS_VIEW}"
+            ).schema
+        }
+        required_columns = {"fecha", "comercio", "categoria", "monto_total", "divisa", "extraido_de"}
+        if not required_columns.issubset(gastos_schema):
+            raise ValueError("gastos view lacks forecast columns")
+        try:
+            mapping_schema = {
+                field.name.lower()
+                for field in client.get_table(
+                    f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_MAPPING_TABLE}"
+                ).schema
+            }
+        except Exception as exc:
+            print(f"forecast_mapping_schema_unavailable: {type(exc).__name__}")
+            mapping_schema = set()
+        use_mapping = {"flow", "comercio_raw", "comercio_depurado", "categoria", "activo"}.issubset(mapping_schema)
+        query = monthly_expenses_query(
+            project_id=FORECAST_GCP_PROJECT_ID,
+            dataset=FORECAST_BQ_DATASET,
+            gastos_view=FORECAST_GASTOS_VIEW,
+            mapping_table=FORECAST_MAPPING_TABLE,
+            has_monto_ars="monto_ars" in gastos_schema,
+            use_mapping=use_mapping,
+        )
+        config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", history_start),
+            bigquery.ScalarQueryParameter("end_date", "DATE", today),
+        ], use_query_cache=True)
+        rows = [dict(row.items()) for row in client.query(query, job_config=config).result()]
+    except ApiError:
+        raise
+    except Exception as exc:
+        print(f"forecast_query_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos calcular el panorama financiero ahora") from exc
+
+    result = build_monthly_forecast(rows, as_of=today, lookback_months=lookback_months)
+    result["mode"] = "live"
+    result["data_source"] = "etl_aggregated_read_only"
+    put_audit(identity["user_id"], "finance.forecast.read", result["period"]["forecast_month"])
+    return result
 
 
 def list_groups(user_id: str) -> list[dict[str, Any]]:
@@ -471,6 +589,8 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         if method == "GET": return response(200, ensure_profile(identity))
         if method == "PATCH":
             profile = ensure_profile(identity); profile["display_name"] = str(payload.get("display_name", profile["display_name"]))[:80]; table.put_item(Item=profile); return response(200, profile)
+    if path == "/v1/finance/forecast" and method == "GET":
+        return response(200, finance_forecast(identity))
     if path == "/v1/groups":
         if method == "GET": return response(200, list_groups(identity["user_id"]))
         if method == "POST": return response(201, create_group(identity["user_id"], payload))
