@@ -219,6 +219,30 @@ class VoiceExpenseFlowTest(unittest.TestCase):
                 "bank|UDEMY|UDEMY|Educación|Cursos|anything-goes"
             )
 
+    def test_mapping_write_migrates_schema_before_merge(self):
+        class RecordingBigQuery:
+            def __init__(self):
+                self.queries = []
+
+            def query(self, query, job_config=None):
+                self.queries.append((query, job_config))
+                return types.SimpleNamespace(result=lambda: [])
+
+        client = RecordingBigQuery()
+        self.module.apply_mapping_backfill(
+            client,
+            flow="mp_data",
+            match_value="OPESSA NORDELTA",
+            comercio_depurado="YPF",
+            categoria="Auto",
+            subcategoria="Nafta",
+        )
+
+        self.assertIn("ALTER TABLE", client.queries[0][0])
+        self.assertIn("ADD COLUMN IF NOT EXISTS mapping_source STRING", client.queries[0][0])
+        self.assertIn("ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP", client.queries[0][0])
+        self.assertIn("MERGE", client.queries[1][0])
+
     def test_mapping_review_confirmation_keeps_subcategory_optional(self):
         candidate = {
             "candidate_id": "candidate123",

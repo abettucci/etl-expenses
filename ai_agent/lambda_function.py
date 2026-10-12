@@ -4348,6 +4348,26 @@ def list_mapping_categories(bq_client, limit: int = 40) -> str:
     ])
     return "\n".join(lines)
 
+
+def ensure_mapping_table_schema(bq_client) -> None:
+    """Add review metadata columns before a mapping write.
+
+    The ingestion Lambda also performs this migration, but manual Telegram
+    mappings must not depend on that separate Lambda having run after a deploy.
+    ``IF NOT EXISTS`` keeps the DDL safe for retries and concurrent invocations.
+    """
+    migration_query = f"""
+    ALTER TABLE {bq_fqn(MAPPING_TABLE)}
+      ADD COLUMN IF NOT EXISTS comercio_raw STRING,
+      ADD COLUMN IF NOT EXISTS mapping_source STRING,
+      ADD COLUMN IF NOT EXISTS confidence FLOAT64,
+      ADD COLUMN IF NOT EXISTS review_status STRING,
+      ADD COLUMN IF NOT EXISTS candidate_id STRING,
+      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP
+    """
+    bq_client.query(migration_query).result()
+
+
 def apply_mapping_backfill(
     bq_client, flow: str, match_value: str, comercio_depurado: str, categoria: str,
     subcategoria: str | None = None, match_type: str = "contains", comercio_raw: str = None,
@@ -4390,6 +4410,10 @@ def apply_mapping_backfill(
     # Si no se proporciona comercio_raw, usar match_value original
     if comercio_raw is None:
         comercio_raw = match_value
+
+    # The bot owns its write precondition. Do not rely on load_data being
+    # invoked first after a deployment to migrate dim_comercio_mapping.
+    ensure_mapping_table_schema(bq_client)
 
     # 1. Guardar/actualizar regla en dim_comercio_mapping
     merge_q = f"""
