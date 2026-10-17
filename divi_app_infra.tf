@@ -340,6 +340,16 @@ resource "aws_apigatewayv2_route" "divi_authenticated" {
   authorizer_id      = aws_apigatewayv2_authorizer.divi.id
 }
 
+# The JWT catch-all above would otherwise authorize browser preflight
+# requests. HTTP API then applies cors_configuration to this unauthenticated
+# route and returns the negotiated CORS headers before invoking the Lambda.
+resource "aws_apigatewayv2_route" "divi_preflight" {
+  api_id             = aws_apigatewayv2_api.divi.id
+  route_key          = "OPTIONS /v1/{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.divi.id}"
+  authorization_type = "NONE"
+}
+
 resource "aws_apigatewayv2_route" "divi_payment_webhook" {
   api_id             = aws_apigatewayv2_api.divi.id
   route_key          = "POST /v1/webhooks/mercadopago/payments"

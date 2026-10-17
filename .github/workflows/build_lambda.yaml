@@ -369,6 +369,7 @@ jobs:
               fi
             }
             import_divi_route "ANY /v1/{proxy+}" "divi_authenticated"
+            import_divi_route "OPTIONS /v1/{proxy+}" "divi_preflight"
             import_divi_route "POST /v1/webhooks/mercadopago/payments" "divi_payment_webhook"
             import_divi_route "POST /v1/webhooks/mercadopago/subscriptions" "divi_subscription_webhook"
             import_divi_route "GET /v1/mercadopago/oauth/callback" "divi_oauth_callback"
