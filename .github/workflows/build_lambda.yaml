@@ -25,6 +25,8 @@ env:
   TF_VAR_TELEGRAM_ALLOWED_CHAT_ID: ${{ secrets.TELEGRAM_ALLOWED_CHAT_ID }}
   TF_VAR_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
   TF_VAR_GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+  TF_VAR_divi_group_bot_token: ${{ secrets.DIVI_GROUP_BOT_TOKEN }}
+  TF_VAR_divi_group_bot_webhook_secret: ${{ secrets.DIVI_GROUP_BOT_WEBHOOK_SECRET }}
 
 jobs:
   build-lambda-images:
@@ -289,6 +291,7 @@ jobs:
 
           terraform import aws_dynamodb_table.divi_application divi-application || true
           terraform import aws_secretsmanager_secret.divi_mercadopago divi/mercadopago || true
+          terraform import aws_secretsmanager_secret.divi_group_bot divi/group-bot || true
           terraform import aws_s3_bucket.divi_frontend "$TF_VAR_divi_frontend_bucket_name" || true
           terraform import aws_s3_bucket_public_access_block.divi_frontend "$TF_VAR_divi_frontend_bucket_name" || true
           terraform import aws_s3_bucket_policy.divi_frontend "$TF_VAR_divi_frontend_bucket_name" || true
@@ -362,6 +365,7 @@ jobs:
             import_divi_route "POST /v1/webhooks/mercadopago/payments" "divi_payment_webhook"
             import_divi_route "POST /v1/webhooks/mercadopago/subscriptions" "divi_subscription_webhook"
             import_divi_route "GET /v1/mercadopago/oauth/callback" "divi_oauth_callback"
+            import_divi_route "POST /v1/group-bot/telegram" "divi_group_bot_telegram"
           fi
 
           # terraform import aws_iam_role_policy.secrets_token_access lambda_exec:secrets_token_access || true
