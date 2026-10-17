@@ -8,9 +8,22 @@ on:
 env:
   TF_VAR_AWS_REGION: ${{ secrets.AWS_REGION }}
   TF_VAR_AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-  # S3 bucket names are globally unique. Keep this deterministic so Terraform
-  # does not prompt for a required variable during non-interactive CI runs.
+  # Existing empty S3/CloudFront resources remain managed until an explicit
+  # decommission. The actual Divi frontend is served only from Vercel.
   TF_VAR_divi_frontend_bucket_name: divi-expenses-frontend-${{ secrets.AWS_ACCOUNT_ID }}
+  # Divi is hosted only on Vercel. This origin is used by Cognito callbacks
+  # and the API's restrictive CORS policy.
+  TF_VAR_divi_frontend_origin: ${{ secrets.DIVI_FRONTEND_ORIGIN }}
+  # Cognito hosted-UI prefixes are globally unique; don't hard-code one.
+  TF_VAR_divi_cognito_domain_prefix: ${{ secrets.DIVI_COGNITO_DOMAIN_PREFIX }}
+  TF_VAR_divi_google_client_id: ${{ secrets.DIVI_GOOGLE_CLIENT_ID }}
+  TF_VAR_divi_google_client_secret: ${{ secrets.DIVI_GOOGLE_CLIENT_SECRET }}
+  TF_VAR_divi_mp_access_token: ${{ secrets.DIVI_MP_ACCESS_TOKEN }}
+  TF_VAR_divi_mp_webhook_secret: ${{ secrets.DIVI_MP_WEBHOOK_SECRET }}
+  TF_VAR_divi_mp_premium_plan_id: ${{ secrets.DIVI_MP_PREMIUM_PLAN_ID }}
+  TF_VAR_divi_mp_oauth_client_id: ${{ secrets.DIVI_MP_OAUTH_CLIENT_ID }}
+  TF_VAR_divi_mp_oauth_client_secret: ${{ secrets.DIVI_MP_OAUTH_CLIENT_SECRET }}
+  TF_VAR_divi_mp_oauth_redirect_uri: ${{ secrets.DIVI_MP_OAUTH_REDIRECT_URI }}
   TF_VAR_ECR_REPO: ${{ secrets.ECR_REPO }}
   ECR_REPO: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPO }}"
   TF_VAR_EMAIL: ${{ secrets.EMAIL }}
@@ -127,6 +140,16 @@ jobs:
           aws-region: ${{ env.TF_VAR_AWS_REGION }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Validate Divi public configuration
+        run: |
+          set -euo pipefail
+          test -n "$TF_VAR_divi_frontend_origin"
+          test -n "$TF_VAR_divi_cognito_domain_prefix"
+          case "$TF_VAR_divi_frontend_origin" in
+            https://*) ;;
+            *) echo "DIVI_FRONTEND_ORIGIN debe ser un origen HTTPS de Vercel." >&2; exit 1 ;;
+          esac
 
       - name: Bootstrap Terraform state backend
         run: |
@@ -292,16 +315,13 @@ jobs:
           terraform import aws_dynamodb_table.divi_application divi-application || true
           terraform import aws_secretsmanager_secret.divi_mercadopago divi/mercadopago || true
           terraform import aws_secretsmanager_secret.divi_group_bot divi/group-bot || true
-          terraform import aws_s3_bucket.divi_frontend "$TF_VAR_divi_frontend_bucket_name" || true
-          terraform import aws_s3_bucket_public_access_block.divi_frontend "$TF_VAR_divi_frontend_bucket_name" || true
-          terraform import aws_s3_bucket_policy.divi_frontend "$TF_VAR_divi_frontend_bucket_name" || true
           terraform import aws_lambda_function.divi_app_api divi_app_api || true
           terraform import aws_lambda_permission.divi_api divi_app_api/AllowDiviHttpApi || true
 
           # The domain uniquely identifies its user pool. Listing by name is
           # ambiguous because Cognito permits multiple pools named divi-users.
           DIVI_POOL_ID=$(aws cognito-idp describe-user-pool-domain \
-            --domain divi-expenses-app \
+            --domain "$TF_VAR_divi_cognito_domain_prefix" \
             --query "DomainDescription.UserPoolId" --output text 2>/dev/null || true)
           if [ -n "$DIVI_POOL_ID" ] && [ "$DIVI_POOL_ID" != "None" ]; then
             CURRENT_DIVI_POOL_ID=$(terraform state show aws_cognito_user_pool.divi 2>/dev/null \
@@ -320,20 +340,7 @@ jobs:
             fi
             # aws provider v4 imports Cognito domains using the domain prefix,
             # not the user-pool/domain composite identifier.
-            import_if_unmanaged aws_cognito_user_pool_domain.divi divi-expenses-app
-          fi
-
-          DIVI_OAC_ID=$(aws cloudfront list-origin-access-controls \
-            --query "OriginAccessControlList.Items[?Name=='divi-frontend-oac'].Id | [0]" \
-            --output text 2>/dev/null || true)
-          if [ -n "$DIVI_OAC_ID" ] && [ "$DIVI_OAC_ID" != "None" ]; then
-            terraform import aws_cloudfront_origin_access_control.divi "$DIVI_OAC_ID" || true
-            DIVI_CF_ID=$(aws cloudfront list-distributions --output json | jq -r \
-              --arg oac "$DIVI_OAC_ID" \
-              '[.DistributionList.Items[]? | select(any(.Origins.Items[]?; .OriginAccessControlId == $oac)) | .Id][0] // empty')
-            if [ -n "$DIVI_CF_ID" ]; then
-              terraform import aws_cloudfront_distribution.divi "$DIVI_CF_ID" || true
-            fi
+            import_if_unmanaged aws_cognito_user_pool_domain.divi "$TF_VAR_divi_cognito_domain_prefix"
           fi
 
           DIVI_API_ID=$(aws apigatewayv2 get-apis \

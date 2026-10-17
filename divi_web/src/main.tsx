@@ -25,6 +25,29 @@ type Forecast = {
 
 const money = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 })
 const apiBase = import.meta.env.VITE_API_URL || ''
+const cognitoDomain = (import.meta.env.VITE_COGNITO_DOMAIN || '').replace(/\/$/, '')
+const cognitoClientId = import.meta.env.VITE_COGNITO_CLIENT_ID || ''
+const authRedirectUri = `${window.location.origin}/auth/callback`
+
+function base64Url(bytes: Uint8Array) {
+  let binary = ''
+  bytes.forEach(byte => { binary += String.fromCharCode(byte) })
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function startCognitoLogin() {
+  if (!cognitoDomain || !cognitoClientId) throw new Error('Falta configurar Cognito en Vercel.')
+  const random = new Uint8Array(48)
+  crypto.getRandomValues(random)
+  const verifier = base64Url(random)
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+  sessionStorage.setItem('divi_pkce_verifier', verifier)
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: cognitoClientId, redirect_uri: authRedirectUri,
+    code_challenge_method: 'S256', code_challenge: base64Url(new Uint8Array(digest)),
+  })
+  window.location.assign(`${cognitoDomain}/login?${query}`)
+}
 const previewForecast: Forecast = {
   mode: 'preview', currency: 'ARS', as_of: '2026-10-10',
   period: { history_start: '2026-04-01', history_end: '2026-09-30', forecast_month: '2026-10-01', months_observed: 6 },
@@ -75,8 +98,19 @@ function App() {
   const [activeGroupId, setActiveGroupId] = useState('demo')
   const [groupRefresh, setGroupRefresh] = useState(0)
   const [chat, setChat] = useState<string[]>(['Hola, soy Divia. Puedo ayudarte a ordenar gastos, ver tu balance o armar el regalo de Fran ✦'])
+  const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem('divi_access_token')))
+  const [authMessage, setAuthMessage] = useState('')
   const balance = useMemo(() => expenses.reduce((sum, expense) => sum + expense.amount, 0), [expenses])
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
+  const authenticate = async () => {
+    try { await startCognitoLogin() } catch (error) { setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') }
+  }
+  const signOut = () => {
+    localStorage.removeItem('divi_access_token')
+    sessionStorage.removeItem('divi_pkce_verifier')
+    setAuthenticated(false)
+    setAuthMessage('Sesión cerrada.')
+  }
   const openExpense = (groupId = activeGroupId) => {
     if (!apiBase || !groupId || groupId === 'demo') { notify('Primero conectá la API, iniciá sesión y creá o elegí un grupo.'); return }
     setActiveGroupId(groupId); setOverlay('expense')
@@ -86,6 +120,30 @@ function App() {
     try { await api(`/v1/groups/demo/events/fran-2026/wishlist/${gift.id}/reserve`, 'POST') } catch (e) { notify(e instanceof Error ? e.message : 'No disponible') ; return }
     setGifts(items => items.map(item => item.id === gift.id ? { ...item, available: false } : item)); notify('Regalo reservado para este grupo. Los demás grupos ya no lo verán disponible.')
   }
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('code')
+    if (!code) return
+    const verifier = sessionStorage.getItem('divi_pkce_verifier')
+    if (!cognitoDomain || !cognitoClientId || !verifier) {
+      setAuthMessage('No pudimos completar la sesión. Volvé a intentarlo.')
+      return
+    }
+    const payload = new URLSearchParams({ grant_type: 'authorization_code', client_id: cognitoClientId, code, redirect_uri: authRedirectUri, code_verifier: verifier })
+    void fetch(`${cognitoDomain}/oauth2/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: payload })
+      .then(async response => {
+        if (!response.ok) throw new Error('Cognito rechazó el inicio de sesión.')
+        return response.json() as Promise<{ id_token?: string }>
+      })
+      .then(tokens => {
+        if (!tokens.id_token) throw new Error('Cognito no devolvió un token de identidad.')
+        localStorage.setItem('divi_access_token', tokens.id_token)
+        sessionStorage.removeItem('divi_pkce_verifier')
+        window.history.replaceState({}, '', '/')
+        setAuthenticated(true)
+        setAuthMessage('Sesión iniciada.')
+      })
+      .catch(error => setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.'))
+  }, [])
   useEffect(() => {
     if (!apiBase) return
     void api('/v1/groups').then(result => {
@@ -108,7 +166,7 @@ function App() {
   }, [])
   return <main>
     <div className="aurora" /><div className="grain" />
-    <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>divi</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span><Avatar name="Betu" /><span>Betu</span></div></header>
+    <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>divi</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate()}>Ingresar</button>}</div></header>
     <section className="shell">
       {view === 'home' && <Home balance={balance} onExpense={() => openExpense()} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
       {view === 'groups' && <Groups groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onExpense={openExpense} onGift={() => setView('gifts')} />}
@@ -126,7 +184,7 @@ function App() {
       <button className={view === 'wallet' ? 'active' : ''} onClick={() => setView('wallet')}><span>▣</span>Billetera</button>
     </nav>
     <button className="divia" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente Divia">✧</button>
-    {notice && <div className="toast" role="status">✓ {notice}</div>}
+    {(notice || authMessage) && <div className="toast" role="status">✓ {notice || authMessage}</div>}
     {overlay === 'expense' && <ExpenseModal groupId={activeGroupId} close={() => setOverlay(null)} submit={expense => { setExpenses([expense, ...expenses]); setOverlay(null); notify('Gasto agregado y dividido en el grupo.') }} onSaved={() => setGroupRefresh(value => value + 1)} />}
     {overlay === 'assistant' && <Assistant chat={chat} setChat={setChat} close={() => setOverlay(null)} />}
     {overlay === 'premium' && <PremiumModal close={() => setOverlay(null)} notify={notify} />}

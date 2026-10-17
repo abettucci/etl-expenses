@@ -8,6 +8,11 @@ variable "divi_frontend_bucket_name" {
 variable "divi_frontend_origin" {
   type    = string
   default = "http://localhost:5173"
+
+  validation {
+    condition     = can(regex("^https://[^/]+$", var.divi_frontend_origin)) || var.divi_frontend_origin == "http://localhost:5173"
+    error_message = "divi_frontend_origin debe ser el origen HTTPS exacto de Vercel, sin barra final."
+  }
 }
 
 variable "divi_google_client_id" {
@@ -25,6 +30,11 @@ variable "divi_google_client_secret" {
 variable "divi_cognito_domain_prefix" {
   type    = string
   default = "divi-expenses-app"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]{1,63}$", var.divi_cognito_domain_prefix))
+    error_message = "divi_cognito_domain_prefix sólo admite minúsculas, números y guiones (1-63 caracteres)."
+  }
 }
 
 variable "divi_mp_access_token" {
