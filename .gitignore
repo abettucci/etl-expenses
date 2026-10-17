@@ -39,3 +39,7 @@ scripts/detectar_comercios_sin_mapear.py
 scripts/cargar_mapeos_inicial.py
 scripts/leer_resumen_tarjeta.py
 scripts/backfill_comercio_mapping.py
+
+# Terraform provider cache is local; keep the lock file versioned.
+.terraform/
+*splitbot-export*.json

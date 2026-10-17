@@ -8,6 +8,11 @@ variable "divi_frontend_bucket_name" {
 variable "divi_frontend_origin" {
   type    = string
   default = "http://localhost:5173"
+
+  validation {
+    condition     = can(regex("^https://[^/]+$", var.divi_frontend_origin)) || var.divi_frontend_origin == "http://localhost:5173"
+    error_message = "divi_frontend_origin debe ser el origen HTTPS exacto de Vercel, sin barra final."
+  }
 }
 
 variable "divi_google_client_id" {
@@ -25,6 +30,11 @@ variable "divi_google_client_secret" {
 variable "divi_cognito_domain_prefix" {
   type    = string
   default = "divi-expenses-app"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]{1,63}$", var.divi_cognito_domain_prefix))
+    error_message = "divi_cognito_domain_prefix sólo admite minúsculas, números y guiones (1-63 caracteres)."
+  }
 }
 
 variable "divi_mp_access_token" {
@@ -71,6 +81,20 @@ variable "divi_finance_forecast_enabled" {
 }
 
 variable "divi_finance_forecast_owner_sub" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+# Separate token from the personal ETL bot. The group bot is intentionally a
+# distinct webhook so audio/photo ingestion keeps its current trust boundary.
+variable "divi_group_bot_token" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "divi_group_bot_webhook_secret" {
   type      = string
   default   = ""
   sensitive = true
@@ -200,6 +224,19 @@ resource "aws_secretsmanager_secret_version" "divi_mercadopago" {
   })
 }
 
+resource "aws_secretsmanager_secret" "divi_group_bot" {
+  name        = "divi/group-bot"
+  description = "Telegram token and webhook secret for the isolated Divi Groups bot"
+}
+
+resource "aws_secretsmanager_secret_version" "divi_group_bot" {
+  secret_id = aws_secretsmanager_secret.divi_group_bot.id
+  secret_string = jsonencode({
+    telegram_bot_token      = var.divi_group_bot_token
+    telegram_webhook_secret = var.divi_group_bot_webhook_secret
+  })
+}
+
 resource "aws_iam_role_policy" "divi_application" {
   name = "divi-application-store-and-payments"
   role = aws_iam_role.lambda_exec.id
@@ -221,9 +258,12 @@ resource "aws_iam_role_policy" "divi_application" {
         Resource = aws_dynamodb_table.divi_application.arn
       },
       {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = aws_secretsmanager_secret.divi_mercadopago.arn
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          aws_secretsmanager_secret.divi_mercadopago.arn,
+          aws_secretsmanager_secret.divi_group_bot.arn,
+        ]
       }
     ]
   })
@@ -243,6 +283,7 @@ resource "aws_lambda_function" "divi_app_api" {
       APP_TABLE                      = aws_dynamodb_table.divi_application.name
       FRONTEND_ORIGIN                = var.divi_frontend_origin
       MP_SECRET_ARN                  = aws_secretsmanager_secret.divi_mercadopago.arn
+      DIVI_GROUP_BOT_SECRET_ARN      = aws_secretsmanager_secret.divi_group_bot.arn
       MP_WEBHOOK_BASE_URL            = aws_apigatewayv2_api.divi.api_endpoint
       FINANCE_FORECAST_ENABLED       = tostring(var.divi_finance_forecast_enabled)
       FINANCE_FORECAST_OWNER_SUB     = var.divi_finance_forecast_owner_sub
@@ -255,7 +296,8 @@ resource "aws_lambda_function" "divi_app_api" {
 
   depends_on = [
     aws_iam_role_policy.divi_application,
-    aws_secretsmanager_secret_version.divi_mercadopago
+    aws_secretsmanager_secret_version.divi_mercadopago,
+    aws_secretsmanager_secret_version.divi_group_bot
   ]
 }
 
@@ -315,6 +357,15 @@ resource "aws_apigatewayv2_route" "divi_subscription_webhook" {
 resource "aws_apigatewayv2_route" "divi_oauth_callback" {
   api_id             = aws_apigatewayv2_api.divi.id
   route_key          = "GET /v1/mercadopago/oauth/callback"
+  target             = "integrations/${aws_apigatewayv2_integration.divi.id}"
+  authorization_type = "NONE"
+}
+
+# Exact route takes precedence over the authenticated /v1/{proxy+} route.
+# Telegram's secret header is verified inside the Lambda handler.
+resource "aws_apigatewayv2_route" "divi_group_bot_telegram" {
+  api_id             = aws_apigatewayv2_api.divi.id
+  route_key          = "POST /v1/group-bot/telegram"
   target             = "integrations/${aws_apigatewayv2_integration.divi.id}"
   authorization_type = "NONE"
 }

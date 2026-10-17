@@ -7,6 +7,10 @@ if ('serviceWorker' in navigator) window.addEventListener('load', () => navigato
 type View = 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
+type GroupSummary = { group_id: string; name: string; currency: string; role?: string; legacy_source_key?: string }
+type GroupMember = { user_id: string; display_name: string; role: string; active: boolean; claim_state: string }
+type GroupExpenseRecord = { expense_id: string; description: string; amount: string; currency: string; category?: string; created_at: string; deleted_at?: string; allocations?: Record<string, string> }
+type GroupSettlement = { from_user_id: string; to_user_id: string; amount: string }
 type Forecast = {
   mode?: 'live' | 'preview'
   data_source?: string
@@ -21,6 +25,29 @@ type Forecast = {
 
 const money = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 })
 const apiBase = import.meta.env.VITE_API_URL || ''
+const cognitoDomain = (import.meta.env.VITE_COGNITO_DOMAIN || '').replace(/\/$/, '')
+const cognitoClientId = import.meta.env.VITE_COGNITO_CLIENT_ID || ''
+const authRedirectUri = `${window.location.origin}/auth/callback`
+
+function base64Url(bytes: Uint8Array) {
+  let binary = ''
+  bytes.forEach(byte => { binary += String.fromCharCode(byte) })
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function startCognitoLogin() {
+  if (!cognitoDomain || !cognitoClientId) throw new Error('Falta configurar Cognito en Vercel.')
+  const random = new Uint8Array(48)
+  crypto.getRandomValues(random)
+  const verifier = base64Url(random)
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+  sessionStorage.setItem('divi_pkce_verifier', verifier)
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: cognitoClientId, redirect_uri: authRedirectUri,
+    code_challenge_method: 'S256', code_challenge: base64Url(new Uint8Array(digest)),
+  })
+  window.location.assign(`${cognitoDomain}/login?${query}`)
+}
 const previewForecast: Forecast = {
   mode: 'preview', currency: 'ARS', as_of: '2026-10-10',
   period: { history_start: '2026-04-01', history_end: '2026-09-30', forecast_month: '2026-10-01', months_observed: 6 },
@@ -67,20 +94,82 @@ function App() {
     { title: 'Birras en la terraza', category: 'Comida', amount: 14900, payer: 'Matías', date: '14 sep' },
     { title: 'Uber de vuelta', category: 'Transporte', amount: 9800, payer: 'Betu', date: '14 sep' },
   ])
+  const [groups, setGroups] = useState<GroupSummary[]>([])
+  const [activeGroupId, setActiveGroupId] = useState('demo')
+  const [groupRefresh, setGroupRefresh] = useState(0)
   const [chat, setChat] = useState<string[]>(['Hola, soy Divia. Puedo ayudarte a ordenar gastos, ver tu balance o armar el regalo de Fran ✦'])
+  const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem('divi_access_token')))
+  const [authMessage, setAuthMessage] = useState('')
   const balance = useMemo(() => expenses.reduce((sum, expense) => sum + expense.amount, 0), [expenses])
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
+  const authenticate = async () => {
+    try { await startCognitoLogin() } catch (error) { setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') }
+  }
+  const signOut = () => {
+    localStorage.removeItem('divi_access_token')
+    sessionStorage.removeItem('divi_pkce_verifier')
+    setAuthenticated(false)
+    setAuthMessage('Sesión cerrada.')
+  }
+  const openExpense = (groupId = activeGroupId) => {
+    if (!apiBase || !groupId || groupId === 'demo') { notify('Primero conectá la API, iniciá sesión y creá o elegí un grupo.'); return }
+    setActiveGroupId(groupId); setOverlay('expense')
+  }
   const reserve = async (gift: Gift) => {
     if (!gift.available) return
     try { await api(`/v1/groups/demo/events/fran-2026/wishlist/${gift.id}/reserve`, 'POST') } catch (e) { notify(e instanceof Error ? e.message : 'No disponible') ; return }
     setGifts(items => items.map(item => item.id === gift.id ? { ...item, available: false } : item)); notify('Regalo reservado para este grupo. Los demás grupos ya no lo verán disponible.')
   }
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('code')
+    if (!code) return
+    const verifier = sessionStorage.getItem('divi_pkce_verifier')
+    if (!cognitoDomain || !cognitoClientId || !verifier) {
+      setAuthMessage('No pudimos completar la sesión. Volvé a intentarlo.')
+      return
+    }
+    const payload = new URLSearchParams({ grant_type: 'authorization_code', client_id: cognitoClientId, code, redirect_uri: authRedirectUri, code_verifier: verifier })
+    void fetch(`${cognitoDomain}/oauth2/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: payload })
+      .then(async response => {
+        if (!response.ok) throw new Error('Cognito rechazó el inicio de sesión.')
+        return response.json() as Promise<{ id_token?: string }>
+      })
+      .then(tokens => {
+        if (!tokens.id_token) throw new Error('Cognito no devolvió un token de identidad.')
+        localStorage.setItem('divi_access_token', tokens.id_token)
+        sessionStorage.removeItem('divi_pkce_verifier')
+        window.history.replaceState({}, '', '/')
+        setAuthenticated(true)
+        setAuthMessage('Sesión iniciada.')
+      })
+      .catch(error => setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.'))
+  }, [])
+  useEffect(() => {
+    if (!apiBase) return
+    void api('/v1/groups').then(result => {
+      if (Array.isArray(result)) {
+        setGroups(result as GroupSummary[])
+        if (result[0]?.group_id) setActiveGroupId(result[0].group_id)
+      }
+    }).catch(() => undefined)
+  }, [])
+  useEffect(() => {
+    if (!apiBase) return
+    const token = new URLSearchParams(window.location.search).get('invite')
+    if (!token) return
+    void api(`/v1/invitations/${encodeURIComponent(token)}/accept`, 'POST').then(() => {
+      window.history.replaceState({}, '', window.location.pathname)
+      notify('Invitación aceptada. El grupo ya aparece en tus grupos.')
+      return api('/v1/groups')
+    }).then(result => { if (Array.isArray(result)) setGroups(result as GroupSummary[]) })
+      .catch(error => notify(error instanceof Error ? error.message : 'No pudimos aceptar la invitación.'))
+  }, [])
   return <main>
     <div className="aurora" /><div className="grain" />
-    <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>divi</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span><Avatar name="Betu" /><span>Betu</span></div></header>
+    <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>divi</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate()}>Ingresar</button>}</div></header>
     <section className="shell">
-      {view === 'home' && <Home balance={balance} onExpense={() => setOverlay('expense')} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
-      {view === 'groups' && <Groups onExpense={() => setOverlay('expense')} onGift={() => setView('gifts')} />}
+      {view === 'home' && <Home balance={balance} onExpense={() => openExpense()} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
+      {view === 'groups' && <Groups groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onExpense={openExpense} onGift={() => setView('gifts')} />}
       {view === 'activity' && <Activity expenses={expenses} />}
       {view === 'wallet' && <Wallet onPremium={() => setOverlay('premium')} />}
       {view === 'settings' && <Settings notify={notify} />}
@@ -90,13 +179,13 @@ function App() {
     <nav className="dock" aria-label="Navegación principal">
       <button className={view === 'home' ? 'active' : ''} onClick={() => setView('home')}><span>⌂</span>Inicio</button>
       <button className={view === 'groups' || view === 'gifts' ? 'active' : ''} onClick={() => setView('groups')}><span>♧</span>Grupos</button>
-      <button className="plus" onClick={() => setOverlay('expense')} aria-label="Agregar gasto">+</button>
+      <button className="plus" onClick={() => openExpense()} aria-label="Agregar gasto">+</button>
       <button className={view === 'activity' ? 'active' : ''} onClick={() => setView('activity')}><span>♙</span>Actividad</button>
       <button className={view === 'wallet' ? 'active' : ''} onClick={() => setView('wallet')}><span>▣</span>Billetera</button>
     </nav>
     <button className="divia" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente Divia">✧</button>
-    {notice && <div className="toast" role="status">✓ {notice}</div>}
-    {overlay === 'expense' && <ExpenseModal close={() => setOverlay(null)} submit={expense => { setExpenses([expense, ...expenses]); setOverlay(null); notify('Gasto agregado y dividido en el grupo.') }} />}
+    {(notice || authMessage) && <div className="toast" role="status">✓ {notice || authMessage}</div>}
+    {overlay === 'expense' && <ExpenseModal groupId={activeGroupId} close={() => setOverlay(null)} submit={expense => { setExpenses([expense, ...expenses]); setOverlay(null); notify('Gasto agregado y dividido en el grupo.') }} onSaved={() => setGroupRefresh(value => value + 1)} />}
     {overlay === 'assistant' && <Assistant chat={chat} setChat={setChat} close={() => setOverlay(null)} />}
     {overlay === 'premium' && <PremiumModal close={() => setOverlay(null)} notify={notify} />}
     {overlay === 'pool' && <PoolModal close={() => setOverlay(null)} notify={notify} />}
@@ -168,7 +257,84 @@ function Panorama() {
   </>
 }
 
-function Groups({ onExpense, onGift }: { onExpense: () => void; onGift: () => void }) { return <><div className="page-title"><div><span className="kicker">TU GENTE</span><h1>Mis grupos</h1></div><button className="outline">＋ Crear grupo</button></div><section className="group-grid"><button className="group-card selected" onClick={onExpense}><span className="orb cyan">♧</span><div><h2>Militantes del mood</h2><p>4 personas · ARS</p></div><strong>− $ 6.175</strong><i>→</i></button><button className="group-card" onClick={onGift}><span className="orb pink">♔</span><div><h2>Cumple de Fran</h2><p>Regalo compartido · 8 días</p></div><strong className="mint">$ 32.000</strong><i>→</i></button></section><section className="insight"><span>✦</span><div><h3>El cumpleaños se acerca</h3><p>Fran ya cargó 3 ideas. Coordiná el regalo sin spoilers ni duplicados.</p></div><button onClick={onGift}>Ver wishlist →</button></section></> }
+function Groups({ groups, refreshSignal, onRefresh, onExpense, onGift }: { groups: GroupSummary[]; refreshSignal: number; onRefresh: () => void; onExpense: (groupId: string) => void; onGift: () => void }) {
+  const [selectedId, setSelectedId] = useState('')
+  const [members, setMembers] = useState<GroupMember[]>([])
+  const [groupExpenses, setGroupExpenses] = useState<GroupExpenseRecord[]>([])
+  const [settlement, setSettlement] = useState<{ balances?: Record<string, string>; settlements?: GroupSettlement[] }>({})
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [groupName, setGroupName] = useState('')
+  const [createError, setCreateError] = useState('')
+  const [inviteUrl, setInviteUrl] = useState('')
+  const [inviteError, setInviteError] = useState('')
+  const selected = groups.find(group => group.group_id === selectedId) || groups[0]
+
+  useEffect(() => { if (selected && selected.group_id !== selectedId) setSelectedId(selected.group_id) }, [groups, selected, selectedId])
+  useEffect(() => {
+    if (!selected) { setMembers([]); setGroupExpenses([]); setSettlement({}); return }
+    let active = true
+    setLoading(true); setError('')
+    Promise.all([
+      api(`/v1/groups/${selected.group_id}/members`),
+      api(`/v1/groups/${selected.group_id}/expenses`),
+      api(`/v1/groups/${selected.group_id}/settlements`),
+    ]).then(([memberRows, expenseRows, settlementResult]) => {
+      if (!active) return
+      setMembers(Array.isArray(memberRows) ? memberRows as GroupMember[] : [])
+      setGroupExpenses(Array.isArray(expenseRows) ? expenseRows as GroupExpenseRecord[] : [])
+      setSettlement(settlementResult && typeof settlementResult === 'object' ? settlementResult as typeof settlement : {})
+    }).catch(e => { if (active) setError(e instanceof Error ? e.message : 'No pudimos cargar el grupo.') })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [selected?.group_id, refreshSignal])
+
+  const createGroup = async (event: FormEvent) => {
+    event.preventDefault(); setCreateError('')
+    try {
+      const result = await api('/v1/groups', 'POST', { name: groupName.trim() }) as GroupSummary | null
+      if (!result?.group_id) throw new Error('La API no devolvió el grupo creado. Revisá tu sesión e intentá de nuevo.')
+      setGroupName(''); setCreating(false); onRefresh(); setSelectedId(result.group_id)
+    } catch (e) { setCreateError(e instanceof Error ? e.message : 'No se pudo crear el grupo.') }
+  }
+  const createInvite = async () => {
+    if (!selected) return
+    setInviteError(''); setInviteUrl('')
+    try {
+      const result = await api(`/v1/groups/${selected.group_id}/invites`, 'POST') as { token?: string } | null
+      if (!result?.token) throw new Error('La API no devolvió una invitación válida.')
+      const url = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(result.token)}`
+      setInviteUrl(url)
+      try { await navigator.clipboard.writeText(url) } catch { /* The link remains selectable below. */ }
+    } catch (e) { setInviteError(e instanceof Error ? e.message : 'No se pudo crear la invitación.') }
+  }
+  const nameFor = (id: string) => members.find(member => member.user_id === id)?.display_name || 'Integrante'
+  const balances = Object.entries(settlement.balances || {}).filter(([, amount]) => Number(amount) !== 0)
+  const visibleExpenses = groupExpenses.filter(expense => !expense.deleted_at)
+
+  return <>
+    <div className="page-title"><div><span className="kicker">TU GENTE</span><h1>Mis grupos</h1></div><button className="outline" onClick={() => { setCreating(value => !value); setCreateError('') }}>＋ Crear grupo</button></div>
+    {creating && <form className="group-create" onSubmit={createGroup}><label>Nombre del grupo<input autoFocus maxLength={80} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="Ej. Viaje a Bariloche" required minLength={2} /></label><button className="primary" type="submit">Crear grupo</button><button type="button" className="outline" onClick={() => setCreating(false)}>Cancelar</button>{createError && <p className="form-error" role="alert">{createError}</p>}</form>}
+    {!apiBase && <section className="insight"><span>ⓘ</span><div><h3>Conectá la API para gestionar grupos</h3><p>Esta vista no inventa grupos ni saldos: configurá VITE_API_URL e iniciá sesión para cargar tus datos.</p></div></section>}
+    {apiBase && groups.length === 0 && !loading && <section className="insight"><span>♧</span><div><h3>Todavía no tenés grupos</h3><p>Creá uno para empezar a cargar gastos compartidos e invitar a tus amigos.</p></div></section>}
+    {groups.length > 0 && <>
+      <section className="group-grid">{groups.map(group => <button className={`group-card ${group.group_id === selected?.group_id ? 'selected' : ''}`} onClick={() => setSelectedId(group.group_id)} key={group.group_id}><span className="orb cyan">♧</span><div><h2>{group.name}</h2><p>{group.legacy_source_key ? 'Grupo migrado · vinculá a sus miembros' : `Grupo activo · ${group.currency}`}</p></div><strong>{group.group_id === selected?.group_id ? 'Seleccionado' : 'Ver grupo'}</strong><i>→</i></button>)}</section>
+      {selected && <section className="group-detail">
+        <header className="group-detail-head"><div><span className="kicker">DETALLE DEL GRUPO</span><h2>{selected.name}</h2><p>{members.length} integrantes · moneda {selected.currency}</p></div><div><button className="outline" onClick={createInvite}>↗ Invitar</button><button className="outline" onClick={() => onExpense(selected.group_id)}>＋ Agregar gasto</button><button className="outline" onClick={onGift}>Regalos</button></div></header>
+        {inviteUrl && <div className="invite-link" role="status"><b>Link de invitación listo</b><input value={inviteUrl} readOnly aria-label="Link de invitación" /><small>Se copió al portapapeles si tu navegador lo permitió. Es de un solo uso y vence en 7 días.</small></div>}
+        {inviteError && <p className="form-error" role="alert">{inviteError}</p>}
+        {loading && <p className="empty-state" role="status">Cargando movimientos y balances…</p>}
+        {error && <div className="form-error" role="alert">{error} <button className="outline" onClick={onRefresh}>Reintentar</button></div>}
+        {!loading && !error && <>
+          <div className="group-detail-grid"><article className="group-subpanel"><h3>Integrantes</h3>{members.length ? members.map(member => <div className="member-row" key={member.user_id}><Avatar name={member.display_name} /><div><b>{member.display_name}</b><small>{member.role === 'owner' ? 'Organizador' : 'Integrante'}{member.claim_state === 'pending' ? ' · pendiente de vincular Telegram' : ''}</small></div><span className="pill">{member.active ? 'Activo' : 'Inactivo'}</span></div>) : <p className="empty-state">No hay integrantes para mostrar.</p>}</article>
+            <article className="group-subpanel"><h3>Balances</h3>{balances.length ? balances.map(([id, amount]) => <div className="balance-row" key={id}><span>{nameFor(id)}</span><strong className={Number(amount) > 0 ? 'credit' : 'debit'}>{Number(amount) > 0 ? 'recibe ' : 'debe '}{money.format(Math.abs(Number(amount)))}</strong></div>) : <p className="empty-state">Todos están al día por ahora.</p>}{settlement.settlements?.length ? <div className="settlement-list"><h4>Liquidaciones sugeridas</h4>{settlement.settlements.map((item, index) => <div className="balance-row" key={`${item.from_user_id}-${item.to_user_id}-${index}`}><span>{nameFor(item.from_user_id)} → {nameFor(item.to_user_id)}</span><strong>{money.format(Number(item.amount))}</strong></div>)}</div> : null}</article></div>
+          <article className="group-subpanel group-ledger"><h3>Gastos recientes <span>{visibleExpenses.length}</span></h3>{visibleExpenses.length ? visibleExpenses.slice(0, 20).map(expense => <div className="expense" key={expense.expense_id}><span className="category c0">⌇</span><div><h3>{expense.description}</h3><p>{expense.category || 'Otro'} · {new Date(expense.created_at).toLocaleDateString('es-AR')}</p></div><strong>{money.format(Number(expense.amount))}</strong></div>) : <p className="empty-state">Todavía no hay gastos en este grupo.</p>}</article>
+        </>}
+      </section>}
+    </>}
+  </>
+}
 
 function Activity({ expenses }: { expenses: Expense[] }) { return <><div className="page-title"><div><span className="kicker">TODO EN ORDEN</span><h1>Actividad</h1></div><button className="outline">⇩ Exportar</button></div><div className="filters"><input placeholder="Buscar gastos…" /><button className="selected">Todos</button><button>Comida</button><button>Transporte</button><button>Compras</button></div><section className="total-bar"><span>Total gastado</span><strong>{money.format(expenses.reduce((a, e) => a + e.amount, 0))}</strong></section><div className="timeline">{expenses.map((expense, index) => <article className="expense" key={`${expense.title}${index}`}><span className={`category c${index}`}>{expense.category === 'Comida' ? '⌇' : '⌁'}</span><div><h3>{expense.title}</h3><p>{expense.category} · {expense.date}</p></div><div><strong>{money.format(expense.amount)}</strong><p>Pagó {expense.payer}</p></div></article>)}</div></> }
 
@@ -178,7 +344,24 @@ function Settings({ notify }: { notify: (message: string) => void }) { return <>
 
 function Gifts({ gifts, reserve, onPool }: { gifts: Gift[]; reserve: (gift: Gift) => void; onPool: () => void }) { return <><button className="back" onClick={() => history.back()}>← Volver a grupos</button><div className="gift-hero"><span className="kicker">CUMPLEAÑOS · 21 SEP</span><h1>El regalo de<br /><em>Fran.</em></h1><p>Su wishlist es una sola, aunque esté en varios grupos. Sin regalos repetidos.</p></div><section className="pool-progress"><div><span>POOL ACTIVO</span><strong>$ 32.000 <small>de $ 48.000</small></strong></div><div className="progress"><i /></div><button onClick={onPool}>Aportar al pool →</button></section><div className="wishlist-head"><div><h2>Wishlist de Fran</h2><p>Solo Fran puede editar esta lista.</p></div><span className="privacy">◌ sin spoilers</span></div><div className="gift-list">{gifts.map(gift => <article className={`gift ${!gift.available ? 'reserved' : ''}`} key={gift.id}><div className="gift-visual">{gift.title.includes('Auriculares') ? '◖◗' : gift.title.includes('Cafetera') ? '♨' : '◒'}</div><div><h3>{gift.title}</h3><p>{money.format(gift.price)}</p>{!gift.available && <small>Este regalo ya fue elegido</small>}</div><button disabled={!gift.available} onClick={() => reserve(gift)}>{gift.available ? 'Elegir regalo' : 'No disponible'}</button></article>)}</div></> }
 
-function ExpenseModal({ close, submit }: { close: () => void; submit: (expense: Expense) => void }) { const [amount, setAmount] = useState(''); const [description, setDescription] = useState(''); const send = async (event: FormEvent) => { event.preventDefault(); if (!description || !Number(amount)) return; try { await api('/v1/groups/demo/expenses', 'POST', { amount, description, paid_by: 'demo', participants: ['demo'], split_method: 'equal' }) } catch { /* demo remains usable without a deployed API */ } submit({ title: description, category: 'Otro', amount: Number(amount), payer: 'Betu', date: 'ahora' }) }; return <Modal title="Nuevo gasto" close={close}><form className="expense-form" onSubmit={send}><label>Monto<input autoFocus value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9]/g, ''))} placeholder="$ 0" inputMode="numeric" /></label><label>Descripción<input value={description} onChange={e => setDescription(e.target.value)} placeholder="¿Qué compraste?" /></label><fieldset><legend>Categoría</legend><button type="button" className="chip selected">⌇ Comida</button><button type="button" className="chip">⌁ Transporte</button><button type="button" className="chip">◒ Compras</button></fieldset><fieldset><legend>Dividir entre</legend><div className="member-check"><Avatar name="Matías" tone="pink" /> Matías <b>✓</b></div><div className="member-check"><Avatar name="Betu" /> Betu <b>✓</b></div><div className="member-check"><Avatar name="Lucas" /> Lucas <b>✓</b></div></fieldset><button className="primary" type="submit">Confirmar gasto <b>→</b></button></form></Modal> }
+function ExpenseModal({ groupId, close, submit, onSaved }: { groupId: string; close: () => void; submit: (expense: Expense) => void; onSaved: () => void }) {
+  const [amount, setAmount] = useState(''); const [description, setDescription] = useState(''); const [members, setMembers] = useState<GroupMember[]>([]); const [participants, setParticipants] = useState<string[]>([]); const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
+  useEffect(() => { let active = true; api(`/v1/groups/${groupId}/members`).then(result => { if (!active) return; const rows = Array.isArray(result) ? result as GroupMember[] : []; setMembers(rows); setParticipants(rows.filter(member => member.active || member.claim_state === 'pending').map(member => member.user_id)) }).catch(e => { if (active) setError(e instanceof Error ? e.message : 'No pudimos cargar los integrantes.') }); return () => { active = false } }, [groupId])
+  const send = async (event: FormEvent) => {
+    event.preventDefault(); setError('')
+    const normalizedAmount = amount.includes(',') ? amount.replace(/\./g, '').replace(',', '.') : /^\d{1,3}(\.\d{3})+$/.test(amount) ? amount.replace(/\./g, '') : amount
+    const amountValue = Number(normalizedAmount)
+    if (!description.trim() || !Number.isFinite(amountValue) || amountValue <= 0 || !participants.length) { setError('Completá descripción, monto válido y al menos un participante.'); return }
+    setSaving(true)
+    try {
+      const result = await api(`/v1/groups/${groupId}/expenses`, 'POST', { amount: normalizedAmount, description: description.trim(), participants, split_method: 'equal', category: 'Otro' }) as GroupExpenseRecord | null
+      if (!result?.expense_id) throw new Error('No se confirmó el gasto. Verificá tu sesión e intentá de nuevo.')
+      onSaved(); submit({ title: result.description, category: result.category || 'Otro', amount: Number(result.amount), payer: 'Vos', date: 'ahora' })
+    } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo guardar el gasto.') }
+    finally { setSaving(false) }
+  }
+  return <Modal title="Nuevo gasto" subtitle="El monto se divide en partes iguales entre las personas seleccionadas." close={close}><form className="expense-form" onSubmit={send}><label>Monto<input autoFocus value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9.,]/g, ''))} placeholder="$ 0" inputMode="decimal" required /></label><label>Descripción<input value={description} onChange={e => setDescription(e.target.value)} placeholder="¿Qué pagaste?" required /></label><fieldset><legend>Dividir entre</legend>{members.length ? members.filter(member => member.active || member.claim_state === 'pending').map(member => <label className="member-check" key={member.user_id}><input type="checkbox" checked={participants.includes(member.user_id)} onChange={event => setParticipants(current => event.target.checked ? [...current, member.user_id] : current.filter(id => id !== member.user_id))} /><Avatar name={member.display_name} /> {member.display_name}</label>) : <p className="empty-state">Cargando integrantes…</p>}</fieldset>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary" type="submit" disabled={saving || members.length === 0}>{saving ? 'Guardando…' : 'Confirmar gasto'} <b>→</b></button></form></Modal>
+}
 
 function Assistant({ chat, setChat, close }: { chat: string[]; setChat: (value: string[]) => void; close: () => void }) { const [prompt, setPrompt] = useState(''); const ask = (event: FormEvent) => { event.preventDefault(); if (!prompt.trim()) return; setChat([...chat, `Vos: ${prompt}`, 'Divia: Para este grupo, lo más simple es cargarlo como gasto igual y cerrar la liquidación después.']); setPrompt('') }; return <Modal title="Divia" subtitle="Tu asistente financiera" close={close} wide><div className="chat">{chat.map((line, index) => <p className={line.startsWith('Vos:') ? 'user' : ''} key={index}>{line}</p>)}</div><div className="suggestions"><button onClick={() => setChat([...chat, 'Divia: Esta semana gastaste más en salidas, principalmente el viernes.'])}>¿En qué gasté más?</button><button onClick={() => setChat([...chat, 'Divia: Fran tiene 3 regalos posibles; el pool ya completó el 67%.'])}>¿Cómo va el regalo?</button></div><form className="ask" onSubmit={ask}><input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Escribile a Divia…" /><button>↗</button></form></Modal> }
 
