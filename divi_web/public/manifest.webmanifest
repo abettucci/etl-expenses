@@ -1,9 +1,9 @@
 {
-  "name": "Divi — gastos y regalos",
-  "short_name": "Divi",
+  "name": "Split — gastos y regalos",
+  "short_name": "Split",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0b0e15",
-  "theme_color": "#0b0e15",
+  "background_color": "#f4f0e7",
+  "theme_color": "#183c35",
   "description": "Gastos compartidos, regalos y pools sin fricción."
 }

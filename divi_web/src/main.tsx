@@ -4,7 +4,7 @@ import './styles.css'
 
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
 
-type View = 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama'
+type View = 'welcome' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
 type GroupSummary = { group_id: string; name: string; currency: string; role?: string; legacy_source_key?: string }
@@ -41,7 +41,7 @@ async function startCognitoLogin() {
   crypto.getRandomValues(random)
   const verifier = base64Url(random)
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
-  sessionStorage.setItem('divi_pkce_verifier', verifier)
+  sessionStorage.setItem('split_pkce_verifier', verifier)
   const query = new URLSearchParams({
     response_type: 'code', client_id: cognitoClientId, redirect_uri: authRedirectUri,
     code_challenge_method: 'S256', code_challenge: base64Url(new Uint8Array(digest)),
@@ -71,7 +71,7 @@ const previewForecast: Forecast = {
 
 async function api(path: string, method = 'GET', body?: unknown) {
   if (!apiBase) return null
-  const token = localStorage.getItem('divi_access_token')
+  const token = localStorage.getItem('split_access_token')
   const result = await fetch(`${apiBase}${path}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined })
   if (!result.ok) throw new Error((await result.json()).error || 'No pudimos completar la acción')
   return result.status === 204 ? null : result.json()
@@ -82,7 +82,7 @@ function Avatar({ name, tone = 'violet' }: { name: string; tone?: string }) { re
 function Action({ icon, title, caption, onClick }: { icon: string; title: string; caption: string; onClick?: () => void }) { return <button className="list-action" onClick={onClick}><span className="action-icon">{icon}</span><span><strong>{title}</strong><small>{caption}</small></span><b>›</b></button> }
 
 function App() {
-  const [view, setView] = useState<View>('home')
+  const [view, setView] = useState<View>('welcome')
   const [overlay, setOverlay] = useState<'expense' | 'assistant' | 'pool' | 'premium' | null>(null)
   const [notice, setNotice] = useState('')
   const [gifts, setGifts] = useState<Gift[]>([
@@ -97,8 +97,8 @@ function App() {
   const [groups, setGroups] = useState<GroupSummary[]>([])
   const [activeGroupId, setActiveGroupId] = useState('demo')
   const [groupRefresh, setGroupRefresh] = useState(0)
-  const [chat, setChat] = useState<string[]>(['Hola, soy Divia. Puedo ayudarte a ordenar gastos, ver tu balance o armar el regalo de Fran ✦'])
-  const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem('divi_access_token')))
+  const [chat, setChat] = useState<string[]>(['Hola, soy tu asistente. Puedo ayudarte a ordenar gastos, ver tu balance o armar el regalo de Fran ✦'])
+  const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem('split_access_token')))
   const [authMessage, setAuthMessage] = useState('')
   const balance = useMemo(() => expenses.reduce((sum, expense) => sum + expense.amount, 0), [expenses])
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
@@ -106,8 +106,8 @@ function App() {
     try { await startCognitoLogin() } catch (error) { setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') }
   }
   const signOut = () => {
-    localStorage.removeItem('divi_access_token')
-    sessionStorage.removeItem('divi_pkce_verifier')
+    localStorage.removeItem('split_access_token')
+    sessionStorage.removeItem('split_pkce_verifier')
     setAuthenticated(false)
     setAuthMessage('Sesión cerrada.')
   }
@@ -123,7 +123,7 @@ function App() {
   useEffect(() => {
     const code = new URLSearchParams(window.location.search).get('code')
     if (!code) return
-    const verifier = sessionStorage.getItem('divi_pkce_verifier')
+    const verifier = sessionStorage.getItem('split_pkce_verifier')
     if (!cognitoDomain || !cognitoClientId || !verifier) {
       setAuthMessage('No pudimos completar la sesión. Volvé a intentarlo.')
       return
@@ -136,8 +136,8 @@ function App() {
       })
       .then(tokens => {
         if (!tokens.id_token) throw new Error('Cognito no devolvió un token de identidad.')
-        localStorage.setItem('divi_access_token', tokens.id_token)
-        sessionStorage.removeItem('divi_pkce_verifier')
+        localStorage.setItem('split_access_token', tokens.id_token)
+        sessionStorage.removeItem('split_pkce_verifier')
         window.history.replaceState({}, '', '/')
         setAuthenticated(true)
         setAuthMessage('Sesión iniciada.')
@@ -166,24 +166,26 @@ function App() {
   }, [])
   return <main>
     <div className="aurora" /><div className="grain" />
-    <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>divi</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate()}>Ingresar</button>}</div></header>
-    <section className="shell">
-      {view === 'home' && <Home balance={balance} onExpense={() => openExpense()} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
-      {view === 'groups' && <Groups groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onExpense={openExpense} onGift={() => setView('gifts')} />}
-      {view === 'activity' && <Activity expenses={expenses} />}
-      {view === 'wallet' && <Wallet onPremium={() => setOverlay('premium')} />}
-      {view === 'settings' && <Settings notify={notify} />}
-      {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onPool={() => setOverlay('pool')} />}
-      {view === 'panorama' && <Panorama />}
-    </section>
-    <nav className="dock" aria-label="Navegación principal">
-      <button className={view === 'home' ? 'active' : ''} onClick={() => setView('home')}><span>⌂</span>Inicio</button>
-      <button className={view === 'groups' || view === 'gifts' ? 'active' : ''} onClick={() => setView('groups')}><span>♧</span>Grupos</button>
-      <button className="plus" onClick={() => openExpense()} aria-label="Agregar gasto">+</button>
-      <button className={view === 'activity' ? 'active' : ''} onClick={() => setView('activity')}><span>♙</span>Actividad</button>
-      <button className={view === 'wallet' ? 'active' : ''} onClick={() => setView('wallet')}><span>▣</span>Billetera</button>
-    </nav>
-    <button className="divia" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente Divia">✧</button>
+    {view === 'welcome' ? <Welcome authenticated={authenticated} onEnter={() => setView('home')} onLogin={() => void authenticate()} /> : <>
+      <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>split</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate()}>Ingresar</button>}</div></header>
+      <section className="shell">
+        {view === 'home' && <Home balance={balance} onExpense={() => openExpense()} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
+        {view === 'groups' && <Groups groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onExpense={openExpense} onGift={() => setView('gifts')} />}
+        {view === 'activity' && <Activity expenses={expenses} />}
+        {view === 'wallet' && <Wallet onPremium={() => setOverlay('premium')} />}
+        {view === 'settings' && <Settings notify={notify} />}
+        {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onPool={() => setOverlay('pool')} />}
+        {view === 'panorama' && <Panorama />}
+      </section>
+      <nav className="dock" aria-label="Navegación principal">
+        <button className={view === 'home' ? 'active' : ''} onClick={() => setView('home')}><span>⌂</span>Inicio</button>
+        <button className={view === 'groups' || view === 'gifts' ? 'active' : ''} onClick={() => setView('groups')}><span>♧</span>Grupos</button>
+        <button className="plus" onClick={() => openExpense()} aria-label="Agregar gasto">+</button>
+        <button className={view === 'activity' ? 'active' : ''} onClick={() => setView('activity')}><span>♙</span>Actividad</button>
+        <button className={view === 'wallet' ? 'active' : ''} onClick={() => setView('wallet')}><span>▣</span>Billetera</button>
+      </nav>
+      <button className="assistant-fab" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente">✧</button>
+    </>}
     {(notice || authMessage) && <div className="toast" role="status">✓ {notice || authMessage}</div>}
     {overlay === 'expense' && <ExpenseModal groupId={activeGroupId} close={() => setOverlay(null)} submit={expense => { setExpenses([expense, ...expenses]); setOverlay(null); notify('Gasto agregado y dividido en el grupo.') }} onSaved={() => setGroupRefresh(value => value + 1)} />}
     {overlay === 'assistant' && <Assistant chat={chat} setChat={setChat} close={() => setOverlay(null)} />}
@@ -191,6 +193,15 @@ function App() {
     {overlay === 'pool' && <PoolModal close={() => setOverlay(null)} notify={notify} />}
   </main>
 }
+
+function Welcome({ authenticated, onEnter, onLogin }: { authenticated: boolean; onEnter: () => void; onLogin: () => void }) { return <section className="welcome">
+  <header className="welcome-nav"><button className="brand" onClick={onEnter}><Mark /><span>split</span></button><div>{authenticated ? <button className="welcome-login" onClick={onEnter}>Abrir mi espacio <b>→</b></button> : <button className="welcome-login" onClick={onLogin}>Ingresar <b>→</b></button>}</div></header>
+  <div className="welcome-grid">
+    <div className="welcome-copy"><span className="welcome-kicker">GASTOS QUE SE ENTIENDEN</span><h1>La plata del grupo,<br /><em>sin vueltas.</em></h1><p>Registrá gastos, cerrá cuentas y organizá regalos sin perseguir a nadie ni abrir otra planilla.</p><div className="welcome-actions"><button className="welcome-primary" onClick={onEnter}>Empezar a organizar <b>→</b></button><button className="welcome-secondary" onClick={onEnter}>Ver cómo funciona <span>↓</span></button></div><ul className="welcome-points"><li><i>01</i><span>Gastos personales y compartidos</span></li><li><i>02</i><span>Balances simples, listos para saldar</span></li><li><i>03</i><span>Wishlists y regalos en grupo, sin spoilers</span></li></ul></div>
+    <div className="welcome-product" aria-label="Vista previa de un grupo de gastos"><div className="product-window-bar"><span /><span /><span /><b>Esta noche ✦</b><small>4 personas</small></div><div className="product-main"><div className="product-intro"><span>GRUPO ACTUAL</span><h2>La previa de Juli</h2><p>Todo el plan, en una sola cuenta.</p></div><div className="product-total"><span>Te toca</span><strong>$ 8.420</strong><small>2 gastos pendientes</small></div><article className="product-row"><Avatar name="M" tone="orange" /><div><b>Pizza y birras</b><small>Pagó Mora · ayer</small></div><strong>$ 24.000</strong></article><article className="product-row"><Avatar name="A" tone="violet" /><div><b>Viaje de vuelta</b><small>Pagó Agus · ayer</small></div><strong>$ 12.800</strong></article><div className="product-settlement"><span>⌁</span><p><b>Listo para cerrar</b><small>3 personas le deben a Mora</small></p><button onClick={onEnter}>Ver balance →</button></div></div><div className="product-footer"><span>⌂ Resumen</span><span>♧ Grupo</span><button onClick={onEnter}>＋</button><span>♔ Regalos</span></div></div>
+  </div>
+  <footer className="welcome-footer"><span>GRUPOS</span><i /> <span>GASTOS PERSONALES</span><i /> <span>REGALOS</span><i /> <span>PANORAMA</span></footer>
+</section> }
 
 function Home({ balance, onExpense, onPanorama, onGift }: { balance: number; onExpense: () => void; onPanorama: () => void; onGift: () => void }) { return <>
   <div className="eyebrow">La cuenta del grupo <span>〰</span></div><h1>Que la plata<br /><em>no corte el plan.</em></h1>
@@ -340,7 +351,7 @@ function Activity({ expenses }: { expenses: Expense[] }) { return <><div classNa
 
 function Wallet({ onPremium }: { onPremium: () => void }) { return <><div className="page-title"><div><span className="kicker">TU RESUMEN FINANCIERO</span><h1>Mi billetera</h1></div><button className="outline">⚙ Ajustes</button></div><section className="wallet-banner"><div><span className="crown">♔</span><span className="kicker">PLAN GRATUITO</span><h2>Tu dinero ya habla.<br />Escuchalo completo.</h2><p>Wallet Premium suma patrones, historial ilimitado y exportaciones.</p></div><div className="wallet-stats"><span>5</span><p>escaneos<br />restantes</p></div><button onClick={onPremium}>Ver plan Premium <b>→</b></button></section><section className="blurred-ledger"><div><span>INGRESOS</span><strong>$ 1.820.000</strong></div><div><span>GASTOS</span><strong>$ 928.400</strong></div><div><span>AHORRO</span><strong>$ 891.600</strong></div></section></> }
 
-function Settings({ notify }: { notify: (message: string) => void }) { return <><div className="page-title"><div><span className="kicker">TU ESPACIO</span><h1>Ajustes</h1></div><Avatar name="Betu" /></div><section className="settings-list"><Action icon="◉" title="Perfil" caption="Nombre, alias y foto" onClick={() => notify('Perfil listo para editar.')} /><Action icon="♧" title="Notificaciones" caption="Recordatorios de grupos y pagos" onClick={() => notify('Solicitamos permiso de notificaciones.')} /><Action icon="◒" title="Apariencia" caption="Noche aurora" onClick={() => notify('La apariencia se adapta al sistema.')} /><Action icon="⊙" title="Mercado Pago" caption="Conectá tu cuenta para organizar pools" onClick={() => { api('/v1/mercadopago/oauth/start', 'POST').then((result: any) => result?.authorization_url && (window.location.href = result.authorization_url)).catch(() => notify('Configuraremos tu cuenta de Mercado Pago.')) }} /><Action icon="?" title="Ayuda" caption="Preguntas frecuentes y soporte" /></section><p className="version">DIVI / 0.1.0<br />hecho para compartir</p></> }
+function Settings({ notify }: { notify: (message: string) => void }) { return <><div className="page-title"><div><span className="kicker">TU ESPACIO</span><h1>Ajustes</h1></div><Avatar name="Betu" /></div><section className="settings-list"><Action icon="◉" title="Perfil" caption="Nombre, alias y foto" onClick={() => notify('Perfil listo para editar.')} /><Action icon="♧" title="Notificaciones" caption="Recordatorios de grupos y pagos" onClick={() => notify('Solicitamos permiso de notificaciones.')} /><Action icon="◒" title="Apariencia" caption="Noche aurora" onClick={() => notify('La apariencia se adapta al sistema.')} /><Action icon="⊙" title="Mercado Pago" caption="Conectá tu cuenta para organizar pools" onClick={() => { api('/v1/mercadopago/oauth/start', 'POST').then((result: any) => result?.authorization_url && (window.location.href = result.authorization_url)).catch(() => notify('Configuraremos tu cuenta de Mercado Pago.')) }} /><Action icon="?" title="Ayuda" caption="Preguntas frecuentes y soporte" /></section><p className="version">SPLIT / 0.1.0<br />hecho para compartir</p></> }
 
 function Gifts({ gifts, reserve, onPool }: { gifts: Gift[]; reserve: (gift: Gift) => void; onPool: () => void }) { return <><button className="back" onClick={() => history.back()}>← Volver a grupos</button><div className="gift-hero"><span className="kicker">CUMPLEAÑOS · 21 SEP</span><h1>El regalo de<br /><em>Fran.</em></h1><p>Su wishlist es una sola, aunque esté en varios grupos. Sin regalos repetidos.</p></div><section className="pool-progress"><div><span>POOL ACTIVO</span><strong>$ 32.000 <small>de $ 48.000</small></strong></div><div className="progress"><i /></div><button onClick={onPool}>Aportar al pool →</button></section><div className="wishlist-head"><div><h2>Wishlist de Fran</h2><p>Solo Fran puede editar esta lista.</p></div><span className="privacy">◌ sin spoilers</span></div><div className="gift-list">{gifts.map(gift => <article className={`gift ${!gift.available ? 'reserved' : ''}`} key={gift.id}><div className="gift-visual">{gift.title.includes('Auriculares') ? '◖◗' : gift.title.includes('Cafetera') ? '♨' : '◒'}</div><div><h3>{gift.title}</h3><p>{money.format(gift.price)}</p>{!gift.available && <small>Este regalo ya fue elegido</small>}</div><button disabled={!gift.available} onClick={() => reserve(gift)}>{gift.available ? 'Elegir regalo' : 'No disponible'}</button></article>)}</div></> }
 
@@ -363,11 +374,11 @@ function ExpenseModal({ groupId, close, submit, onSaved }: { groupId: string; cl
   return <Modal title="Nuevo gasto" subtitle="El monto se divide en partes iguales entre las personas seleccionadas." close={close}><form className="expense-form" onSubmit={send}><label>Monto<input autoFocus value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9.,]/g, ''))} placeholder="$ 0" inputMode="decimal" required /></label><label>Descripción<input value={description} onChange={e => setDescription(e.target.value)} placeholder="¿Qué pagaste?" required /></label><fieldset><legend>Dividir entre</legend>{members.length ? members.filter(member => member.active || member.claim_state === 'pending').map(member => <label className="member-check" key={member.user_id}><input type="checkbox" checked={participants.includes(member.user_id)} onChange={event => setParticipants(current => event.target.checked ? [...current, member.user_id] : current.filter(id => id !== member.user_id))} /><Avatar name={member.display_name} /> {member.display_name}</label>) : <p className="empty-state">Cargando integrantes…</p>}</fieldset>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary" type="submit" disabled={saving || members.length === 0}>{saving ? 'Guardando…' : 'Confirmar gasto'} <b>→</b></button></form></Modal>
 }
 
-function Assistant({ chat, setChat, close }: { chat: string[]; setChat: (value: string[]) => void; close: () => void }) { const [prompt, setPrompt] = useState(''); const ask = (event: FormEvent) => { event.preventDefault(); if (!prompt.trim()) return; setChat([...chat, `Vos: ${prompt}`, 'Divia: Para este grupo, lo más simple es cargarlo como gasto igual y cerrar la liquidación después.']); setPrompt('') }; return <Modal title="Divia" subtitle="Tu asistente financiera" close={close} wide><div className="chat">{chat.map((line, index) => <p className={line.startsWith('Vos:') ? 'user' : ''} key={index}>{line}</p>)}</div><div className="suggestions"><button onClick={() => setChat([...chat, 'Divia: Esta semana gastaste más en salidas, principalmente el viernes.'])}>¿En qué gasté más?</button><button onClick={() => setChat([...chat, 'Divia: Fran tiene 3 regalos posibles; el pool ya completó el 67%.'])}>¿Cómo va el regalo?</button></div><form className="ask" onSubmit={ask}><input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Escribile a Divia…" /><button>↗</button></form></Modal> }
+function Assistant({ chat, setChat, close }: { chat: string[]; setChat: (value: string[]) => void; close: () => void }) { const [prompt, setPrompt] = useState(''); const ask = (event: FormEvent) => { event.preventDefault(); if (!prompt.trim()) return; setChat([...chat, `Vos: ${prompt}`, 'Asistente: Para este grupo, lo más simple es cargarlo como gasto igual y cerrar la liquidación después.']); setPrompt('') }; return <Modal title="Asistente" subtitle="Tu ayuda para ordenar gastos" close={close} wide><div className="chat">{chat.map((line, index) => <p className={line.startsWith('Vos:') ? 'user' : ''} key={index}>{line}</p>)}</div><div className="suggestions"><button onClick={() => setChat([...chat, 'Asistente: Esta semana gastaste más en salidas, principalmente el viernes.'])}>¿En qué gasté más?</button><button onClick={() => setChat([...chat, 'Asistente: Fran tiene 3 regalos posibles; el pool ya completó el 67%.'])}>¿Cómo va el regalo?</button></div><form className="ask" onSubmit={ask}><input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Escribí tu consulta…" /><button>↗</button></form></Modal> }
 
 function PremiumModal({ close, notify }: { close: () => void; notify: (message: string) => void }) { const [card, setCard] = useState(''); const start = async (event: FormEvent) => { event.preventDefault(); try { const result: any = await api('/v1/premium/checkout', 'POST', { card_token_id: card }); if (result) notify('Suscripción autorizada. Tu prueba de 60 días ya está activa.') } catch (e) { notify(e instanceof Error ? e.message : 'Usá Mercado Pago para completar la suscripción.') } }; return <Modal title="Subirse a Premium" subtitle="$3.000 ARS / mes · 60 días sin cargo" close={close}><section className="premium-in-modal"><span className="crown">♔</span><h2>Más señal. Menos fricción.</h2><ul><li>30 escaneos de tickets por mes</li><li>Wallet personal completa</li><li>Exportar a CSV e historial ilimitado</li><li>Soporte prioritario</li></ul></section><form className="pay-form" onSubmit={start}><label>Token de tarjeta de Mercado Pago<input value={card} onChange={e => setCard(e.target.value)} placeholder="Generado por Mercado Pago Bricks" /></label><small>No guardamos datos de tarjeta. El token se envía directo a Mercado Pago.</small><button className="primary">Activar 60 días gratis <b>→</b></button></form></Modal> }
 
-function PoolModal({ close, notify }: { close: () => void; notify: (message: string) => void }) { const [amount, setAmount] = useState('5000'); const contribute = () => { notify(`Abrimos Mercado Pago para aportar ${money.format(Number(amount))} al organizador.`); close() }; return <Modal title="Aportar al regalo" subtitle="El dinero se acredita directo al organizador" close={close}><div className="pool-modal"><span className="pool-icon">♔</span><h2>Auriculares para Fran</h2><p>Juntamos $32.000 de $48.000. Tu aporte no queda guardado en Divi.</p><label>Tu aporte<input value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" /></label><button className="primary" onClick={contribute}>Pagar con Mercado Pago <b>↗</b></button><small>El pago lo recibe quien organiza este regalo.</small></div></Modal> }
+function PoolModal({ close, notify }: { close: () => void; notify: (message: string) => void }) { const [amount, setAmount] = useState('5000'); const contribute = () => { notify(`Abrimos Mercado Pago para aportar ${money.format(Number(amount))} al organizador.`); close() }; return <Modal title="Aportar al regalo" subtitle="El dinero se acredita directo al organizador" close={close}><div className="pool-modal"><span className="pool-icon">♔</span><h2>Auriculares para Fran</h2><p>Juntamos $32.000 de $48.000. Tu aporte no queda guardado en Split.</p><label>Tu aporte<input value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" /></label><button className="primary" onClick={contribute}>Pagar con Mercado Pago <b>↗</b></button><small>El pago lo recibe quien organiza este regalo.</small></div></Modal> }
 
 function Modal({ title, subtitle, close, children, wide = false }: { title: string; subtitle?: string; close: () => void; children: ReactNode; wide?: boolean }) { return <div className="modal-backdrop" role="presentation"><section className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}><button className="close" onClick={close} aria-label="Cerrar">×</button><header><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</header>{children}</section></div> }
 
