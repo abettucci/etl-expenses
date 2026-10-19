@@ -714,7 +714,7 @@ def pool_checkout(pool_id: str, user_id: str, payload: dict[str, Any]) -> dict[s
     contribution_id = uuid.uuid4().hex
     reference = f"contribution#{contribution_id}"
     contribution = {"pk": f"POOL#{pool_id}", "sk": f"CONTRIBUTION#{contribution_id}", "contribution_id": contribution_id, "pool_id": pool_id, "user_id": user_id, "amount": str(amount), "status": "PENDING", "external_reference": reference, "created_at": now()}
-    preference = {"items": [{"id": contribution_id, "title": "Aporte regalo Divi", "quantity": 1, "currency_id": "ARS", "unit_price": float(amount)}], "external_reference": reference, "notification_url": f"{MP_WEBHOOK_BASE_URL}/v1/webhooks/mercadopago/payments", "back_urls": {"success": f"{FRONTEND_ORIGIN}/pools/{pool_id}?payment=success", "failure": f"{FRONTEND_ORIGIN}/pools/{pool_id}?payment=failure"}, "auto_return": "approved"}
+    preference = {"items": [{"id": contribution_id, "title": "Aporte regalo Split", "quantity": 1, "currency_id": "ARS", "unit_price": float(amount)}], "external_reference": reference, "notification_url": f"{MP_WEBHOOK_BASE_URL}/v1/webhooks/mercadopago/payments", "back_urls": {"success": f"{FRONTEND_ORIGIN}/pools/{pool_id}?payment=success", "failure": f"{FRONTEND_ORIGIN}/pools/{pool_id}?payment=failure"}, "auto_return": "approved"}
     result = mp_request("POST", "/checkout/preferences", connection["access_token"], preference)
     contribution["mp_preference_id"] = result.get("id")
     table.put_item(Item=contribution)

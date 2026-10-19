@@ -190,7 +190,7 @@ function App() {
     {overlay === 'expense' && <ExpenseModal groupId={activeGroupId} close={() => setOverlay(null)} submit={expense => { setExpenses([expense, ...expenses]); setOverlay(null); notify('Gasto agregado y dividido en el grupo.') }} onSaved={() => setGroupRefresh(value => value + 1)} />}
     {overlay === 'assistant' && <Assistant chat={chat} setChat={setChat} close={() => setOverlay(null)} />}
     {overlay === 'premium' && <PremiumModal close={() => setOverlay(null)} notify={notify} />}
-    {overlay === 'pool' && <PoolModal close={() => setOverlay(null)} notify={notify} />}
+    {overlay === 'pool' && <PoolModal poolId={new URLSearchParams(window.location.search).get('pool')} close={() => setOverlay(null)} />}
   </main>
 }
 
@@ -378,7 +378,41 @@ function Assistant({ chat, setChat, close }: { chat: string[]; setChat: (value: 
 
 function PremiumModal({ close, notify }: { close: () => void; notify: (message: string) => void }) { const [card, setCard] = useState(''); const start = async (event: FormEvent) => { event.preventDefault(); try { const result: any = await api('/v1/premium/checkout', 'POST', { card_token_id: card }); if (result) notify('Suscripción autorizada. Tu prueba de 60 días ya está activa.') } catch (e) { notify(e instanceof Error ? e.message : 'Usá Mercado Pago para completar la suscripción.') } }; return <Modal title="Subirse a Premium" subtitle="$3.000 ARS / mes · 60 días sin cargo" close={close}><section className="premium-in-modal"><span className="crown">♔</span><h2>Más señal. Menos fricción.</h2><ul><li>30 escaneos de tickets por mes</li><li>Wallet personal completa</li><li>Exportar a CSV e historial ilimitado</li><li>Soporte prioritario</li></ul></section><form className="pay-form" onSubmit={start}><label>Token de tarjeta de Mercado Pago<input value={card} onChange={e => setCard(e.target.value)} placeholder="Generado por Mercado Pago Bricks" /></label><small>No guardamos datos de tarjeta. El token se envía directo a Mercado Pago.</small><button className="primary">Activar 60 días gratis <b>→</b></button></form></Modal> }
 
-function PoolModal({ close, notify }: { close: () => void; notify: (message: string) => void }) { const [amount, setAmount] = useState('5000'); const contribute = () => { notify(`Abrimos Mercado Pago para aportar ${money.format(Number(amount))} al organizador.`); close() }; return <Modal title="Aportar al regalo" subtitle="El dinero se acredita directo al organizador" close={close}><div className="pool-modal"><span className="pool-icon">♔</span><h2>Auriculares para Fran</h2><p>Juntamos $32.000 de $48.000. Tu aporte no queda guardado en Split.</p><label>Tu aporte<input value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" /></label><button className="primary" onClick={contribute}>Pagar con Mercado Pago <b>↗</b></button><small>El pago lo recibe quien organiza este regalo.</small></div></Modal> }
+function PoolModal({ poolId, close }: { poolId: string | null; close: () => void }) {
+  const [amount, setAmount] = useState('5000')
+  const [error, setError] = useState('')
+  const [redirecting, setRedirecting] = useState(false)
+  const isRealPool = Boolean(poolId)
+
+  const contribute = async () => {
+    setError('')
+    const contributionAmount = Number(amount)
+    if (!Number.isFinite(contributionAmount) || contributionAmount <= 0) {
+      setError('Ingresá un monto mayor a $0.')
+      return
+    }
+    if (!poolId) {
+      setError('Este pool es una vista de ejemplo. Para pagar, abrí un pool creado dentro de un grupo real.')
+      return
+    }
+    if (!apiBase) {
+      setError('Falta configurar la API de Split. Intentá nuevamente cuando la app esté desplegada.')
+      return
+    }
+
+    setRedirecting(true)
+    try {
+      const result = await api(`/v1/pools/${encodeURIComponent(poolId)}/checkout`, 'POST', { amount: contributionAmount }) as { checkout_url?: string } | null
+      if (!result?.checkout_url) throw new Error('No pudimos obtener el link de pago de Mercado Pago.')
+      window.location.assign(result.checkout_url)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'No pudimos iniciar el pago. Verificá que el organizador haya conectado Mercado Pago.')
+      setRedirecting(false)
+    }
+  }
+
+  return <Modal title="Aportar al regalo" subtitle="El dinero se acredita directo al organizador" close={close}><div className="pool-modal"><span className="pool-icon">♔</span><h2>Auriculares para Fran</h2><p>Juntamos $32.000 de $48.000. Tu aporte no queda guardado en Split.</p><label>Tu aporte<input value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" disabled={redirecting} /></label>{!isRealPool && <small>Este ejemplo todavía no está asociado a un pool real.</small>}{error && <p className="form-error" role="alert">{error}</p>}<button className="primary" onClick={() => void contribute()} disabled={redirecting}>{redirecting ? 'Abriendo Mercado Pago…' : 'Pagar con Mercado Pago'} <b>↗</b></button><small>El pago lo recibe quien organiza este regalo.</small></div></Modal>
+}
 
 function Modal({ title, subtitle, close, children, wide = false }: { title: string; subtitle?: string; close: () => void; children: ReactNode; wide?: boolean }) { return <div className="modal-backdrop" role="presentation"><section className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}><button className="close" onClick={close} aria-label="Cerrar">×</button><header><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</header>{children}</section></div> }
 
