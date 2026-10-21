@@ -2,10 +2,21 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 're
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import './premium.css'
+import { TicketSplitter } from './ticket_splitter/TicketSplitter'
 
-if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
+if ('serviceWorker' in navigator) {
+  const wasControlled = Boolean(navigator.serviceWorker.controller)
+  let refreshing = false
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (wasControlled && !refreshing && window.location.pathname !== '/auth/callback') {
+      refreshing = true
+      window.location.reload()
+    }
+  })
+  window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => { /* The app still works without offline caching. */ }) })
+}
 
-type View = 'welcome' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama'
+type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
 type GroupSummary = { group_id: string; name: string; currency: string; role?: string; legacy_source_key?: string }
@@ -113,8 +124,30 @@ function Mark() { return <span className="mark"><i /><i /><i /><i /></span> }
 function Avatar({ name, tone = 'violet' }: { name: string; tone?: string }) { return <span className={`avatar ${tone}`}>{name.slice(0, 1).toUpperCase()}</span> }
 function Action({ icon, title, caption, onClick }: { icon: string; title: string; caption: string; onClick?: () => void }) { return <button className="list-action" onClick={onClick}><span className="action-icon">{icon}</span><span><strong>{title}</strong><small>{caption}</small></span><b>›</b></button> }
 
+const viewPaths: Record<View, string> = {
+  welcome: '/', splitter: '/dividir', home: '/app', groups: '/grupos',
+  activity: '/actividad', wallet: '/billetera', settings: '/ajustes',
+  gifts: '/regalos', panorama: '/panorama',
+}
+function viewFromLocation(): View {
+  const pathname = window.location.pathname.replace(/\/$/, '') || '/'
+  return (Object.entries(viewPaths).find(([, value]) => value === pathname)?.[0] as View | undefined)
+    || (pathname === '/settings' ? 'settings' : 'welcome')
+}
+
 function App() {
-  const [view, setView] = useState<View>('welcome')
+  const [view, setView] = useState<View>(viewFromLocation)
+  const navigate = (nextView: View) => {
+    const pool = new URLSearchParams(window.location.search).get('pool')
+    window.history.pushState({}, '', viewPaths[nextView] + (pool ? `?pool=${encodeURIComponent(pool)}` : ''))
+    setView(nextView)
+    window.scrollTo(0, 0)
+  }
+  useEffect(() => {
+    const onPopState = () => { setView(viewFromLocation()); window.scrollTo(0, 0) }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
   const [overlay, setOverlay] = useState<'expense' | 'assistant' | 'pool' | 'premium' | null>(null)
   const [notice, setNotice] = useState('')
   const [gifts, setGifts] = useState<Gift[]>([
@@ -145,12 +178,8 @@ function App() {
     setAuthenticated(false)
     setGroups([])
     setActiveGroupId('')
-    setView('welcome')
+    navigate('welcome')
     setAuthMessage('Sesión cerrada.')
-  }
-  const beginOrganizing = () => {
-    if (authenticated) { setView('groups'); return }
-    void authenticate('groups')
   }
   const openPremium = () => {
     if (authenticated) { setOverlay('premium'); return }
@@ -159,7 +188,7 @@ function App() {
   }
   const openExpense = (groupId = activeGroupId) => {
     if (!authenticated) { void authenticate('groups'); return }
-    if (!groupId) { setView('groups'); notify('Creá o elegí un grupo antes de cargar un gasto.'); return }
+    if (!groupId) { navigate('groups'); notify('Creá o elegí un grupo antes de cargar un gasto.'); return }
     setActiveGroupId(groupId); setOverlay('expense')
   }
   const reserve = async (gift: Gift) => {
@@ -186,12 +215,12 @@ function App() {
         localStorage.setItem('split_access_token', tokens.id_token)
         sessionStorage.removeItem('split_pkce_verifier')
         const requestedView = sessionStorage.getItem('split_return_view')
-        const allowedViews: View[] = ['home', 'groups', 'activity', 'wallet', 'settings', 'gifts', 'panorama']
+        const allowedViews: View[] = ['splitter', 'home', 'groups', 'activity', 'wallet', 'settings', 'gifts', 'panorama']
         const nextView = allowedViews.includes(requestedView as View) ? requestedView as View : 'groups'
         sessionStorage.removeItem('split_return_view')
         const resumePremium = sessionStorage.getItem('split_open_premium_after_login') === 'true'
         sessionStorage.removeItem('split_open_premium_after_login')
-        window.history.replaceState({}, '', '/')
+        window.history.replaceState({}, '', viewPaths[nextView])
         setAuthenticated(true)
         setView(nextView)
         if (resumePremium) setOverlay('premium')
@@ -227,25 +256,25 @@ function App() {
     }).then(result => { if (Array.isArray(result)) { setGroups(result as GroupSummary[]); setActiveGroupId(result[0]?.group_id || '') } })
       .catch(error => notify(error instanceof Error ? error.message : 'No pudimos aceptar la invitación.'))
   }, [authenticated])
-  return <main>
+  return <main className={view === 'welcome' || view === 'splitter' ? 'classic-screen' : undefined}>
     <div className="aurora" /><div className="grain" />
-    {view === 'welcome' ? <Welcome authenticated={authenticated} onEnter={beginOrganizing} onLogin={() => void authenticate('groups')} onPreview={() => setView('home')} /> : <>
-      <header className="topbar"><button className="brand" title="Volver a la portada" aria-label="Volver a la portada" onClick={() => setView('welcome')}><Mark /><span>split</span></button><div className="desktop-meta"><button className="home-return" onClick={() => setView('welcome')}>← Portada</button><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate('groups')}>Ingresar</button>}</div></header>
+    {view === 'welcome' || view === 'splitter' ? <TicketSplitter page={view === 'splitter' ? 'calculator' : 'landing'} authenticated={authenticated} onLogin={() => void authenticate('groups')} onNavigate={destination => navigate(destination === '/dividir' ? 'splitter' : destination === '/app' ? 'home' : 'welcome')} /> : <>
+      <header className="topbar"><button className="brand" title="Volver a la portada" aria-label="Volver a la portada" onClick={() => navigate('welcome')}><Mark /><span>split</span></button><div className="desktop-meta"><button className="home-return" onClick={() => navigate('welcome')}>← Portada</button><button className="panorama-link" onClick={() => navigate('splitter')}>✂ Dividir</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate('groups')}>Ingresar</button>}</div></header>
       <section className="shell">
-        {view === 'home' && <Home balance={balance} onExpense={() => openExpense()} onGroups={() => setView('groups')} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
-        {view === 'groups' && <Groups authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onSelectGroup={setActiveGroupId} onExpense={openExpense} onGift={() => setView('gifts')} />}
+        {view === 'home' && <Home balance={balance} onDivide={() => navigate('splitter')} onExpense={() => openExpense()} onGroups={() => navigate('groups')} onPanorama={() => navigate('panorama')} onGift={() => navigate('gifts')} />}
+        {view === 'groups' && <Groups authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onSelectGroup={setActiveGroupId} onExpense={openExpense} onGift={() => navigate('gifts')} />}
         {view === 'activity' && <Activity expenses={expenses} />}
         {view === 'wallet' && <Wallet onPremium={openPremium} />}
         {view === 'settings' && <Settings notify={notify} />}
-        {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onBack={() => setView('groups')} onPool={() => setOverlay('pool')} />}
+        {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onBack={() => navigate('groups')} onPool={() => setOverlay('pool')} />}
         {view === 'panorama' && <Panorama />}
       </section>
       <nav className="dock" aria-label="Navegación principal">
-        <button className={view === 'home' ? 'active' : ''} onClick={() => setView('home')}><span>⌂</span>Inicio</button>
-        <button className={view === 'groups' || view === 'gifts' ? 'active' : ''} onClick={() => setView('groups')}><span>♧</span>Grupos</button>
+        <button className={view === 'home' ? 'active' : ''} onClick={() => navigate('home')}><span>⌂</span>Inicio</button>
+        <button className={view === 'groups' || view === 'gifts' ? 'active' : ''} onClick={() => navigate('groups')}><span>♧</span>Grupos</button>
         <button className="plus" onClick={() => openExpense()} aria-label="Agregar gasto">+</button>
-        <button className={view === 'activity' ? 'active' : ''} onClick={() => setView('activity')}><span>♙</span>Actividad</button>
-        <button className={view === 'wallet' ? 'active' : ''} onClick={() => setView('wallet')}><span>▣</span>Billetera</button>
+        <button className={view === 'activity' ? 'active' : ''} onClick={() => navigate('activity')}><span>♙</span>Actividad</button>
+        <button className={view === 'wallet' ? 'active' : ''} onClick={() => navigate('wallet')}><span>▣</span>Billetera</button>
       </nav>
       <button className="assistant-fab" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente">✧</button>
     </>}
@@ -257,19 +286,10 @@ function App() {
   </main>
 }
 
-function Welcome({ authenticated, onEnter, onLogin, onPreview }: { authenticated: boolean; onEnter: () => void; onLogin: () => void; onPreview: () => void }) { return <section className="welcome">
-  <header className="welcome-nav"><button className="brand" title="Volver al inicio" onClick={onPreview}><Mark /><span>split</span></button><div>{authenticated ? <button className="welcome-login" onClick={onEnter}>Abrir mi espacio <b>→</b></button> : <button className="welcome-login" onClick={onLogin}>Ingresar <b>→</b></button>}</div></header>
-  <div className="welcome-grid">
-    <div className="welcome-copy"><span className="welcome-kicker">GASTOS QUE SE ENTIENDEN</span><h1>La plata del grupo,<br /><em>sin vueltas.</em></h1><p>Gastos compartidos, balances y liquidaciones como en Ticket Splitter, junto con actividad personal, panorama financiero y regalos.</p><div className="welcome-actions"><button className="welcome-primary" onClick={onEnter}>{authenticated ? 'Abrir mis grupos' : 'Empezar a organizar'} <b>→</b></button><button className="welcome-secondary" onClick={onPreview}>Ver cómo funciona <span>↓</span></button></div><ul className="welcome-points"><li><i>01</i><span>Grupos, gastos compartidos y balances</span></li><li><i>02</i><span>Actividad personal y panorama de gastos</span></li><li><i>03</i><span>Wishlists y regalos entre grupos</span></li></ul></div>
-    <div className="welcome-product" aria-label="Vista previa de un grupo de gastos"><div className="product-window-bar"><span /><span /><span /><b>Esta noche ✦</b><small>4 personas</small></div><div className="product-main"><div className="product-intro"><span>GRUPO ACTUAL</span><h2>La previa de Juli</h2><p>Todo el plan, en una sola cuenta.</p></div><div className="product-total"><span>Te toca</span><strong>$ 8.420</strong><small>2 gastos pendientes</small></div><article className="product-row"><Avatar name="M" tone="orange" /><div><b>Pizza y birras</b><small>Pagó Mora · ayer</small></div><strong>$ 24.000</strong></article><article className="product-row"><Avatar name="A" tone="violet" /><div><b>Viaje de vuelta</b><small>Pagó Agus · ayer</small></div><strong>$ 12.800</strong></article><div className="product-settlement"><span>⌁</span><p><b>Listo para cerrar</b><small>3 personas le deben a Mora</small></p><button onClick={onEnter}>Ver balance →</button></div></div><div className="product-footer"><span>⌂ Resumen</span><span>♧ Grupo</span><button onClick={onEnter}>＋</button><span>♔ Regalos</span></div></div>
-  </div>
-  <footer className="welcome-footer"><span>GRUPOS</span><i /> <span>GASTOS PERSONALES</span><i /> <span>REGALOS</span><i /> <span>PANORAMA</span></footer>
-</section> }
-
-function Home({ balance, onExpense, onGroups, onPanorama, onGift }: { balance: number; onExpense: () => void; onGroups: () => void; onPanorama: () => void; onGift: () => void }) { return <>
+function Home({ balance, onDivide, onExpense, onGroups, onPanorama, onGift }: { balance: number; onDivide: () => void; onExpense: () => void; onGroups: () => void; onPanorama: () => void; onGift: () => void }) { return <>
   <div className="eyebrow">La cuenta del grupo <span>〰</span></div><h1>Que la plata<br /><em>no corte el plan.</em></h1>
   <section className="hero-panel stagger"><div className="group-line"><div><span className="kicker">GRUPO ACTUAL</span><h2>Militantes del mood</h2></div><span className="members">♧ 4</span></div><div className="hero-actions"><button onClick={onExpense}>＋<span>Agregar gasto</span></button><button className="pink" onClick={onGift}>♔<span>Regalo de Fran</span></button></div><div className="balance"><span>MI BALANCE</span><strong>− {money.format(6175)}</strong><small>Te queda una liquidación pendiente</small></div><div className="settlement"><Avatar name="B" /><p><b>Betu</b> le debe a <b>matias.arbues7</b><strong>{money.format(6175)}</strong></p><button>Resolver →</button></div></section>
-  <section className="experience-switcher" aria-label="Elegí qué espacio abrir"><button className="experience-tile" onClick={onGroups}><span>♧</span><div><b>Gastos compartidos</b><small>Grupos, integrantes, balances y liquidaciones</small></div><i>→</i></button><button className="experience-tile personal" onClick={onPanorama}><span>⌁</span><div><b>Mis finanzas</b><small>Actividad personal y panorama del ETL</small></div><i>→</i></button></section>
+  <section className="experience-switcher" aria-label="Elegí qué espacio abrir"><button className="experience-tile" onClick={onDivide}><span>✂</span><div><b>Ticket Splitter clásico</b><small>División rápida sin registro, guardada en este navegador</small></div><i>→</i></button><button className="experience-tile" onClick={onGroups}><span>♧</span><div><b>Gastos compartidos</b><small>Grupos, integrantes, balances y liquidaciones</small></div><i>→</i></button><button className="experience-tile personal" onClick={onPanorama}><span>⌁</span><div><b>Mis finanzas</b><small>Actividad personal y panorama del ETL</small></div><i>→</i></button></section>
   <section className="feature-card"><span className="action-icon">⌘</span><div><h3>Tu plata, con memoria</h3><p>Gastos compartidos, tickets y hábitos en una sola vista.</p></div><button onClick={onPanorama}>Ver mi panorama <b>→</b></button></section>
   <div className="metrics"><div><span>GASTO DEL GRUPO</span><strong>{money.format(balance)}</strong><small>últimos 7 días</small></div><div><span>PRÓXIMO HITO</span><strong>Fran · 21 sep</strong><small>Regalo en marcha</small></div></div>
 </> }
