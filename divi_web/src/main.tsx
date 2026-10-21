@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
+import './premium.css'
 
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
 
@@ -24,10 +25,40 @@ type Forecast = {
 }
 
 const money = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 })
-const apiBase = import.meta.env.VITE_API_URL || ''
-const cognitoDomain = (import.meta.env.VITE_COGNITO_DOMAIN || '').replace(/\/$/, '')
-const cognitoClientId = import.meta.env.VITE_COGNITO_CLIENT_ID || ''
-const authRedirectUri = `${window.location.origin}/auth/callback`
+// Public production settings are fallbacks so a missing Vercel build variable
+// does not make the deployed application unusable. Vercel/local values override.
+const apiBase = import.meta.env.VITE_API_URL || 'https://308jvhhj9f.execute-api.us-east-2.amazonaws.com'
+const cognitoDomain = (import.meta.env.VITE_COGNITO_DOMAIN || 'https://divi-expenses-039434644707.auth.us-east-2.amazoncognito.com').replace(/\/$/, '')
+const cognitoClientId = import.meta.env.VITE_COGNITO_CLIENT_ID || '132dokn7kaddbfmoba6e9882qq'
+const authRedirectUri = import.meta.env.VITE_COGNITO_REDIRECT_URI || 'https://etl-expenses.vercel.app/auth/callback'
+const mercadoPagoPublicKey = import.meta.env.VITE_MERCADOPAGO_PUBLIC_KEY || ''
+
+type MercadoPagoCardForm = {
+  getCardFormData: () => { token?: string }
+  unmount?: () => void
+}
+type MercadoPagoSdk = {
+  cardForm: (options: Record<string, unknown>) => MercadoPagoCardForm
+}
+
+function loadMercadoPagoSdk(): Promise<void> {
+  if ((window as Window & { MercadoPago?: unknown }).MercadoPago) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const current = document.querySelector<HTMLScriptElement>('script[data-mercadopago-sdk]')
+    if (current) {
+      current.addEventListener('load', () => resolve(), { once: true })
+      current.addEventListener('error', () => reject(new Error('No pudimos cargar el formulario seguro de Mercado Pago.')), { once: true })
+      return
+    }
+    const script = document.createElement('script')
+    script.src = 'https://sdk.mercadopago.com/js/v2'
+    script.async = true
+    script.dataset.mercadopagoSdk = 'true'
+    script.onload = () => { script.dataset.loaded = 'true'; resolve() }
+    script.onerror = () => reject(new Error('No pudimos cargar el formulario seguro de Mercado Pago.'))
+    document.head.appendChild(script)
+  })
+}
 
 function base64Url(bytes: Uint8Array) {
   let binary = ''
@@ -35,13 +66,14 @@ function base64Url(bytes: Uint8Array) {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function startCognitoLogin() {
-  if (!cognitoDomain || !cognitoClientId) throw new Error('Falta configurar Cognito en Vercel.')
+async function startCognitoLogin(returnView: View = 'home') {
+  if (!cognitoDomain || !cognitoClientId) throw new Error('No está configurado el acceso. Revisá VITE_COGNITO_DOMAIN y VITE_COGNITO_CLIENT_ID en Vercel.')
   const random = new Uint8Array(48)
   crypto.getRandomValues(random)
   const verifier = base64Url(random)
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
   sessionStorage.setItem('split_pkce_verifier', verifier)
+  sessionStorage.setItem('split_return_view', returnView)
   const query = new URLSearchParams({
     response_type: 'code', client_id: cognitoClientId, redirect_uri: authRedirectUri,
     code_challenge_method: 'S256', code_challenge: base64Url(new Uint8Array(digest)),
@@ -70,7 +102,7 @@ const previewForecast: Forecast = {
 }
 
 async function api(path: string, method = 'GET', body?: unknown) {
-  if (!apiBase) return null
+  if (!apiBase) throw new Error('Falta configurar VITE_API_URL para conectar la aplicación.')
   const token = localStorage.getItem('split_access_token')
   const result = await fetch(`${apiBase}${path}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined })
   if (!result.ok) throw new Error((await result.json()).error || 'No pudimos completar la acción')
@@ -95,24 +127,39 @@ function App() {
     { title: 'Uber de vuelta', category: 'Transporte', amount: 9800, payer: 'Betu', date: '14 sep' },
   ])
   const [groups, setGroups] = useState<GroupSummary[]>([])
-  const [activeGroupId, setActiveGroupId] = useState('demo')
+  const [activeGroupId, setActiveGroupId] = useState('')
   const [groupRefresh, setGroupRefresh] = useState(0)
   const [chat, setChat] = useState<string[]>(['Hola, soy tu asistente. Puedo ayudarte a ordenar gastos, ver tu balance o armar el regalo de Fran ✦'])
   const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem('split_access_token')))
   const [authMessage, setAuthMessage] = useState('')
   const balance = useMemo(() => expenses.reduce((sum, expense) => sum + expense.amount, 0), [expenses])
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
-  const authenticate = async () => {
-    try { await startCognitoLogin() } catch (error) { setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') }
+  const authenticate = async (returnView: View = view) => {
+    try { await startCognitoLogin(returnView) } catch (error) { setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') }
   }
   const signOut = () => {
     localStorage.removeItem('split_access_token')
     sessionStorage.removeItem('split_pkce_verifier')
+    sessionStorage.removeItem('split_return_view')
+    sessionStorage.removeItem('split_open_premium_after_login')
     setAuthenticated(false)
+    setGroups([])
+    setActiveGroupId('')
+    setView('welcome')
     setAuthMessage('Sesión cerrada.')
   }
+  const beginOrganizing = () => {
+    if (authenticated) { setView('groups'); return }
+    void authenticate('groups')
+  }
+  const openPremium = () => {
+    if (authenticated) { setOverlay('premium'); return }
+    sessionStorage.setItem('split_open_premium_after_login', 'true')
+    void authenticate('wallet')
+  }
   const openExpense = (groupId = activeGroupId) => {
-    if (!apiBase || !groupId || groupId === 'demo') { notify('Primero conectá la API, iniciá sesión y creá o elegí un grupo.'); return }
+    if (!authenticated) { void authenticate('groups'); return }
+    if (!groupId) { setView('groups'); notify('Creá o elegí un grupo antes de cargar un gasto.'); return }
     setActiveGroupId(groupId); setOverlay('expense')
   }
   const reserve = async (gift: Gift) => {
@@ -138,43 +185,59 @@ function App() {
         if (!tokens.id_token) throw new Error('Cognito no devolvió un token de identidad.')
         localStorage.setItem('split_access_token', tokens.id_token)
         sessionStorage.removeItem('split_pkce_verifier')
+        const requestedView = sessionStorage.getItem('split_return_view')
+        const allowedViews: View[] = ['home', 'groups', 'activity', 'wallet', 'settings', 'gifts', 'panorama']
+        const nextView = allowedViews.includes(requestedView as View) ? requestedView as View : 'groups'
+        sessionStorage.removeItem('split_return_view')
+        const resumePremium = sessionStorage.getItem('split_open_premium_after_login') === 'true'
+        sessionStorage.removeItem('split_open_premium_after_login')
         window.history.replaceState({}, '', '/')
         setAuthenticated(true)
+        setView(nextView)
+        if (resumePremium) setOverlay('premium')
         setAuthMessage('Sesión iniciada.')
       })
       .catch(error => setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.'))
   }, [])
   useEffect(() => {
-    if (!apiBase) return
+    if (!authenticated) { setGroups([]); setActiveGroupId(''); return }
+    let active = true
     void api('/v1/groups').then(result => {
+      if (!active) return
       if (Array.isArray(result)) {
         setGroups(result as GroupSummary[])
-        if (result[0]?.group_id) setActiveGroupId(result[0].group_id)
+        setActiveGroupId(result[0]?.group_id || '')
       }
-    }).catch(() => undefined)
-  }, [])
+    }).catch(error => { if (active) setAuthMessage(error instanceof Error ? error.message : 'No pudimos cargar tus grupos.') })
+    return () => { active = false }
+  }, [authenticated])
   useEffect(() => {
-    if (!apiBase) return
-    const token = new URLSearchParams(window.location.search).get('invite')
+    const token = new URLSearchParams(window.location.search).get('invite') || sessionStorage.getItem('split_pending_invite')
     if (!token) return
+    if (!authenticated) {
+      sessionStorage.setItem('split_pending_invite', token)
+      void authenticate('groups')
+      return
+    }
     void api(`/v1/invitations/${encodeURIComponent(token)}/accept`, 'POST').then(() => {
+      sessionStorage.removeItem('split_pending_invite')
       window.history.replaceState({}, '', window.location.pathname)
       notify('Invitación aceptada. El grupo ya aparece en tus grupos.')
       return api('/v1/groups')
-    }).then(result => { if (Array.isArray(result)) setGroups(result as GroupSummary[]) })
+    }).then(result => { if (Array.isArray(result)) { setGroups(result as GroupSummary[]); setActiveGroupId(result[0]?.group_id || '') } })
       .catch(error => notify(error instanceof Error ? error.message : 'No pudimos aceptar la invitación.'))
-  }, [])
+  }, [authenticated])
   return <main>
     <div className="aurora" /><div className="grain" />
-    {view === 'welcome' ? <Welcome authenticated={authenticated} onEnter={() => setView('home')} onLogin={() => void authenticate()} /> : <>
-      <header className="topbar"><button className="brand" onClick={() => setView('home')}><Mark /><span>split</span></button><div className="desktop-meta"><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate()}>Ingresar</button>}</div></header>
+    {view === 'welcome' ? <Welcome authenticated={authenticated} onEnter={beginOrganizing} onLogin={() => void authenticate('groups')} onPreview={() => setView('home')} /> : <>
+      <header className="topbar"><button className="brand" title="Volver a la portada" aria-label="Volver a la portada" onClick={() => setView('welcome')}><Mark /><span>split</span></button><div className="desktop-meta"><button className="home-return" onClick={() => setView('welcome')}>← Portada</button><button className={`panorama-link ${view === 'panorama' ? 'active' : ''}`} onClick={() => setView('panorama')}>⌁ Panorama</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate('groups')}>Ingresar</button>}</div></header>
       <section className="shell">
-        {view === 'home' && <Home balance={balance} onExpense={() => openExpense()} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
-        {view === 'groups' && <Groups groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onExpense={openExpense} onGift={() => setView('gifts')} />}
+        {view === 'home' && <Home balance={balance} onExpense={() => openExpense()} onGroups={() => setView('groups')} onPanorama={() => setView('panorama')} onGift={() => setView('gifts')} />}
+        {view === 'groups' && <Groups authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onSelectGroup={setActiveGroupId} onExpense={openExpense} onGift={() => setView('gifts')} />}
         {view === 'activity' && <Activity expenses={expenses} />}
-        {view === 'wallet' && <Wallet onPremium={() => setOverlay('premium')} />}
+        {view === 'wallet' && <Wallet onPremium={openPremium} />}
         {view === 'settings' && <Settings notify={notify} />}
-        {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onPool={() => setOverlay('pool')} />}
+        {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onBack={() => setView('groups')} onPool={() => setOverlay('pool')} />}
         {view === 'panorama' && <Panorama />}
       </section>
       <nav className="dock" aria-label="Navegación principal">
@@ -194,18 +257,19 @@ function App() {
   </main>
 }
 
-function Welcome({ authenticated, onEnter, onLogin }: { authenticated: boolean; onEnter: () => void; onLogin: () => void }) { return <section className="welcome">
-  <header className="welcome-nav"><button className="brand" onClick={onEnter}><Mark /><span>split</span></button><div>{authenticated ? <button className="welcome-login" onClick={onEnter}>Abrir mi espacio <b>→</b></button> : <button className="welcome-login" onClick={onLogin}>Ingresar <b>→</b></button>}</div></header>
+function Welcome({ authenticated, onEnter, onLogin, onPreview }: { authenticated: boolean; onEnter: () => void; onLogin: () => void; onPreview: () => void }) { return <section className="welcome">
+  <header className="welcome-nav"><button className="brand" title="Volver al inicio" onClick={onPreview}><Mark /><span>split</span></button><div>{authenticated ? <button className="welcome-login" onClick={onEnter}>Abrir mi espacio <b>→</b></button> : <button className="welcome-login" onClick={onLogin}>Ingresar <b>→</b></button>}</div></header>
   <div className="welcome-grid">
-    <div className="welcome-copy"><span className="welcome-kicker">GASTOS QUE SE ENTIENDEN</span><h1>La plata del grupo,<br /><em>sin vueltas.</em></h1><p>Registrá gastos, cerrá cuentas y organizá regalos sin perseguir a nadie ni abrir otra planilla.</p><div className="welcome-actions"><button className="welcome-primary" onClick={onEnter}>Empezar a organizar <b>→</b></button><button className="welcome-secondary" onClick={onEnter}>Ver cómo funciona <span>↓</span></button></div><ul className="welcome-points"><li><i>01</i><span>Gastos personales y compartidos</span></li><li><i>02</i><span>Balances simples, listos para saldar</span></li><li><i>03</i><span>Wishlists y regalos en grupo, sin spoilers</span></li></ul></div>
+    <div className="welcome-copy"><span className="welcome-kicker">GASTOS QUE SE ENTIENDEN</span><h1>La plata del grupo,<br /><em>sin vueltas.</em></h1><p>Gastos compartidos, balances y liquidaciones como en Ticket Splitter, junto con actividad personal, panorama financiero y regalos.</p><div className="welcome-actions"><button className="welcome-primary" onClick={onEnter}>{authenticated ? 'Abrir mis grupos' : 'Empezar a organizar'} <b>→</b></button><button className="welcome-secondary" onClick={onPreview}>Ver cómo funciona <span>↓</span></button></div><ul className="welcome-points"><li><i>01</i><span>Grupos, gastos compartidos y balances</span></li><li><i>02</i><span>Actividad personal y panorama de gastos</span></li><li><i>03</i><span>Wishlists y regalos entre grupos</span></li></ul></div>
     <div className="welcome-product" aria-label="Vista previa de un grupo de gastos"><div className="product-window-bar"><span /><span /><span /><b>Esta noche ✦</b><small>4 personas</small></div><div className="product-main"><div className="product-intro"><span>GRUPO ACTUAL</span><h2>La previa de Juli</h2><p>Todo el plan, en una sola cuenta.</p></div><div className="product-total"><span>Te toca</span><strong>$ 8.420</strong><small>2 gastos pendientes</small></div><article className="product-row"><Avatar name="M" tone="orange" /><div><b>Pizza y birras</b><small>Pagó Mora · ayer</small></div><strong>$ 24.000</strong></article><article className="product-row"><Avatar name="A" tone="violet" /><div><b>Viaje de vuelta</b><small>Pagó Agus · ayer</small></div><strong>$ 12.800</strong></article><div className="product-settlement"><span>⌁</span><p><b>Listo para cerrar</b><small>3 personas le deben a Mora</small></p><button onClick={onEnter}>Ver balance →</button></div></div><div className="product-footer"><span>⌂ Resumen</span><span>♧ Grupo</span><button onClick={onEnter}>＋</button><span>♔ Regalos</span></div></div>
   </div>
   <footer className="welcome-footer"><span>GRUPOS</span><i /> <span>GASTOS PERSONALES</span><i /> <span>REGALOS</span><i /> <span>PANORAMA</span></footer>
 </section> }
 
-function Home({ balance, onExpense, onPanorama, onGift }: { balance: number; onExpense: () => void; onPanorama: () => void; onGift: () => void }) { return <>
+function Home({ balance, onExpense, onGroups, onPanorama, onGift }: { balance: number; onExpense: () => void; onGroups: () => void; onPanorama: () => void; onGift: () => void }) { return <>
   <div className="eyebrow">La cuenta del grupo <span>〰</span></div><h1>Que la plata<br /><em>no corte el plan.</em></h1>
   <section className="hero-panel stagger"><div className="group-line"><div><span className="kicker">GRUPO ACTUAL</span><h2>Militantes del mood</h2></div><span className="members">♧ 4</span></div><div className="hero-actions"><button onClick={onExpense}>＋<span>Agregar gasto</span></button><button className="pink" onClick={onGift}>♔<span>Regalo de Fran</span></button></div><div className="balance"><span>MI BALANCE</span><strong>− {money.format(6175)}</strong><small>Te queda una liquidación pendiente</small></div><div className="settlement"><Avatar name="B" /><p><b>Betu</b> le debe a <b>matias.arbues7</b><strong>{money.format(6175)}</strong></p><button>Resolver →</button></div></section>
+  <section className="experience-switcher" aria-label="Elegí qué espacio abrir"><button className="experience-tile" onClick={onGroups}><span>♧</span><div><b>Gastos compartidos</b><small>Grupos, integrantes, balances y liquidaciones</small></div><i>→</i></button><button className="experience-tile personal" onClick={onPanorama}><span>⌁</span><div><b>Mis finanzas</b><small>Actividad personal y panorama del ETL</small></div><i>→</i></button></section>
   <section className="feature-card"><span className="action-icon">⌘</span><div><h3>Tu plata, con memoria</h3><p>Gastos compartidos, tickets y hábitos en una sola vista.</p></div><button onClick={onPanorama}>Ver mi panorama <b>→</b></button></section>
   <div className="metrics"><div><span>GASTO DEL GRUPO</span><strong>{money.format(balance)}</strong><small>últimos 7 días</small></div><div><span>PRÓXIMO HITO</span><strong>Fran · 21 sep</strong><small>Regalo en marcha</small></div></div>
 </> }
@@ -268,7 +332,7 @@ function Panorama() {
   </>
 }
 
-function Groups({ groups, refreshSignal, onRefresh, onExpense, onGift }: { groups: GroupSummary[]; refreshSignal: number; onRefresh: () => void; onExpense: (groupId: string) => void; onGift: () => void }) {
+function Groups({ authenticated, onLogin, groups, refreshSignal, onRefresh, onSelectGroup, onExpense, onGift }: { authenticated: boolean; onLogin: () => void; groups: GroupSummary[]; refreshSignal: number; onRefresh: () => void; onSelectGroup: (groupId: string) => void; onExpense: (groupId: string) => void; onGift: () => void }) {
   const [selectedId, setSelectedId] = useState('')
   const [members, setMembers] = useState<GroupMember[]>([])
   const [groupExpenses, setGroupExpenses] = useState<GroupExpenseRecord[]>([])
@@ -301,12 +365,16 @@ function Groups({ groups, refreshSignal, onRefresh, onExpense, onGift }: { group
     return () => { active = false }
   }, [selected?.group_id, refreshSignal])
 
+  const startCreatingGroup = () => {
+    if (!authenticated) { onLogin(); return }
+    setCreating(value => !value); setCreateError('')
+  }
   const createGroup = async (event: FormEvent) => {
     event.preventDefault(); setCreateError('')
     try {
       const result = await api('/v1/groups', 'POST', { name: groupName.trim() }) as GroupSummary | null
       if (!result?.group_id) throw new Error('La API no devolvió el grupo creado. Revisá tu sesión e intentá de nuevo.')
-      setGroupName(''); setCreating(false); onRefresh(); setSelectedId(result.group_id)
+      setGroupName(''); setCreating(false); setSelectedId(result.group_id); onSelectGroup(result.group_id); onRefresh()
     } catch (e) { setCreateError(e instanceof Error ? e.message : 'No se pudo crear el grupo.') }
   }
   const createInvite = async () => {
@@ -325,12 +393,12 @@ function Groups({ groups, refreshSignal, onRefresh, onExpense, onGift }: { group
   const visibleExpenses = groupExpenses.filter(expense => !expense.deleted_at)
 
   return <>
-    <div className="page-title"><div><span className="kicker">TU GENTE</span><h1>Mis grupos</h1></div><button className="outline" onClick={() => { setCreating(value => !value); setCreateError('') }}>＋ Crear grupo</button></div>
+    <div className="page-title"><div><span className="kicker">GASTOS COMPARTIDOS · GRUPOS Y BALANCES</span><h1>Mis grupos</h1><p className="page-description">La experiencia clásica para dividir gastos, invitar integrantes y cerrar cuentas.</p></div><button className="outline" onClick={startCreatingGroup}>{authenticated ? '＋ Crear grupo' : 'Ingresar'}</button></div>
     {creating && <form className="group-create" onSubmit={createGroup}><label>Nombre del grupo<input autoFocus maxLength={80} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="Ej. Viaje a Bariloche" required minLength={2} /></label><button className="primary" type="submit">Crear grupo</button><button type="button" className="outline" onClick={() => setCreating(false)}>Cancelar</button>{createError && <p className="form-error" role="alert">{createError}</p>}</form>}
-    {!apiBase && <section className="insight"><span>ⓘ</span><div><h3>Conectá la API para gestionar grupos</h3><p>Esta vista no inventa grupos ni saldos: configurá VITE_API_URL e iniciá sesión para cargar tus datos.</p></div></section>}
-    {apiBase && groups.length === 0 && !loading && <section className="insight"><span>♧</span><div><h3>Todavía no tenés grupos</h3><p>Creá uno para empezar a cargar gastos compartidos e invitar a tus amigos.</p></div></section>}
-    {groups.length > 0 && <>
-      <section className="group-grid">{groups.map(group => <button className={`group-card ${group.group_id === selected?.group_id ? 'selected' : ''}`} onClick={() => setSelectedId(group.group_id)} key={group.group_id}><span className="orb cyan">♧</span><div><h2>{group.name}</h2><p>{group.legacy_source_key ? 'Grupo migrado · vinculá a sus miembros' : `Grupo activo · ${group.currency}`}</p></div><strong>{group.group_id === selected?.group_id ? 'Seleccionado' : 'Ver grupo'}</strong><i>→</i></button>)}</section>
+    {!authenticated && <section className="insight"><span>♧</span><div><h3>Ingresá para abrir tu espacio compartido</h3><p>Acá vas a encontrar grupos, gastos divididos, integrantes, balances y liquidaciones. Tus espacios personales, actividad y regalos siguen disponibles desde la navegación.</p><button onClick={onLogin}>Ingresar con Cognito →</button></div></section>}
+    {authenticated && apiBase && groups.length === 0 && !loading && <section className="insight"><span>♧</span><div><h3>Todavía no tenés grupos</h3><p>Creá uno para empezar a cargar gastos compartidos e invitar a tus amigos.</p><button onClick={() => setCreating(true)}>＋ Crear mi primer grupo</button></div></section>}
+    {authenticated && groups.length > 0 && <>
+      <section className="group-grid">{groups.map(group => <button className={`group-card ${group.group_id === selected?.group_id ? 'selected' : ''}`} onClick={() => { setSelectedId(group.group_id); onSelectGroup(group.group_id) }} key={group.group_id}><span className="orb cyan">♧</span><div><h2>{group.name}</h2><p>{group.legacy_source_key ? 'Grupo migrado · vinculá a sus miembros' : `Grupo activo · ${group.currency}`}</p></div><strong>{group.group_id === selected?.group_id ? 'Seleccionado' : 'Ver grupo'}</strong><i>→</i></button>)}</section>
       {selected && <section className="group-detail">
         <header className="group-detail-head"><div><span className="kicker">DETALLE DEL GRUPO</span><h2>{selected.name}</h2><p>{members.length} integrantes · moneda {selected.currency}</p></div><div><button className="outline" onClick={createInvite}>↗ Invitar</button><button className="outline" onClick={() => onExpense(selected.group_id)}>＋ Agregar gasto</button><button className="outline" onClick={onGift}>Regalos</button></div></header>
         {inviteUrl && <div className="invite-link" role="status"><b>Link de invitación listo</b><input value={inviteUrl} readOnly aria-label="Link de invitación" /><small>Se copió al portapapeles si tu navegador lo permitió. Es de un solo uso y vence en 7 días.</small></div>}
@@ -353,7 +421,7 @@ function Wallet({ onPremium }: { onPremium: () => void }) { return <><div classN
 
 function Settings({ notify }: { notify: (message: string) => void }) { return <><div className="page-title"><div><span className="kicker">TU ESPACIO</span><h1>Ajustes</h1></div><Avatar name="Betu" /></div><section className="settings-list"><Action icon="◉" title="Perfil" caption="Nombre, alias y foto" onClick={() => notify('Perfil listo para editar.')} /><Action icon="♧" title="Notificaciones" caption="Recordatorios de grupos y pagos" onClick={() => notify('Solicitamos permiso de notificaciones.')} /><Action icon="◒" title="Apariencia" caption="Noche aurora" onClick={() => notify('La apariencia se adapta al sistema.')} /><Action icon="⊙" title="Mercado Pago" caption="Conectá tu cuenta para organizar pools" onClick={() => { api('/v1/mercadopago/oauth/start', 'POST').then((result: any) => result?.authorization_url && (window.location.href = result.authorization_url)).catch(() => notify('Configuraremos tu cuenta de Mercado Pago.')) }} /><Action icon="?" title="Ayuda" caption="Preguntas frecuentes y soporte" /></section><p className="version">SPLIT / 0.1.0<br />hecho para compartir</p></> }
 
-function Gifts({ gifts, reserve, onPool }: { gifts: Gift[]; reserve: (gift: Gift) => void; onPool: () => void }) { return <><button className="back" onClick={() => history.back()}>← Volver a grupos</button><div className="gift-hero"><span className="kicker">CUMPLEAÑOS · 21 SEP</span><h1>El regalo de<br /><em>Fran.</em></h1><p>Su wishlist es una sola, aunque esté en varios grupos. Sin regalos repetidos.</p></div><section className="pool-progress"><div><span>POOL ACTIVO</span><strong>$ 32.000 <small>de $ 48.000</small></strong></div><div className="progress"><i /></div><button onClick={onPool}>Aportar al pool →</button></section><div className="wishlist-head"><div><h2>Wishlist de Fran</h2><p>Solo Fran puede editar esta lista.</p></div><span className="privacy">◌ sin spoilers</span></div><div className="gift-list">{gifts.map(gift => <article className={`gift ${!gift.available ? 'reserved' : ''}`} key={gift.id}><div className="gift-visual">{gift.title.includes('Auriculares') ? '◖◗' : gift.title.includes('Cafetera') ? '♨' : '◒'}</div><div><h3>{gift.title}</h3><p>{money.format(gift.price)}</p>{!gift.available && <small>Este regalo ya fue elegido</small>}</div><button disabled={!gift.available} onClick={() => reserve(gift)}>{gift.available ? 'Elegir regalo' : 'No disponible'}</button></article>)}</div></> }
+function Gifts({ gifts, reserve, onBack, onPool }: { gifts: Gift[]; reserve: (gift: Gift) => void; onBack: () => void; onPool: () => void }) { return <><button className="back" onClick={onBack}>← Volver a grupos</button><div className="gift-hero"><span className="kicker">CUMPLEAÑOS · 21 SEP</span><h1>El regalo de<br /><em>Fran.</em></h1><p>Su wishlist es una sola, aunque esté en varios grupos. Sin regalos repetidos.</p></div><section className="pool-progress"><div><span>POOL ACTIVO</span><strong>$ 32.000 <small>de $ 48.000</small></strong></div><div className="progress"><i /></div><button onClick={onPool}>Aportar al pool →</button></section><div className="wishlist-head"><div><h2>Wishlist de Fran</h2><p>Solo Fran puede editar esta lista.</p></div><span className="privacy">◌ sin spoilers</span></div><div className="gift-list">{gifts.map(gift => <article className={`gift ${!gift.available ? 'reserved' : ''}`} key={gift.id}><div className="gift-visual">{gift.title.includes('Auriculares') ? '◖◗' : gift.title.includes('Cafetera') ? '♨' : '◒'}</div><div><h3>{gift.title}</h3><p>{money.format(gift.price)}</p>{!gift.available && <small>Este regalo ya fue elegido</small>}</div><button disabled={!gift.available} onClick={() => reserve(gift)}>{gift.available ? 'Elegir regalo' : 'No disponible'}</button></article>)}</div></> }
 
 function ExpenseModal({ groupId, close, submit, onSaved }: { groupId: string; close: () => void; submit: (expense: Expense) => void; onSaved: () => void }) {
   const [amount, setAmount] = useState(''); const [description, setDescription] = useState(''); const [members, setMembers] = useState<GroupMember[]>([]); const [participants, setParticipants] = useState<string[]>([]); const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
@@ -376,7 +444,89 @@ function ExpenseModal({ groupId, close, submit, onSaved }: { groupId: string; cl
 
 function Assistant({ chat, setChat, close }: { chat: string[]; setChat: (value: string[]) => void; close: () => void }) { const [prompt, setPrompt] = useState(''); const ask = (event: FormEvent) => { event.preventDefault(); if (!prompt.trim()) return; setChat([...chat, `Vos: ${prompt}`, 'Asistente: Para este grupo, lo más simple es cargarlo como gasto igual y cerrar la liquidación después.']); setPrompt('') }; return <Modal title="Asistente" subtitle="Tu ayuda para ordenar gastos" close={close} wide><div className="chat">{chat.map((line, index) => <p className={line.startsWith('Vos:') ? 'user' : ''} key={index}>{line}</p>)}</div><div className="suggestions"><button onClick={() => setChat([...chat, 'Asistente: Esta semana gastaste más en salidas, principalmente el viernes.'])}>¿En qué gasté más?</button><button onClick={() => setChat([...chat, 'Asistente: Fran tiene 3 regalos posibles; el pool ya completó el 67%.'])}>¿Cómo va el regalo?</button></div><form className="ask" onSubmit={ask}><input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Escribí tu consulta…" /><button>↗</button></form></Modal> }
 
-function PremiumModal({ close, notify }: { close: () => void; notify: (message: string) => void }) { const [card, setCard] = useState(''); const start = async (event: FormEvent) => { event.preventDefault(); try { const result: any = await api('/v1/premium/checkout', 'POST', { card_token_id: card }); if (result) notify('Suscripción autorizada. Tu prueba de 60 días ya está activa.') } catch (e) { notify(e instanceof Error ? e.message : 'Usá Mercado Pago para completar la suscripción.') } }; return <Modal title="Subirse a Premium" subtitle="$3.000 ARS / mes · 60 días sin cargo" close={close}><section className="premium-in-modal"><span className="crown">♔</span><h2>Más señal. Menos fricción.</h2><ul><li>30 escaneos de tickets por mes</li><li>Wallet personal completa</li><li>Exportar a CSV e historial ilimitado</li><li>Soporte prioritario</li></ul></section><form className="pay-form" onSubmit={start}><label>Token de tarjeta de Mercado Pago<input value={card} onChange={e => setCard(e.target.value)} placeholder="Generado por Mercado Pago Bricks" /></label><small>No guardamos datos de tarjeta. El token se envía directo a Mercado Pago.</small><button className="primary">Activar 60 días gratis <b>→</b></button></form></Modal> }
+function PremiumModal({ close, notify }: { close: () => void; notify: (message: string) => void }) {
+  const [formLoading, setFormLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    let cardForm: MercadoPagoCardForm | undefined
+    if (!mercadoPagoPublicKey) {
+      setFormLoading(false)
+      setError('Falta configurar VITE_MERCADOPAGO_PUBLIC_KEY en Vercel para habilitar el formulario seguro.')
+      return () => { active = false }
+    }
+    void loadMercadoPagoSdk().then(() => {
+      if (!active) return
+      const sdk = (window as Window & { MercadoPago?: MercadoPagoSdk }).MercadoPago
+      if (!sdk) throw new Error('No pudimos iniciar el formulario de Mercado Pago.')
+      cardForm = sdk.cardForm({
+        amount: '3000',
+        iframe: true,
+        form: {
+          id: 'premium-card-checkout',
+          cardNumber: { id: 'premium-card-number', placeholder: 'Número de tarjeta' },
+          expirationDate: { id: 'premium-card-expiry', placeholder: 'MM/YY' },
+          securityCode: { id: 'premium-card-security', placeholder: 'Código de seguridad' },
+          cardholderName: { id: 'premium-cardholder-name', placeholder: 'Nombre como aparece en la tarjeta' },
+          issuer: { id: 'premium-card-issuer', placeholder: 'Banco emisor' },
+          installments: { id: 'premium-card-installments', placeholder: 'Cuotas' },
+          identificationType: { id: 'premium-id-type', placeholder: 'Tipo de documento' },
+          identificationNumber: { id: 'premium-id-number', placeholder: 'Número de documento' },
+          cardholderEmail: { id: 'premium-cardholder-email', placeholder: 'Correo electrónico' },
+        },
+        callbacks: {
+          onFormMounted: (mountError: unknown) => {
+            if (!active) return
+            setFormLoading(false)
+            if (mountError) setError('No se pudo cargar el formulario de Mercado Pago. Cerralo y volvé a intentar.')
+          },
+          onSubmit: async (event: Event) => {
+            event.preventDefault()
+            if (!active) return
+            setError('')
+            setSubmitting(true)
+            try {
+              const cardToken = cardForm?.getCardFormData().token
+              if (!cardToken) throw new Error('Completá los datos de la tarjeta para continuar.')
+              const result = await api('/v1/premium/checkout', 'POST', { card_token_id: cardToken }) as { status?: string; subscription_id?: string } | null
+              if (String(result?.status || '').toLowerCase() === 'authorized') {
+                notify('Mercado Pago autorizó la suscripción. Premium ya está activo.')
+                close()
+              } else {
+                setError(`Mercado Pago recibió la solicitud, pero la suscripción aún no está autorizada${result?.status ? ` (estado: ${result.status})` : ''}.`)
+              }
+            } catch (submitError) {
+              if (active) setError(submitError instanceof Error ? submitError.message : 'No pudimos completar la suscripción.')
+            } finally {
+              if (active) setSubmitting(false)
+            }
+          },
+        },
+      })
+    }).catch(loadError => {
+      if (active) { setFormLoading(false); setError(loadError instanceof Error ? loadError.message : 'No pudimos cargar Mercado Pago.') }
+    })
+    return () => { active = false; cardForm?.unmount?.() }
+  }, [])
+
+  return <Modal title="Subirse a Premium" subtitle="$3.000 ARS / mes · 60 días sin cargo" close={close}>
+    <section className="premium-in-modal"><span className="crown">♔</span><h2>Más señal. Menos fricción.</h2><ul><li>30 escaneos de tickets por mes</li><li>Wallet personal completa</li><li>Exportar a CSV e historial ilimitado</li><li>Soporte prioritario</li></ul></section>
+    <form id="premium-card-checkout" className="mp-card-form" onSubmit={event => event.preventDefault()}>
+      <label className="mp-field">Número de tarjeta<div id="premium-card-number" className="mp-card-frame" /></label>
+      <div className="mp-field-row"><label className="mp-field">Vencimiento<div id="premium-card-expiry" className="mp-card-frame" /></label><label className="mp-field">Código de seguridad<div id="premium-card-security" className="mp-card-frame" /></label></div>
+      <label className="mp-field">Titular<input id="premium-cardholder-name" autoComplete="cc-name" /></label>
+      <div className="mp-field-row"><label className="mp-field">Banco emisor<select id="premium-card-issuer" defaultValue=""><option value="" disabled>Seleccionar</option></select></label><label className="mp-field">Cuotas<select id="premium-card-installments" defaultValue=""><option value="" disabled>Seleccionar</option></select></label></div>
+      <div className="mp-field-row"><label className="mp-field">Documento<select id="premium-id-type" defaultValue=""><option value="" disabled>Tipo</option></select></label><label className="mp-field">Número de documento<input id="premium-id-number" autoComplete="off" /></label></div>
+      <label className="mp-field">Correo electrónico<input id="premium-cardholder-email" type="email" autoComplete="email" /></label>
+      <small>Los datos de tarjeta se capturan en campos seguros de Mercado Pago; Split solo recibe el token temporal.</small>
+      {formLoading && <p className="mp-form-status" role="status">Cargando formulario seguro…</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <button className="primary" type="submit" disabled={!mercadoPagoPublicKey || formLoading || submitting}>{submitting ? 'Enviando a Mercado Pago…' : 'Activar 60 días gratis'} <b>→</b></button>
+    </form>
+  </Modal>
+}
 
 function PoolModal({ poolId, close }: { poolId: string | null; close: () => void }) {
   const [amount, setAmount] = useState('5000')
