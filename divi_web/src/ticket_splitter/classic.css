@@ -33,6 +33,7 @@
 #ticket-splitter .classic-logo-detail { font-size: 14px; letter-spacing: 0; color: #c8e3df; font-weight: 500; }
 #ticket-splitter .classic-nav nav { display: flex; align-items: center; gap: 20px; font-size: 14px; font-weight: 600; }
 #ticket-splitter .classic-nav-space { display: inline-flex; align-items: center; gap: 9px; padding: 10px 16px; border: 1px solid #ffffff55; border-radius: 999px; }
+#ticket-splitter .classic-nav-etl { display: inline-flex; align-items: center; padding: 9px 13px; border: 1px solid #91d9b755; border-radius: 999px; color: #b8f4d3; }
 #ticket-splitter .classic-nav-space svg { width: 16px; height: 16px; }
 #ticket-splitter .classic-nav-login { color: #fde68a; }
 #ticket-splitter .classic-spaces { padding: 80px 0; background: #eef7f5; }
