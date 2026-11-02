@@ -1,11 +1,11 @@
 import { ArrowDownRight, ArrowRight, AudioLines, BellRing, Bot, Boxes, Braces, Database, FileImage, Mail, MessageCircle, ReceiptText, Search, Sparkles, WalletCards } from 'lucide-react'
 import './etl-overview.css'
 
-export function EtlOverview({ onNavigate, onHome }: { onNavigate: (destination: 'panorama') => void; onHome: () => void }) {
+export function EtlOverview({ onNavigate, onHome, embedded = false }: { onNavigate: (destination: 'panorama' | 'balance') => void; onHome: () => void; embedded?: boolean }) {
   return <div className="etl-page">
     <header className="etl-topline">
       <div className="etl-wordmark"><span className="etl-wave">∿</span><span>ETL<span> expenses</span></span></div>
-      <div className="etl-top-actions"><span className="etl-tagline">TUS MOVIMIENTOS, CON CONTEXTO</span><button onClick={onHome}>Mi espacio</button></div>
+      <div className="etl-top-actions"><span className="etl-tagline">TUS MOVIMIENTOS, CON CONTEXTO</span><button onClick={() => onNavigate('balance')}>Balance mensual</button><button onClick={onHome}>{embedded ? '↑ Volver a gastos compartidos' : '← Volver al inicio'}</button></div>
     </header>
 
     <section className="etl-hero" aria-labelledby="etl-title">

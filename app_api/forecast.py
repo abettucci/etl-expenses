@@ -236,12 +236,13 @@ def build_monthly_forecast(
             "recurring_total": round(recurring_total, 2),
             "flexible_total": round(max(forecast_total - recurring_total, 0), 2),
             "current_month_spent": round(current_month_spent, 2),
+            "current_month_recorded": current_month_spent > 0,
             "projected_month_end": projected_month_end,
             "trend_vs_last_month": trend,
             "confidence": confidence,
         },
         "monthly_history": [
-            {"month": month.isoformat(), "amount": round(monthly_totals[month], 2)}
+            {"month": month.isoformat(), "amount": round(monthly_totals[month], 2), "recorded": monthly_totals[month] > 0}
             for month in history_months
         ],
         "categories": category_forecast[:8],

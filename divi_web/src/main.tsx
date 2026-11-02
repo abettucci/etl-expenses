@@ -4,6 +4,9 @@ import './styles.css'
 import './premium.css'
 import { TicketSplitter } from './ticket_splitter/TicketSplitter'
 import { EtlOverview } from './etl-overview'
+import { ProductNavigation } from './product-navigation'
+import { FinancialBalance } from './financial-balance'
+import { landingArea, personalFinanceAnchor, sharedExpensesAnchor } from './landing-navigation'
 
 if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
@@ -17,7 +20,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => { /* The app still works without offline caching. */ }) })
 }
 
-type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl'
+type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
 type GroupSummary = { group_id: string; name: string; currency: string; role?: string; legacy_source_key?: string }
@@ -128,9 +131,11 @@ function Action({ icon, title, caption, onClick }: { icon: string; title: string
 const viewPaths: Record<View, string> = {
   welcome: '/', splitter: '/dividir', home: '/app', groups: '/grupos',
   activity: '/actividad', wallet: '/billetera', settings: '/ajustes',
-  gifts: '/regalos', panorama: '/panorama', etl: '/etl',
+  gifts: '/regalos', panorama: '/panorama', etl: '/#finanzas-personales', balance: '/balance',
 }
 function viewFromLocation(): View {
+  const landing = landingArea(window.location.pathname, window.location.hash)
+  if (landing) return landing
   const pathname = window.location.pathname.replace(/\/$/, '') || '/'
   return (Object.entries(viewPaths).find(([, value]) => value === pathname)?.[0] as View | undefined)
     || (pathname === '/settings' ? 'settings' : 'welcome')
@@ -143,7 +148,15 @@ function App() {
     window.history.pushState({}, '', viewPaths[nextView] + (pool ? `?pool=${encodeURIComponent(pool)}` : ''))
     setView(nextView)
     window.scrollTo(0, 0)
+    if (nextView === 'etl') window.requestAnimationFrame(() => document.getElementById(personalFinanceAnchor)?.scrollIntoView())
   }
+  useEffect(() => {
+    // /etl and the personal-finance anchor both open the same document.
+    if (view === 'etl') {
+      const frame = window.requestAnimationFrame(() => document.getElementById(window.location.hash === '#etl-process' ? 'etl-process' : personalFinanceAnchor)?.scrollIntoView())
+      return () => window.cancelAnimationFrame(frame)
+    }
+  }, [view])
   useEffect(() => {
     const onPopState = () => { setView(viewFromLocation()); window.scrollTo(0, 0) }
     window.addEventListener('popstate', onPopState)
@@ -216,7 +229,7 @@ function App() {
         localStorage.setItem('split_access_token', tokens.id_token)
         sessionStorage.removeItem('split_pkce_verifier')
         const requestedView = sessionStorage.getItem('split_return_view')
-        const allowedViews: View[] = ['splitter', 'home', 'groups', 'activity', 'wallet', 'settings', 'gifts', 'panorama', 'etl']
+        const allowedViews: View[] = ['splitter', 'home', 'groups', 'activity', 'wallet', 'settings', 'gifts', 'panorama', 'etl', 'balance']
         const nextView = allowedViews.includes(requestedView as View) ? requestedView as View : 'groups'
         sessionStorage.removeItem('split_return_view')
         const resumePremium = sessionStorage.getItem('split_open_premium_after_login') === 'true'
@@ -257,11 +270,17 @@ function App() {
     }).then(result => { if (Array.isArray(result)) { setGroups(result as GroupSummary[]); setActiveGroupId(result[0]?.group_id || '') } })
       .catch(error => notify(error instanceof Error ? error.message : 'No pudimos aceptar la invitación.'))
   }, [authenticated])
-  return <main className={view === 'welcome' || view === 'splitter' ? 'classic-screen' : view === 'etl' ? 'etl-app' : undefined}>
+  return <main className={view === 'welcome' || view === 'splitter' || view === 'etl' ? 'classic-screen unified-product' : 'unified-product'}>
     <div className="aurora" /><div className="grain" />
-    {view === 'etl' ? <EtlOverview onNavigate={() => navigate('panorama')} onHome={() => navigate('welcome')} /> : view === 'welcome' || view === 'splitter' ? <TicketSplitter page={view === 'splitter' ? 'calculator' : 'landing'} authenticated={authenticated} onLogin={() => void authenticate('groups')} onNavigate={destination => navigate(destination === '/dividir' ? 'splitter' : destination === '/app' ? 'home' : destination === '/etl' ? 'etl' : 'welcome')} /> : <>
-      <header className="topbar"><button className="brand" title="Volver a la portada" aria-label="Volver a la portada" onClick={() => navigate('welcome')}><Mark /><span>split</span></button><div className="desktop-meta"><button className="home-return" onClick={() => navigate('welcome')}>← Portada</button><button className="panorama-link" onClick={() => navigate('splitter')}>✂ Dividir</button><button className="panorama-link" onClick={() => navigate('etl')}>ETL Expenses</button><span className="pill live">● grupo activo</span>{authenticated ? <><Avatar name="Betu" /><button className="auth-button" onClick={signOut}>Salir</button></> : <button className="auth-button" onClick={() => void authenticate('groups')}>Ingresar</button>}</div></header>
+    <ProductNavigation area={view === 'balance' ? 'balance' : view === 'etl' || view === 'panorama' ? 'personal' : view === 'welcome' || view === 'splitter' ? 'shared' : 'workspace'} authenticated={authenticated} onNavigate={navigate} onLogin={() => void authenticate(view === 'balance' ? 'balance' : 'groups')} onLogout={signOut} />
+    {view === 'welcome' || view === 'etl' || view === 'splitter' ? <>
+      <section id={sharedExpensesAnchor} aria-label="Gastos compartidos con Ticket Splitter">
+        <TicketSplitter hideNavigation page={view === 'splitter' ? 'calculator' : 'landing'} authenticated={authenticated} onLogin={() => void authenticate('groups')} onNavigate={destination => navigate(destination === '/dividir' ? 'splitter' : destination === '/app' ? 'home' : destination === '/etl' ? 'etl' : 'welcome')} />
+      </section>
+      {view !== 'splitter' && <section id={personalFinanceAnchor} className="unified-personal" aria-label="Finanzas personales con ETL Expenses"><EtlOverview embedded onNavigate={navigate} onHome={() => navigate('welcome')} /></section>}
+    </> : <>
       <section className="shell">
+        {view === 'balance' && <FinancialBalance authenticated={authenticated} api={api} onLogin={() => void authenticate('balance')} />}
         {view === 'home' && <Home balance={balance} onDivide={() => navigate('splitter')} onExpense={() => openExpense()} onGroups={() => navigate('groups')} onPanorama={() => navigate('panorama')} onGift={() => navigate('gifts')} />}
         {view === 'groups' && <Groups authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onSelectGroup={setActiveGroupId} onExpense={openExpense} onGift={() => navigate('gifts')} />}
         {view === 'activity' && <Activity expenses={expenses} />}

@@ -26,6 +26,7 @@ from botocore.exceptions import ClientError
 
 from domain import allocations_from_items, expense_allocations, group_balances, money, normalize_payers, parse_amount_text, replace_ledger_user_id, simplify_debts
 from forecast import build_monthly_forecast, monthly_expenses_query
+from finance_balance import build_balance, save_income
 
 TABLE_NAME = os.environ["APP_TABLE"]
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
@@ -243,6 +244,36 @@ def finance_forecast(identity: dict[str, str]) -> dict[str, Any]:
     result["data_source"] = "etl_aggregated_read_only"
     put_audit(identity["user_id"], "finance.forecast.read", result["period"]["forecast_month"])
     return result
+
+
+def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
+    forecast = finance_forecast(identity)  # Existing owner guard also protects the warehouse read.
+    start = forecast['period']['history_start'][:7]
+    end = forecast['period']['forecast_month'][:7]
+    try:
+        result = table.query(KeyConditionExpression=Key('pk').eq(f"USER#{identity['user_id']}") &
+                             Key('sk').between(f'FINANCE_INCOME#{start}', f'FINANCE_INCOME#{end}'),
+                             ConsistentRead=True)
+        incomes = [{'month': row['sk'].split('#', 1)[1], 'amount': row['amount']}
+                   for row in result.get('Items', [])]
+        return build_balance(forecast, incomes)
+    except Exception as exc:
+        print(f'finance_balance_failed: {type(exc).__name__}')
+        raise ApiError(503, 'No pudimos cargar el balance mensual') from None
+
+
+def finance_save_income(identity: dict[str, str], month: str, payload: dict) -> dict:
+    try:
+        return save_income(table, user_id=identity['user_id'], enabled=FORECAST_ENABLED,
+                           owner_sub=FORECAST_OWNER_SUB, month=month, payload=payload,
+                           today=datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date(), updated_at=now())
+    except PermissionError:
+        raise ApiError(403, 'Tu cuenta todavía no tiene una fuente financiera vinculada') from None
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from None
+    except Exception as exc:
+        print(f'finance_income_save_failed: {type(exc).__name__}')
+        raise ApiError(503, 'No pudimos guardar el ingreso mensual') from None
 
 
 def list_groups(user_id: str) -> list[dict[str, Any]]:
@@ -976,6 +1007,10 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
             profile = ensure_profile(identity); profile["display_name"] = str(payload.get("display_name", profile["display_name"]))[:80]; table.put_item(Item=profile); return response(200, profile)
     if path == "/v1/finance/forecast" and method == "GET":
         return response(200, finance_forecast(identity))
+    if path == '/v1/finance/balance' and method == 'GET':
+        return response(200, finance_balance(identity))
+    if len(segments) == 4 and segments[:3] == ['v1', 'finance', 'income'] and method == 'PUT':
+        return response(200, finance_save_income(identity, segments[3], payload))
     if path == "/v1/identity-links" and method == "POST":
         return response(201, create_identity_link(identity["user_id"]))
     if path == "/v1/groups":

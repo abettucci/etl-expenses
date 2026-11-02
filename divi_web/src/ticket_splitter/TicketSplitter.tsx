@@ -8,15 +8,16 @@ import './classic.css'
 
 const Splitter = lazy(() => import('./Splitter'))
 
-export function TicketSplitter({ page, authenticated, onLogin, onNavigate }: {
+export function TicketSplitter({ page, authenticated, onLogin, onNavigate, hideNavigation = false }: {
   page: 'landing' | 'calculator'
   authenticated: boolean
   onLogin: () => void
   onNavigate: (destination: string) => void
+  hideNavigation?: boolean
 }) {
   return <div id="ticket-splitter"><NavigationProvider navigate={onNavigate}>
     {page === 'calculator' ? <Suspense fallback={<p className="p-8 text-center" role="status">Abriendo tus divisiones…</p>}><Splitter /></Suspense> : <>
-      <header className="classic-nav">
+      {!hideNavigation && <header className="classic-nav">
         <Link to="/" className="classic-logo"><ReceiptText aria-hidden="true" /><span>split<span className="classic-logo-detail"> / Ticket Splitter</span></span></Link>
         <nav aria-label="Espacios de la aplicación">
           <Link to="/dividir" className="classic-nav-divide">Dividir gastos</Link>
@@ -24,7 +25,7 @@ export function TicketSplitter({ page, authenticated, onLogin, onNavigate }: {
           <Link to="/app" className="classic-nav-space">Mi espacio <ArrowRight aria-hidden="true" /></Link>
           {!authenticated && <button onClick={onLogin} className="classic-nav-login">Ingresar</button>}
         </nav>
-      </header>
+      </header>}
       <Hero />
       <section className="classic-spaces" aria-labelledby="classic-spaces-title">
         <div className="container">
