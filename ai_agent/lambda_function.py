@@ -25,6 +25,9 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 from pydantic import ValidationError
 from variation_alerts import completed_comparison_periods, exceeds_variation_threshold
+from result_presenter import single_value_answer
+from agent_web import run_web_question, looks_read_only
+from question_period import calendar_context, dates_match_question
 from variation_commands import USAGE as VARIATION_COMMAND_USAGE, VariationCommandError, parse_variation_command
 from voice_expenses import (
     ManualExpenseIntent,
@@ -2700,7 +2703,7 @@ def build_enriched_schema_prompt():
     
     return "\n".join(schema_parts)
 
-def generate_sql_with_openai2(question, bq_client):
+def generate_sql_with_openai2(question, bq_client, *, for_web=False):
     """Genera SQL usando OpenAI con metadata enriquecida y few-shot learning"""
     try:
         # Construir schema enriquecido
@@ -2745,9 +2748,12 @@ PREGUNTA DEL USUARIO: "{question}"
 
 Genera la consulta SQL:"""
 
-        print(f"🤖 Generando SQL para: {question}")
+        print('agent_sql_generation_started')
         
-        res = openai_client.chat.completions.create(
+        system_prompt += '\n' + calendar_context(question, datetime.now(_TZ_AR).date())
+        system_prompt += '\nUn gasto total sin fuente explícita no debe limitarse silenciosamente a bank_payments. Usá las fuentes compatibles disponibles en el esquema, sin duplicar importes. Nunca sumes monedas distintas sin conversión a ARS. No confundir NULL con cero.'
+        model_client = openai_client.with_options(timeout=10, max_retries=0) if for_web else openai_client
+        res = model_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -2763,11 +2769,14 @@ Genera la consulta SQL:"""
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
         
-        print(f"📝 SQL generado:\n{sql}")
+        if not dates_match_question(sql, question, datetime.now(_TZ_AR).date()):
+            print('agent_query_period_rejected')
+            return ''
+        print('agent_sql_generated')
         return sql
         
     except Exception as e:
-        print(f"❌ Error generando SQL: {e}")
+        print(f'agent_sql_generation_failed type={type(e).__name__}')
         return ""
 
 def generate_sql_with_openai(question: str, bq_client) -> str:
@@ -2847,32 +2856,40 @@ def validate_sql_dry_run(client, sql: str) -> tuple:
     Retorna (is_valid: bool, error_message: str or None)
     """
     try:
+        if not looks_read_only(sql):
+            return False, 'Solo se permiten consultas de lectura.'
         job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
         query_job = client.query(sql, job_config=job_config)
+        if query_job.statement_type != 'SELECT':
+            return False, 'Solo se permiten consultas de lectura.'
+        for table_ref in query_job.referenced_tables or []:
+            if table_ref.project != GCP_PROJECT_ID or table_ref.dataset_id != BQ_DATASET_PROD:
+                return False, 'La consulta excede las fuentes permitidas.'
         # Si llegamos aquí, la query es válida
         bytes_processed = query_job.total_bytes_processed
         print(f"✅ Dry-run exitoso. Bytes a procesar: {bytes_processed}")
         return True, None
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Dry-run falló: {error_msg}")
+        print(f'agent_query_validation_failed type={type(e).__name__}')
         return False, error_msg
 
-def query_bigquery(client, sql: str) -> tuple:
+def query_bigquery(client, sql: str, *, timeout=None) -> tuple:
     """Ejecuta query en BigQuery. Retorna (texto, parse_mode) con parse_mode \"HTML\" si hay tabla formateada."""
+    query_job = None
     try:
-        print(f"🔍 Ejecutando query en BigQuery:\n{sql}")
+        print('agent_query_started')
         
         # Primero validar con dry-run
         is_valid, validation_error = validate_sql_dry_run(client, sql)
         if not is_valid:
             return (
-                f"❌ Error de sintaxis SQL:\n{validation_error}\n\nQuery:\n{sql}",
+                '❌ No pude consultar los gastos con esa pregunta. Intentá reformularla.',
                 False,
             )
         
-        query_job = client.query(sql)
-        results = query_job.result()  # Espera a que termine
+        query_job = client.query(sql, job_config=bigquery.QueryJobConfig(maximum_bytes_billed=100_000_000))
+        results = query_job.result(max_results=20, timeout=timeout)  # Export usa otra ruta.
         
         # Verificar si hay resultados
         if results.total_rows == 0:
@@ -2881,8 +2898,13 @@ def query_bigquery(client, sql: str) -> tuple:
         return (format_bigquery_results(results), "HTML")
         
     except Exception as e:
-        error_msg = f"❌ Error en BigQuery:\n{str(e)}\n\nSQL ejecutado:\n{sql}"
-        print(error_msg)  # Debug en CloudWatch
+        if query_job is not None:
+            try:
+                query_job.cancel()
+            except Exception:
+                pass
+        error_msg = '❌ No pude consultar los gastos ahora. Intentá nuevamente.'
+        print(f'agent_query_failed type={type(e).__name__}')
         return (error_msg, False)
 
 def format_bigquery_results(results) -> str:
@@ -2892,6 +2914,10 @@ def format_bigquery_results(results) -> str:
     n = len(rows)
     if n == 0:
         return "ℹ️ No se encontraron filas."
+    if n == 1:
+        scalar = single_value_answer(columns, rows[0])
+        if scalar is not None:
+            return scalar
 
     def row_block(row, index=None) -> str:
         parts = []
@@ -2910,7 +2936,7 @@ def format_bigquery_results(results) -> str:
     if n == 1:
         body = row_block(rows[0], None)
         title = "📌 <b>Resultado</b>"
-        footer = f"<i>1 fila · columnas: {len(columns)}</i>"
+        footer = ''
     else:
         blocks = []
         for i, row in enumerate(rows, start=1):
@@ -2947,7 +2973,7 @@ def handle_message(text: str, bq_client) -> tuple:
             is_valid, _ = validate_sql_dry_run(bq_client, sql)
     
     if not is_valid:
-        return sql, f"❌ No pude generar una consulta válida. Error: {validation_error}", False
+        return sql, '❌ No pude interpretar esa consulta. Probá indicar el período y la fuente de gastos.', False
     
     response, parse_mode = query_bigquery(bq_client, sql)
     
@@ -2988,7 +3014,9 @@ Devuelve SOLO el SQL corregido, sin explicaciones."""
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
         
-        print(f"🔄 SQL regenerado:\n{sql}")
+        if not dates_match_question(sql, question, datetime.now(_TZ_AR).date()):
+            return ''
+        print('agent_sql_regenerated')
         return sql
         
     except Exception as e:
@@ -5120,6 +5148,12 @@ def apply_transaction_detail(bq_client, extraido_de: str, transaction_key: str, 
 def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
+        if isinstance(event, dict) and event.get('action') == 'finance_web_question':
+            return run_web_question(event,
+                enabled=os.environ.get('WEB_FINANCE_ENABLED', 'false').lower() == 'true',
+                owner_sub=os.environ.get('WEB_FINANCE_OWNER_SUB', ''),
+                generate=lambda question: generate_sql_with_openai2(question, None, for_web=True),
+                execute=lambda sql: query_bigquery(get_bigquery_client(), sql, timeout=10))
 
         # Worker asíncrono de sugerencias. El batch de Terraform es 1 para que
         # un candidato fallido pueda reintentarse sin duplicar otros mensajes.

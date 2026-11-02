@@ -237,6 +237,16 @@ resource "aws_secretsmanager_secret_version" "divi_group_bot" {
   })
 }
 
+variable "divi_finance_bot_username" {
+  type    = string
+  default = ""
+}
+
+variable "divi_groups_bot_username" {
+  type    = string
+  default = ""
+}
+
 resource "aws_iam_role_policy" "divi_application" {
   name = "divi-application-store-and-payments"
   role = aws_iam_role.lambda_exec.id
@@ -244,6 +254,11 @@ resource "aws_iam_role_policy" "divi_application" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = aws_lambda_function.ai_agent.arn
+      },
       {
         Effect = "Allow"
         Action = [
@@ -286,6 +301,9 @@ resource "aws_lambda_function" "divi_app_api" {
       DIVI_GROUP_BOT_SECRET_ARN      = aws_secretsmanager_secret.divi_group_bot.arn
       MP_WEBHOOK_BASE_URL            = aws_apigatewayv2_api.divi.api_endpoint
       FINANCE_FORECAST_ENABLED       = tostring(var.divi_finance_forecast_enabled)
+      FINANCE_AGENT_FUNCTION_NAME    = aws_lambda_function.ai_agent.function_name
+      FINANCE_BOT_USERNAME           = var.divi_finance_bot_username
+      GROUPS_BOT_USERNAME            = var.divi_groups_bot_username
       FINANCE_FORECAST_OWNER_SUB     = var.divi_finance_forecast_owner_sub
       FINANCE_FORECAST_GCP_SECRET_ID = "gcp_sa_api_credentials"
       GCP_PROJECT_ID                 = var.GCP_PROJECT_ID

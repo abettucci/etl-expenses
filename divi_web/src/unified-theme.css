@@ -1,0 +1,163 @@
+/* Shared product tokens. ETL's funnel retains its own composition and styles. */
+:root {
+  color-scheme: dark;
+  --paper: #061a13; --paper-deep: #04120e; --surface: #0c281e;
+  --surface-solid: #102f24; --ink: #ecf7ee; --ink-soft: #b6ccc0;
+  --muted: #a1b9ac; --line: #a1ffd02b; --mint: #a1ffd0;
+  --moss: #a1ffd0; --moss-deep: #174c36; --danger: #ffad9e;
+  --coral-deep: #ffb494;
+}
+.product-root { min-height: 100dvh; padding-bottom: 40px; overflow: clip; background: var(--paper); color: var(--ink); }
+.product-root :is(button,a,input,select,textarea,summary):focus-visible { outline: 2px solid var(--mint); outline-offset: 4px; }
+.product-root :is(button,summary) { cursor: pointer; }
+.product-root button:disabled { cursor: not-allowed; opacity: .6; }
+.product-root .shell { max-width: 1380px; padding: 48px clamp(20px,4vw,56px); }
+.product-root .primary { min-height: 46px; padding: 13px 20px; border-radius: 10px; background: var(--mint); color: var(--paper); box-shadow: none; }
+.product-root .primary:hover { transform: none; background: #c3ffe0; box-shadow: none; }
+.product-root .outline { min-height: 44px; border-color: var(--line); color: var(--ink); }
+.product-root .outline:hover { border-color: #a1ffd078; background: #a1ffd00b; }
+.product-root .text-link { display: inline-flex; align-items: center; min-height: 44px; padding: 10px 0; color: var(--mint); background: none; font-size: 14px; }
+.product-root input,.product-root select,.product-root textarea { max-width: 100%; background: var(--paper); color: var(--ink); border-color: var(--line); }
+.product-root :is(h1,h2,h3,p) { overflow-wrap: anywhere; }
+.product-root h1 { line-height: 1.04; }
+.product-root .kicker { color: var(--mint); line-height: 1.7; }
+.product-root .muted { color: var(--muted); font-size: 13px; line-height: 1.65; }
+.product-root .balance-error,.product-root .form-error { color: #ffc5b9; background: #3c201d; border: 1px solid #ffad9e66; padding: 14px; border-radius: 10px; }
+.product-root .workspace-hint button { color: var(--mint); background: none; }
+.product-root .workspace-card { min-width: 0; }
+.product-root .workspace-account { overflow-wrap: anywhere; }
+.product-root .workspace-status { background: #433c23; color: #f2d791; }
+.product-root .workspace-status.not_available { background: #22382e; color: #bfd0c5; }
+.product-root .workspace-status.linked { background: #1b5039; color: #bcffda; }
+.product-root .workspace-bot-link { background: var(--mint); color: var(--paper); }
+.product-root .workspace-tabs button[aria-current] { color: var(--mint); border-color: #a1ffd070; background: #a1ffd014; }
+.product-root .balance-track { background: #ffffff09; }
+.product-root .balance-metrics article:nth-child(3) { background: #164330; color: var(--ink); }
+.product-root .balance-metrics article.negative { background: #482721; }
+.product-root .balance-metrics strong { font-variant-numeric: tabular-nums; }
+.product-root .balance-track.expenses i { background: #ffb49444; }
+.product-root .balance-table { overscroll-behavior-x: contain; }
+
+/* One navigation shell, with only three top-level destinations. */
+.product-nav { background: #061a13f5; color: var(--ink); border-color: var(--line); }
+.public-nav { max-width: none; gap: 24px; }
+.product-brand { letter-spacing: -.06em; }
+.product-brand span { color: var(--ink-soft); }
+.product-session { color: var(--mint); min-height: 44px; }
+.account-layout { padding-left: 232px; }
+.product-nav.workspace-nav { position: fixed; inset: 0 auto 0 0; width: 232px; min-height: 100dvh; padding: 36px 18px 24px; display: flex; flex-direction: column; align-items: stretch; gap: 24px; border-right: 1px solid var(--line); border-bottom: 0; z-index: 30; backdrop-filter: none; }
+.workspace-nav .product-brand { padding: 0 12px 12px; }
+.workspace-nav .nav-eyebrow { font: 10px 'IBM Plex Mono',monospace; letter-spacing: .14em; padding: 10px 12px 0; color: var(--muted); }
+.workspace-nav nav { display: flex; align-items: stretch; flex-direction: column; flex-wrap: nowrap; width: 100%; gap: 7px; margin: 0; }
+.workspace-nav nav :is(a,button) { display: flex; flex: none; align-items: center; gap: 12px; min-height: 46px; padding: 12px; font-size: 14px; font-weight: 500; text-align: left; background: none; color: var(--ink-soft); border: 1px solid transparent; border-radius: 10px; text-decoration: none; }
+.workspace-nav nav a[aria-current] { color: var(--mint); border-color: #a1ffd038; background: #a1ffd00e; }
+.workspace-nav nav :is(a,button):hover { color: var(--ink); background: #a1ffd00a; }
+.workspace-nav .secondary-nav { border-top: 1px solid var(--line); padding-top: 20px; }
+.account-menu { margin-top: auto; position: relative; border-top: 1px solid var(--line); padding-top: 16px; }
+.account-menu summary,.mobile-more summary { padding: 12px; min-height: 44px; font-size: 14px; list-style: none; }
+.account-menu summary { display: flex; justify-content: space-between; }
+.account-menu div { display: grid; gap: 4px; margin-top: 8px; }
+.account-menu :is(a,button),.mobile-more div :is(a,button) { display: block; min-height: 44px; padding: 12px; border-radius: 8px; background: none; color: var(--ink-soft); text-align: left; font-size: 13px; text-decoration: none; }
+.account-menu :is(a,button):hover,.mobile-more div :is(a,button):hover { color: var(--mint); background: #a1ffd010; }
+.mobile-more { display: none; }
+.finance-subnav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: -8px 0 36px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+.finance-subnav span { margin-right: auto; color: var(--muted); font: 10px 'IBM Plex Mono',monospace; letter-spacing: .1em; }
+.finance-subnav button { padding: 12px; min-height: 44px; border-radius: 8px; color: var(--ink-soft); background: none; font-size: 13px; }
+.finance-subnav button[aria-current] { color: var(--mint); background: #a1ffd014; }
+
+/* Unified public introduction, followed by the preserved ETL funnel. */
+.unified-hero { max-width: 1440px; min-height: 650px; margin: auto; display: grid; grid-template-columns: 1.35fr 1fr; align-items: center; gap: clamp(32px,5vw,80px); padding: 96px clamp(24px,5vw,72px); background: radial-gradient(ellipse at 90% 70%,#174c3622,transparent 65%); }
+.unified-hero h1 { margin: 24px 0; font-size: clamp(40px,4.4vw,68px); line-height: 1.03; letter-spacing: -.055em; }
+.unified-hero h1 em { color: var(--mint); font-style: normal; }
+.unified-hero>div>p { max-width: 550px; color: var(--ink-soft); font-size: 18px; line-height: 1.7; }
+.hero-cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 30px 0 12px; }
+.product-root :is(.hero-cta,.dashboard-actions)>.primary { width: auto; }
+.product-map { padding: 30px; border: 1px solid #a1ffd040; border-radius: 22px; background: linear-gradient(150deg,#102f24,#061a13); }
+.product-map article { display: flex; align-items: start; gap: 22px; padding: 26px 0; border-bottom: 1px solid var(--line); }
+.product-map article>span { color: var(--mint); font: 12px 'IBM Plex Mono',monospace; padding-top: 6px; }
+.product-map h2 { margin: 0 0 8px; font-size: 26px; }
+.product-map p { margin: 0; color: var(--ink-soft); font-size: 14px; line-height: 1.6; }
+.product-map footer { padding-top: 24px; color: var(--muted); font-size: 12px; }
+.unified-personal { border-top: 1px solid var(--line); }
+
+/* Shared workspace surfaces and data states. */
+.page-heading { display: flex; justify-content: space-between; align-items: start; gap: 24px; margin-bottom: 28px; }
+.page-heading h1 { font-size: clamp(36px,4.4vw,62px); margin: 16px 0 20px; }
+.page-heading p { max-width: 620px; color: var(--ink-soft); line-height: 1.7; }
+.dashboard-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 44px; }
+.section-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.section-heading h2 { margin: 0; font-size: 24px; }
+.dashboard-lower { display: grid; grid-template-columns: 1.2fr 1fr; gap: 22px; }
+.dashboard-group { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 76px; border-bottom: 1px solid var(--line); background: none; text-align: left; color: var(--ink); }
+.dashboard-group small { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.dashboard-group:hover { color: var(--mint); }
+.dashboard-lower .workspace-card>.text-link { display: flex; }
+.product-root :is(.group-card,.group-detail,.group-subpanel,.group-create,.insight,.forecast-card,.cash-card,.history-card,.category-card,.recurring-card,.modal) { background: var(--surface); border-color: var(--line); color: var(--ink); box-shadow: none; }
+.product-root .sync-button { color: var(--mint); background: var(--surface); border-color: var(--line); box-shadow: none; }
+.product-root .forecast-status { color: var(--ink-soft); background: var(--surface); border-color: var(--line); }
+.product-root .forecast-status.live { color: var(--mint); }
+.product-root .group-card.selected { background: #164330; border-color: #a1ffd070; }
+.product-root .group-card strong { color: var(--mint); }
+.product-root .group-detail-head>div:last-child { display: flex; flex-wrap: wrap; gap: 8px; }
+.product-root .group-detail-head { gap: 18px; }
+.product-root .insight :is(p,h3) { color: var(--ink); }
+.product-root .insight button { color: var(--mint); background: none; }
+.product-root .avatar { background: var(--mint); color: var(--paper); }
+.product-root .credit { color: var(--mint); }.product-root .debit { color: var(--danger); }
+.product-root .expense { border-color: var(--line); background: transparent; }
+.product-root .toast { background: #123627; border: 1px solid var(--line); color: var(--ink); max-width: calc(100vw - 32px); }
+.product-root .assistant-fab { bottom: 24px; background: var(--mint); color: var(--paper); border-color: var(--paper); }
+.product-root .finance-chat { bottom: 90px; color: var(--ink); background: var(--surface); }
+.product-root .finance-chat header { background: #123627; }
+.product-root .finance-chat-message { background: #183c2c; color: var(--ink); }
+.product-root .finance-chat-message.user { background: #20593d; }
+.product-root .finance-chat footer { color: var(--muted); }
+.product-root .finance-chat form { border-color: var(--line); }
+.product-root .finance-chat form button { color: var(--paper); background: var(--mint); }
+
+/* The anonymous calculator keeps its behavior and gets the product's tokens. */
+.product-root #ticket-splitter { background: var(--paper); color: var(--ink); font-family: 'Bricolage Grotesque',sans-serif; }
+.calculator-workspace #ticket-splitter :is(.bg-white,.bg-slate-50,.bg-slate-100) { background: var(--surface); }
+.calculator-workspace #ticket-splitter :is(.classic-card,.classic-button-outline) { background: var(--surface); color: var(--ink); border-color: var(--line); }
+.calculator-workspace #ticket-splitter .classic-button:not(.classic-button-outline):not(.classic-button-ghost) { background: var(--mint); color: var(--paper); }
+.calculator-workspace #ticket-splitter [class*="bg-gradient"] { background: var(--paper); }
+.calculator-workspace #ticket-splitter section[class*="bg-gradient"] { background: var(--surface); border: 1px solid var(--line); }
+.calculator-workspace #ticket-splitter :is([class*="text-slate"],[class*="text-gray"]) { color: var(--ink-soft); }
+.calculator-workspace #ticket-splitter :is([class*="text-[#00"],.text-blue-600) { color: var(--mint); }
+.calculator-workspace #ticket-splitter :is([class*="bg-[#0088"],[class*="bg-[#0077"]) { color: var(--paper); background: var(--mint); }
+.calculator-workspace #ticket-splitter :is(input,select,textarea) { background: var(--paper); color: var(--ink); border-color: var(--line); }
+.calculator-workspace #ticket-splitter [class*="border-"] { border-color: var(--line); }
+.calculator-workspace #ticket-splitter .bg-white[class*="text-[#0088"] { background: var(--mint); color: var(--paper); }
+
+@media(min-width:1600px) { .product-root .shell { padding-top: 68px; } }
+@media(max-width:1100px) { .unified-hero { grid-template-columns: 1fr; max-width: 800px; padding-top: 64px; }.product-map { max-width: 620px; }.dashboard-lower { grid-template-columns: 1fr; }.account-layout .balance-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media(max-width:760px) {
+  .account-layout { padding-left: 0; padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
+  .product-root .shell { padding: 30px 20px; }
+  .product-nav.workspace-nav { position: sticky; inset: auto; top: 0; width: 100%; min-height: 72px; flex-direction: row; align-items: center; padding: 16px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .workspace-nav .product-brand { padding: 0; font-size: 27px; }
+  .workspace-nav :is(.nav-eyebrow,.secondary-nav,.account-menu) { display: none; }
+  .workspace-nav .primary-nav { position: fixed; left: 0; bottom: 0; width: 100%; flex-direction: row; align-items: center; padding: 7px calc(25% + 8px) calc(7px + env(safe-area-inset-bottom)) 8px; gap: 2px; border-top: 1px solid var(--line); background: #061a13fa; }
+  .workspace-nav .primary-nav a { display: flex; flex: 1 1 0; flex-direction: column; justify-content: center; gap: 5px; padding: 9px 2px; font-size: 10px; min-width: 0; min-height: 54px; text-align: center; }
+  .workspace-nav .mobile-more { display: block; position: fixed; right: 8px; bottom: calc(7px + env(safe-area-inset-bottom)); width: calc(25% - 12px); }
+  .mobile-more summary { min-height: 54px; display: grid; place-items: center; color: var(--ink-soft); font-size: 12px; border-radius: 10px; background: #061a13; }
+  .mobile-more[open] summary { color: var(--mint); background: #123627; }
+  .mobile-more div { position: absolute; bottom: calc(100% + 16px); right: 0; width: min(270px,calc(100vw - 32px)); padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: #102f24; box-shadow: 0 12px 40px #0008; }
+  .public-nav { flex-wrap: wrap; gap: 12px; min-height: 100px; padding: 16px 20px; }
+  .public-nav nav { order: 3; width: 100%; margin: 0; justify-content: space-between; gap: 8px; }
+  .public-nav nav a { flex: none; font-size: 12px; padding: 10px; }
+  .public-nav .product-session { margin-left: auto; }
+  .unified-hero { padding: 54px 24px; gap: 40px; min-height: 0; }
+  .unified-hero h1 { font-size: clamp(35px,7.5vw,55px); }.unified-hero>div>p { font-size: 16px; }
+  .product-map { padding: 24px; }.product-map h2 { font-size: 23px; }
+  .page-heading { flex-direction: column; gap: 0; }.page-heading h1 { margin-bottom: 20px; }
+  .dashboard-actions { gap: 8px; margin-bottom: 32px; }.dashboard-actions button { flex: 1 1 180px; }
+  .finance-subnav { gap: 4px; margin-bottom: 26px; }.finance-subnav span { flex-basis: 100%; margin: 0 0 6px; }.finance-subnav button { font-size: 12px; }
+  .product-root .assistant-fab { bottom: calc(88px + env(safe-area-inset-bottom)); right: 16px; }
+  .product-root .finance-chat { bottom: calc(86px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 180px); }
+  .product-root .toast { bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .product-root .group-detail-head { flex-direction: column; }
+  .unified-personal { scroll-margin-top: 120px; }
+}
+@media(max-width:380px) { .product-root .shell { padding-inline: 16px; }.hero-cta { flex-direction: column; }.product-map { padding: 20px; }.product-map article { gap: 14px; }.public-nav nav a { padding-inline: 0; } }
+@media(prefers-reduced-motion:reduce) { .product-root *,.product-root *::before,.product-root *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

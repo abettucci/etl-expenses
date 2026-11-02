@@ -882,6 +882,8 @@ resource "aws_lambda_function" "ai_agent" {
       RECEIPT_ETL_STATE_MACHINE   = aws_sfn_state_machine.telegram_receipt_etl_flow.arn
       TELEGRAM_ALERT_CHAT_ID      = var.TELEGRAM_ALERT_CHAT_ID
       TELEGRAM_ALLOWED_CHAT_ID    = var.TELEGRAM_ALLOWED_CHAT_ID
+      WEB_FINANCE_ENABLED        = tostring(var.divi_finance_forecast_enabled)
+      WEB_FINANCE_OWNER_SUB      = var.divi_finance_forecast_owner_sub
       TELEGRAM_WEBHOOK_SECRET     = var.TELEGRAM_WEBHOOK_SECRET
       VOICE_PENDING_EXPENSES_TABLE = aws_dynamodb_table.telegram_pending_voice_expenses.name
       MANUAL_EXPENSE_EDITS_TABLE   = aws_dynamodb_table.telegram_recent_manual_expenses.name

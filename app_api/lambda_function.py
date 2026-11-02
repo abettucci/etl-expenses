@@ -23,10 +23,13 @@ import boto3
 import requests
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 from domain import allocations_from_items, expense_allocations, group_balances, money, normalize_payers, parse_amount_text, replace_ledger_user_id, simplify_debts
 from forecast import build_monthly_forecast, monthly_expenses_query
 from finance_balance import build_balance, save_income
+from finance_balance import require_finance_owner
+from personal_workspace import overview as workspace_overview, question_body
 
 TABLE_NAME = os.environ["APP_TABLE"]
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
@@ -274,6 +277,54 @@ def finance_save_income(identity: dict[str, str], month: str, payload: dict) -> 
     except Exception as exc:
         print(f'finance_income_save_failed: {type(exc).__name__}')
         raise ApiError(503, 'No pudimos guardar el ingreso mensual') from None
+
+
+def profile_overview(identity):
+    return workspace_overview(identity, ensure_profile(identity), enabled=FORECAST_ENABLED,
+        owner_sub=FORECAST_OWNER_SUB, finance_bot=os.environ.get('FINANCE_BOT_USERNAME', ''),
+        groups_bot=os.environ.get('GROUPS_BOT_USERNAME', ''))
+
+
+def finance_question(identity, payload):
+    try:
+        require_finance_owner(identity['user_id'], FORECAST_ENABLED, FORECAST_OWNER_SUB)
+        question = question_body(payload)
+    except PermissionError:
+        raise ApiError(403, 'Tu cuenta todavía no tiene una fuente financiera vinculada') from None
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from None
+    function = os.environ.get('FINANCE_AGENT_FUNCTION_NAME', '')
+    if not function:
+        raise ApiError(503, 'El asistente web todavía no está conectado')
+    hour = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H')
+    try:
+        table.update_item(Key={'pk': f"USER#{identity['user_id']}", 'sk': f'FINANCE_CHAT_QUOTA#{hour}'},
+            UpdateExpression='SET #ttl = :ttl ADD calls :one',
+            ConditionExpression='attribute_not_exists(calls) OR calls < :limit',
+            ExpressionAttributeNames={'#ttl': 'ttl'},
+            ExpressionAttributeValues={':ttl': int(time.time()) + 86400, ':one': 1, ':limit': 30})
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') == 'ConditionalCheckFailedException':
+            raise ApiError(429, 'Alcanzaste las 30 consultas de esta hora. Probá más tarde.') from None
+        raise ApiError(503, 'El asistente no está disponible ahora') from None
+    except Exception:
+        raise ApiError(503, 'El asistente no está disponible ahora') from None
+    try:
+        result = boto3.client('lambda', config=Config(connect_timeout=3, read_timeout=24, retries={'max_attempts': 0})).invoke(
+            FunctionName=function, InvocationType='RequestResponse',
+            Payload=json.dumps({'action': 'finance_web_question', 'user_id': identity['user_id'], 'question': question}).encode())
+        if result.get('FunctionError'):
+            raise ValueError('agent failure')
+        raw = result['Payload'].read(65537)
+        if len(raw) > 65536:
+            raise ValueError('oversized')
+        answer = json.loads(raw)
+        if answer.get('statusCode') != 200 or not isinstance(answer.get('answer'), str) or not 1 <= len(answer['answer']) <= 4000:
+            raise ValueError('invalid response')
+        return {'answer': answer['answer'], 'source': 'finance_agent', 'read_only': True}
+    except Exception as exc:
+        print(f'finance_assistant_failed type={type(exc).__name__}')
+        raise ApiError(503, 'No pude consultar tus gastos ahora. Probá nuevamente en unos minutos.') from None
 
 
 def list_groups(user_id: str) -> list[dict[str, Any]]:
@@ -1005,6 +1056,10 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         if method == "GET": return response(200, ensure_profile(identity))
         if method == "PATCH":
             profile = ensure_profile(identity); profile["display_name"] = str(payload.get("display_name", profile["display_name"]))[:80]; table.put_item(Item=profile); return response(200, profile)
+    if path == '/v1/profile/overview' and method == 'GET':
+        return response(200, profile_overview(identity))
+    if path == '/v1/finance/assistant' and method == 'POST':
+        return response(200, finance_question(identity, payload))
     if path == "/v1/finance/forecast" and method == "GET":
         return response(200, finance_forecast(identity))
     if path == '/v1/finance/balance' and method == 'GET':

@@ -5,7 +5,7 @@ export function EtlOverview({ onNavigate, onHome, embedded = false }: { onNaviga
   return <div className="etl-page">
     <header className="etl-topline">
       <div className="etl-wordmark"><span className="etl-wave">∿</span><span>ETL<span> expenses</span></span></div>
-      <div className="etl-top-actions"><span className="etl-tagline">TUS MOVIMIENTOS, CON CONTEXTO</span><button onClick={() => onNavigate('balance')}>Balance mensual</button><button onClick={onHome}>{embedded ? '↑ Volver a gastos compartidos' : '← Volver al inicio'}</button></div>
+      <div className="etl-top-actions"><span className="etl-tagline">TUS MOVIMIENTOS, CON CONTEXTO</span><button onClick={() => onNavigate('balance')}>Mis finanzas</button><button onClick={onHome}>↑ Volver al inicio</button></div>
     </header>
 
     <section className="etl-hero" aria-labelledby="etl-title">

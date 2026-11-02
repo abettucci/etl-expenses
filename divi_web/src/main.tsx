@@ -6,7 +6,13 @@ import { TicketSplitter } from './ticket_splitter/TicketSplitter'
 import { EtlOverview } from './etl-overview'
 import { ProductNavigation } from './product-navigation'
 import { FinancialBalance } from './financial-balance'
-import { landingArea, personalFinanceAnchor, sharedExpensesAnchor } from './landing-navigation'
+import { PersonalProfile } from './personal-profile'
+import { FinanceChat } from './finance-chat'
+import { UnifiedLanding } from './unified-landing'
+import { UnifiedDashboard } from './unified-dashboard'
+import { legacyWorkspaceView, loginDestination, workspacePaths } from './workspace-routing'
+import { landingArea, personalFinanceAnchor } from './landing-navigation'
+import './unified-theme.css'
 
 if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
@@ -20,7 +26,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => { /* The app still works without offline caching. */ }) })
 }
 
-type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance'
+type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance' | 'profile' | 'connections'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
 type GroupSummary = { group_id: string; name: string; currency: string; role?: string; legacy_source_key?: string }
@@ -95,27 +101,6 @@ async function startCognitoLogin(returnView: View = 'home') {
   })
   window.location.assign(`${cognitoDomain}/login?${query}`)
 }
-const previewForecast: Forecast = {
-  mode: 'preview', currency: 'ARS', as_of: '2026-10-10',
-  period: { history_start: '2026-04-01', history_end: '2026-09-30', forecast_month: '2026-10-01', months_observed: 6 },
-  forecast: { monthly_total: 482000, recurring_total: 171500, flexible_total: 310500, current_month_spent: 168900, projected_month_end: 506700, trend_vs_last_month: 0.06, confidence: 'media' },
-  monthly_history: [
-    { month: '2026-04-01', amount: 421000 }, { month: '2026-05-01', amount: 448000 }, { month: '2026-06-01', amount: 465000 },
-    { month: '2026-07-01', amount: 439000 }, { month: '2026-08-01', amount: 508000 }, { month: '2026-09-01', amount: 471000 },
-  ],
-  categories: [
-    { category: 'Comida', expected_monthly: 157000, share: .33 }, { category: 'Servicios', expected_monthly: 119000, share: .25 },
-    { category: 'Transporte', expected_monthly: 73000, share: .15 }, { category: 'Educación', expected_monthly: 58000, share: .12 },
-    { category: 'Otros', expected_monthly: 75000, share: .15 },
-  ],
-  recurring: [
-    { merchant: 'Alquiler', category: 'Vivienda', expected_monthly: 92000, typical_charge: 92000, months_observed: 6, observation_rate: 1 },
-    { merchant: 'UDEMY', category: 'Educación', expected_monthly: 41000, typical_charge: 41000, months_observed: 5, observation_rate: .83 },
-    { merchant: 'Spotify', category: 'Servicios', expected_monthly: 8500, typical_charge: 8500, months_observed: 6, observation_rate: 1 },
-    { merchant: 'Internet', category: 'Servicios', expected_monthly: 30000, typical_charge: 30000, months_observed: 6, observation_rate: 1 },
-  ],
-}
-
 async function api(path: string, method = 'GET', body?: unknown) {
   if (!apiBase) throw new Error('Falta configurar VITE_API_URL para conectar la aplicación.')
   const token = localStorage.getItem('split_access_token')
@@ -129,11 +114,13 @@ function Avatar({ name, tone = 'violet' }: { name: string; tone?: string }) { re
 function Action({ icon, title, caption, onClick }: { icon: string; title: string; caption: string; onClick?: () => void }) { return <button className="list-action" onClick={onClick}><span className="action-icon">{icon}</span><span><strong>{title}</strong><small>{caption}</small></span><b>›</b></button> }
 
 const viewPaths: Record<View, string> = {
-  welcome: '/', splitter: '/dividir', home: '/app', groups: '/grupos',
+  welcome: '/', splitter: '/dividir', ...workspacePaths,
   activity: '/actividad', wallet: '/billetera', settings: '/ajustes',
-  gifts: '/regalos', panorama: '/panorama', etl: '/#finanzas-personales', balance: '/balance',
+  gifts: '/regalos', etl: '/como-funciona',
 }
 function viewFromLocation(): View {
+  const legacy = legacyWorkspaceView(window.location.pathname)
+  if (legacy) return legacy
   const landing = landingArea(window.location.pathname, window.location.hash)
   if (landing) return landing
   const pathname = window.location.pathname.replace(/\/$/, '') || '/'
@@ -142,7 +129,10 @@ function viewFromLocation(): View {
 }
 
 function App() {
-  const [view, setView] = useState<View>(viewFromLocation)
+  const [view, setView] = useState<View>(() => viewFromLocation() === 'welcome' && !window.location.hash && localStorage.getItem('split_access_token') && !window.location.search ? 'home' : viewFromLocation())
+  useEffect(() => {
+    if (legacyWorkspaceView(window.location.pathname) || (window.location.pathname === '/' && view === 'home')) window.history.replaceState({}, '', viewPaths[view] + window.location.search)
+  }, [])
   const navigate = (nextView: View) => {
     const pool = new URLSearchParams(window.location.search).get('pool')
     window.history.pushState({}, '', viewPaths[nextView] + (pool ? `?pool=${encodeURIComponent(pool)}` : ''))
@@ -174,9 +164,9 @@ function App() {
     { title: 'Uber de vuelta', category: 'Transporte', amount: 9800, payer: 'Betu', date: '14 sep' },
   ])
   const [groups, setGroups] = useState<GroupSummary[]>([])
+  const [groupsStatus, setGroupsStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [activeGroupId, setActiveGroupId] = useState('')
   const [groupRefresh, setGroupRefresh] = useState(0)
-  const [chat, setChat] = useState<string[]>(['Hola, soy tu asistente. Puedo ayudarte a ordenar gastos, ver tu balance o armar el regalo de Fran ✦'])
   const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem('split_access_token')))
   const [authMessage, setAuthMessage] = useState('')
   const balance = useMemo(() => expenses.reduce((sum, expense) => sum + expense.amount, 0), [expenses])
@@ -190,6 +180,7 @@ function App() {
     sessionStorage.removeItem('split_return_view')
     sessionStorage.removeItem('split_open_premium_after_login')
     setAuthenticated(false)
+    setOverlay(null)
     setGroups([])
     setActiveGroupId('')
     navigate('welcome')
@@ -229,8 +220,7 @@ function App() {
         localStorage.setItem('split_access_token', tokens.id_token)
         sessionStorage.removeItem('split_pkce_verifier')
         const requestedView = sessionStorage.getItem('split_return_view')
-        const allowedViews: View[] = ['splitter', 'home', 'groups', 'activity', 'wallet', 'settings', 'gifts', 'panorama', 'etl', 'balance']
-        const nextView = allowedViews.includes(requestedView as View) ? requestedView as View : 'groups'
+        const nextView = loginDestination(requestedView) as View
         sessionStorage.removeItem('split_return_view')
         const resumePremium = sessionStorage.getItem('split_open_premium_after_login') === 'true'
         sessionStorage.removeItem('split_open_premium_after_login')
@@ -245,13 +235,14 @@ function App() {
   useEffect(() => {
     if (!authenticated) { setGroups([]); setActiveGroupId(''); return }
     let active = true
+    setGroupsStatus('loading')
     void api('/v1/groups').then(result => {
       if (!active) return
-      if (Array.isArray(result)) {
-        setGroups(result as GroupSummary[])
-        setActiveGroupId(result[0]?.group_id || '')
-      }
-    }).catch(error => { if (active) setAuthMessage(error instanceof Error ? error.message : 'No pudimos cargar tus grupos.') })
+      if (!Array.isArray(result)) throw new Error('No pudimos validar tus grupos.')
+      setGroups(result as GroupSummary[])
+      setActiveGroupId(result[0]?.group_id || '')
+      setGroupsStatus('ready')
+    }).catch(error => { if (active) { setGroupsStatus('error'); setAuthMessage(error instanceof Error ? error.message : 'No pudimos cargar tus grupos.') } })
     return () => { active = false }
   }, [authenticated])
   useEffect(() => {
@@ -270,37 +261,26 @@ function App() {
     }).then(result => { if (Array.isArray(result)) { setGroups(result as GroupSummary[]); setActiveGroupId(result[0]?.group_id || '') } })
       .catch(error => notify(error instanceof Error ? error.message : 'No pudimos aceptar la invitación.'))
   }, [authenticated])
-  return <main className={view === 'welcome' || view === 'splitter' || view === 'etl' ? 'classic-screen unified-product' : 'unified-product'}>
-    <div className="aurora" /><div className="grain" />
-    <ProductNavigation area={view === 'balance' ? 'balance' : view === 'etl' || view === 'panorama' ? 'personal' : view === 'welcome' || view === 'splitter' ? 'shared' : 'workspace'} authenticated={authenticated} onNavigate={navigate} onLogin={() => void authenticate(view === 'balance' ? 'balance' : 'groups')} onLogout={signOut} />
+  return <main className={`product-root ${authenticated ? 'account-layout' : ''}`}>
+    <ProductNavigation area={view === 'home' ? 'home' : view === 'balance' || view === 'panorama' ? 'personal' : view === 'connections' ? 'connections' : view === 'groups' || view === 'splitter' ? 'groups' : 'account'} authenticated={authenticated} onNavigate={navigate} onLogin={() => void authenticate(view === 'balance' ? 'balance' : 'home')} onLogout={signOut} onAssistant={() => setOverlay('assistant')} />
     {view === 'welcome' || view === 'etl' || view === 'splitter' ? <>
-      <section id={sharedExpensesAnchor} aria-label="Gastos compartidos con Ticket Splitter">
-        <TicketSplitter hideNavigation page={view === 'splitter' ? 'calculator' : 'landing'} authenticated={authenticated} onLogin={() => void authenticate('groups')} onNavigate={destination => navigate(destination === '/dividir' ? 'splitter' : destination === '/app' ? 'home' : destination === '/etl' ? 'etl' : 'welcome')} />
-      </section>
+      {view === 'splitter' ? <section className="calculator-workspace" aria-label="División rápida"><TicketSplitter hideNavigation page="calculator" authenticated={authenticated} onLogin={() => void authenticate('home')} onNavigate={destination => navigate(destination === '/app' ? 'home' : 'welcome')} /></section> : <UnifiedLanding onStart={() => authenticated ? navigate('home') : void authenticate('home')} onDivide={() => navigate('splitter')} onLearn={() => navigate('etl')} />}
       {view !== 'splitter' && <section id={personalFinanceAnchor} className="unified-personal" aria-label="Finanzas personales con ETL Expenses"><EtlOverview embedded onNavigate={navigate} onHome={() => navigate('welcome')} /></section>}
     </> : <>
       <section className="shell">
+        {(view === 'balance' || view === 'panorama') && <nav className="finance-subnav" aria-label="Finanzas personales"><span>MIS FINANZAS</span><button aria-current={view === 'balance' ? 'page' : undefined} onClick={() => navigate('balance')}>Balance mensual</button><button aria-current={view === 'panorama' ? 'page' : undefined} onClick={() => navigate('panorama')}>Proyección y recurrentes</button></nav>}
         {view === 'balance' && <FinancialBalance authenticated={authenticated} api={api} onLogin={() => void authenticate('balance')} />}
-        {view === 'home' && <Home balance={balance} onDivide={() => navigate('splitter')} onExpense={() => openExpense()} onGroups={() => navigate('groups')} onPanorama={() => navigate('panorama')} onGift={() => navigate('gifts')} />}
-        {view === 'groups' && <Groups authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} refreshSignal={groupRefresh} onRefresh={() => void api('/v1/groups').then(result => Array.isArray(result) && setGroups(result as GroupSummary[])).catch(() => notify('No pudimos actualizar tus grupos.'))} onSelectGroup={setActiveGroupId} onExpense={openExpense} onGift={() => navigate('gifts')} />}
-        {view === 'activity' && <Activity expenses={expenses} />}
-        {view === 'wallet' && <Wallet onPremium={openPremium} />}
-        {view === 'settings' && <Settings notify={notify} />}
-        {view === 'gifts' && <Gifts gifts={gifts} reserve={reserve} onBack={() => navigate('groups')} onPool={() => setOverlay('pool')} />}
-        {view === 'panorama' && <Panorama />}
+        {view === 'home' && <UnifiedDashboard authenticated={authenticated} api={api} groups={groups} groupsStatus={groupsStatus} onLogin={() => void authenticate('home')} onFinance={() => navigate('balance')} onIncome={() => navigate('balance')} onGroups={id => { if (id) setActiveGroupId(id); navigate('groups') }} onExpense={() => openExpense()} onAssistant={() => setOverlay('assistant')} onConnections={() => navigate('connections')} />}
+        {(view === 'profile' || view === 'connections' || view === 'settings') && <PersonalProfile section={view === 'connections' ? 'connections' : 'account'} authenticated={authenticated} api={api} onLogin={() => void authenticate(view)} onGroups={() => navigate('groups')} onAssistant={() => setOverlay('assistant')} />}
+        {view === 'settings' && authenticated && <Settings notify={notify} onPremium={openPremium} />}
+        {view === 'groups' && <Groups initialGroupId={activeGroupId} authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} groupsStatus={groupsStatus} refreshSignal={groupRefresh} onRefresh={() => { setGroupsStatus('loading'); void api('/v1/groups').then(result => { if (!Array.isArray(result)) throw new Error('Respuesta inválida'); setGroups(result as GroupSummary[]); setGroupsStatus('ready'); setGroupRefresh(value => value + 1) }).catch(() => { setGroupsStatus('error'); notify('No pudimos actualizar tus grupos.') }) }} onSelectGroup={setActiveGroupId} onExpense={openExpense} />}
+        {view === 'panorama' && (authenticated ? <Panorama /> : <section className="workspace-card"><h1>Proyección y recurrentes</h1><p>Ingresá para consultar tu historial.</p><button className="primary" onClick={() => void authenticate('panorama')}>Ingresar</button></section>)}
       </section>
-      <nav className="dock" aria-label="Navegación principal">
-        <button className={view === 'home' ? 'active' : ''} onClick={() => navigate('home')}><span>⌂</span>Inicio</button>
-        <button className={view === 'groups' || view === 'gifts' ? 'active' : ''} onClick={() => navigate('groups')}><span>♧</span>Grupos</button>
-        <button className="plus" onClick={() => openExpense()} aria-label="Agregar gasto">+</button>
-        <button className={view === 'activity' ? 'active' : ''} onClick={() => navigate('activity')}><span>♙</span>Actividad</button>
-        <button className={view === 'wallet' ? 'active' : ''} onClick={() => navigate('wallet')}><span>▣</span>Billetera</button>
-      </nav>
-      <button className="assistant-fab" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente">✧</button>
     </>}
-    {(notice || authMessage) && <div className="toast" role="status">✓ {notice || authMessage}</div>}
+    {(notice || authMessage) && <div className="toast" role="status">{notice || authMessage}</div>}
     {overlay === 'expense' && <ExpenseModal groupId={activeGroupId} close={() => setOverlay(null)} submit={expense => { setExpenses([expense, ...expenses]); setOverlay(null); notify('Gasto agregado y dividido en el grupo.') }} onSaved={() => setGroupRefresh(value => value + 1)} />}
-    {overlay === 'assistant' && <Assistant chat={chat} setChat={setChat} close={() => setOverlay(null)} />}
+    {authenticated && <button className="assistant-fab" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente financiero" aria-expanded={overlay === 'assistant'}>✧</button>}
+    {overlay === 'assistant' && authenticated && <FinanceChat api={api} close={() => setOverlay(null)} />}
     {overlay === 'premium' && <PremiumModal close={() => setOverlay(null)} notify={notify} />}
     {overlay === 'pool' && <PoolModal poolId={new URLSearchParams(window.location.search).get('pool')} close={() => setOverlay(null)} />}
   </main>
@@ -319,13 +299,11 @@ function monthShort(value: string) {
 }
 
 function Panorama() {
-  const [forecast, setForecast] = useState<Forecast>(previewForecast)
-  const [status, setStatus] = useState<'preview' | 'loading' | 'live'>('preview')
-  const [message, setMessage] = useState('Vista previa · conectá tu historial ETL para ver tus importes.')
-  const maxHistory = Math.max(...forecast.monthly_history.map(item => item.amount), 1)
+  const [forecast, setForecast] = useState<Forecast | null>(null)
+  const [status, setStatus] = useState<'unavailable' | 'loading' | 'live'>('loading')
+  const [message, setMessage] = useState('Cargando tu historial…')
   const reload = async () => {
-    if (!apiBase) { setStatus('preview'); setMessage('Vista previa · configurá VITE_API_URL para conectar el panorama.'); return }
-    setStatus('loading')
+    setForecast(null); setStatus('loading')
     try {
       const result = await api('/v1/finance/forecast') as Forecast | null
       if (result?.mode === 'live') {
@@ -333,15 +311,17 @@ function Panorama() {
         setStatus('live')
         setMessage(`Datos ETL agregados · ${result.period.months_observed} meses de historia.`)
       } else {
-        setStatus('preview')
-        setMessage('Vista previa · el panorama aún no está habilitado para esta cuenta.')
+        setStatus('unavailable')
+        setMessage('La proyección aún no está habilitada para esta cuenta. Revisá tus fuentes en Conexiones.')
       }
     } catch {
-      setStatus('preview')
-      setMessage('Vista previa · no pudimos conectar tu historial en este momento.')
+      setStatus('unavailable')
+      setMessage('No pudimos conectar tu historial en este momento. Revisá Conexiones o intentá nuevamente.')
     }
   }
   useEffect(() => { void reload() }, [])
+  if (!forecast) return <section className="workspace-card"><span className="kicker">MIS FINANZAS</span><h1>Proyección y recurrentes</h1><p role="status">{status === 'loading' ? 'Cargando tu historial…' : message}</p><button className="outline" onClick={() => void reload()} disabled={status === 'loading'}>Reintentar</button></section>
+  const maxHistory = Math.max(...forecast.monthly_history.map(item => item.amount), 1)
   const trend = forecast.forecast.trend_vs_last_month
 
   return <>
@@ -356,7 +336,7 @@ function Panorama() {
         <article><span>◉</span><div><b>Telegram</b><small>Voz y gastos manuales</small></div><i>→</i></article>
       </div>
       <div className="signal-core"><Mark /><span>ETL</span><small>normaliza</small></div>
-      <div className="signal-output"><span className="kicker">OCTUBRE</span><b>Flujo previsto</b><strong>{money.format(forecast.forecast.monthly_total)}</strong><small>{forecast.period.months_observed} meses de señales comparables</small><div><i style={{ width: `${Math.min((forecast.forecast.recurring_total / Math.max(forecast.forecast.monthly_total, 1)) * 100, 100)}%` }} /></div></div>
+      <div className="signal-output"><span className="kicker">{new Date(`${forecast.period.forecast_month.slice(0, 7)}-01T12:00:00`).toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })}</span><b>Flujo previsto</b><strong>{money.format(forecast.forecast.monthly_total)}</strong><small>{forecast.period.months_observed} meses de señales comparables</small><div><i style={{ width: `${Math.min((forecast.forecast.recurring_total / Math.max(forecast.forecast.monthly_total, 1)) * 100, 100)}%` }} /></div></div>
     </section>
 
     <section className="forecast-grid">
@@ -372,8 +352,8 @@ function Panorama() {
   </>
 }
 
-function Groups({ authenticated, onLogin, groups, refreshSignal, onRefresh, onSelectGroup, onExpense, onGift }: { authenticated: boolean; onLogin: () => void; groups: GroupSummary[]; refreshSignal: number; onRefresh: () => void; onSelectGroup: (groupId: string) => void; onExpense: (groupId: string) => void; onGift: () => void }) {
-  const [selectedId, setSelectedId] = useState('')
+function Groups({ initialGroupId, authenticated, onLogin, groups, groupsStatus, refreshSignal, onRefresh, onSelectGroup, onExpense }: { initialGroupId: string; authenticated: boolean; onLogin: () => void; groups: GroupSummary[]; groupsStatus: 'loading' | 'ready' | 'error'; refreshSignal: number; onRefresh: () => void; onSelectGroup: (groupId: string) => void; onExpense: (groupId: string) => void }) {
+  const [selectedId, setSelectedId] = useState(initialGroupId)
   const [members, setMembers] = useState<GroupMember[]>([])
   const [groupExpenses, setGroupExpenses] = useState<GroupExpenseRecord[]>([])
   const [settlement, setSettlement] = useState<{ balances?: Record<string, string>; settlements?: GroupSettlement[] }>({})
@@ -433,14 +413,16 @@ function Groups({ authenticated, onLogin, groups, refreshSignal, onRefresh, onSe
   const visibleExpenses = groupExpenses.filter(expense => !expense.deleted_at)
 
   return <>
-    <div className="page-title"><div><span className="kicker">GASTOS COMPARTIDOS · GRUPOS Y BALANCES</span><h1>Mis grupos</h1><p className="page-description">La experiencia clásica para dividir gastos, invitar integrantes y cerrar cuentas.</p></div><button className="outline" onClick={startCreatingGroup}>{authenticated ? '＋ Crear grupo' : 'Ingresar'}</button></div>
+    <div className="page-title"><div><span className="kicker">TU ESPACIO · GASTOS COMPARTIDOS</span><h1>Mis grupos</h1><p className="page-description">Dividí gastos, invitá integrantes y cerrá cuentas sin mezclarlo con tu balance personal.</p></div><button className="outline" onClick={startCreatingGroup}>{authenticated ? '＋ Crear grupo' : 'Ingresar'}</button></div>
     {creating && <form className="group-create" onSubmit={createGroup}><label>Nombre del grupo<input autoFocus maxLength={80} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="Ej. Viaje a Bariloche" required minLength={2} /></label><button className="primary" type="submit">Crear grupo</button><button type="button" className="outline" onClick={() => setCreating(false)}>Cancelar</button>{createError && <p className="form-error" role="alert">{createError}</p>}</form>}
-    {!authenticated && <section className="insight"><span>♧</span><div><h3>Ingresá para abrir tu espacio compartido</h3><p>Acá vas a encontrar grupos, gastos divididos, integrantes, balances y liquidaciones. Tus espacios personales, actividad y regalos siguen disponibles desde la navegación.</p><button onClick={onLogin}>Ingresar con Cognito →</button></div></section>}
-    {authenticated && apiBase && groups.length === 0 && !loading && <section className="insight"><span>♧</span><div><h3>Todavía no tenés grupos</h3><p>Creá uno para empezar a cargar gastos compartidos e invitar a tus amigos.</p><button onClick={() => setCreating(true)}>＋ Crear mi primer grupo</button></div></section>}
+    {!authenticated && <section className="insight"><span>♧</span><div><h3>Ingresá para abrir tus grupos</h3><p>Acá vas a encontrar gastos divididos, integrantes, balances y liquidaciones.</p><button onClick={onLogin}>Ingresar →</button></div></section>}
+    {authenticated && groupsStatus === 'loading' && <p role="status">Cargando tus grupos…</p>}
+    {authenticated && groupsStatus === 'error' && <p className="form-error" role="alert">No pudimos cargar tus grupos. <button className="outline" onClick={onRefresh}>Reintentar</button></p>}
+    {authenticated && groupsStatus === 'ready' && groups.length === 0 && !loading && <section className="insight"><span>♧</span><div><h3>Todavía no tenés grupos</h3><p>Creá uno para empezar a cargar gastos compartidos e invitar a tus amigos.</p><button onClick={() => setCreating(true)}>＋ Crear mi primer grupo</button></div></section>}
     {authenticated && groups.length > 0 && <>
       <section className="group-grid">{groups.map(group => <button className={`group-card ${group.group_id === selected?.group_id ? 'selected' : ''}`} onClick={() => { setSelectedId(group.group_id); onSelectGroup(group.group_id) }} key={group.group_id}><span className="orb cyan">♧</span><div><h2>{group.name}</h2><p>{group.legacy_source_key ? 'Grupo migrado · vinculá a sus miembros' : `Grupo activo · ${group.currency}`}</p></div><strong>{group.group_id === selected?.group_id ? 'Seleccionado' : 'Ver grupo'}</strong><i>→</i></button>)}</section>
       {selected && <section className="group-detail">
-        <header className="group-detail-head"><div><span className="kicker">DETALLE DEL GRUPO</span><h2>{selected.name}</h2><p>{members.length} integrantes · moneda {selected.currency}</p></div><div><button className="outline" onClick={createInvite}>↗ Invitar</button><button className="outline" onClick={() => onExpense(selected.group_id)}>＋ Agregar gasto</button><button className="outline" onClick={onGift}>Regalos</button></div></header>
+        <header className="group-detail-head"><div><span className="kicker">DETALLE DEL GRUPO</span><h2>{selected.name}</h2><p>{members.length} integrantes · moneda {selected.currency}</p></div><div><button className="outline" onClick={createInvite}>↗ Invitar</button><button className="outline" onClick={() => onExpense(selected.group_id)}>＋ Agregar gasto</button></div></header>
         {inviteUrl && <div className="invite-link" role="status"><b>Link de invitación listo</b><input value={inviteUrl} readOnly aria-label="Link de invitación" /><small>Se copió al portapapeles si tu navegador lo permitió. Es de un solo uso y vence en 7 días.</small></div>}
         {inviteError && <p className="form-error" role="alert">{inviteError}</p>}
         {loading && <p className="empty-state" role="status">Cargando movimientos y balances…</p>}
@@ -459,7 +441,7 @@ function Activity({ expenses }: { expenses: Expense[] }) { return <><div classNa
 
 function Wallet({ onPremium }: { onPremium: () => void }) { return <><div className="page-title"><div><span className="kicker">TU RESUMEN FINANCIERO</span><h1>Mi billetera</h1></div><button className="outline">⚙ Ajustes</button></div><section className="wallet-banner"><div><span className="crown">♔</span><span className="kicker">PLAN GRATUITO</span><h2>Tu dinero ya habla.<br />Escuchalo completo.</h2><p>Wallet Premium suma patrones, historial ilimitado y exportaciones.</p></div><div className="wallet-stats"><span>5</span><p>escaneos<br />restantes</p></div><button onClick={onPremium}>Ver plan Premium <b>→</b></button></section><section className="blurred-ledger"><div><span>INGRESOS</span><strong>$ 1.820.000</strong></div><div><span>GASTOS</span><strong>$ 928.400</strong></div><div><span>AHORRO</span><strong>$ 891.600</strong></div></section></> }
 
-function Settings({ notify }: { notify: (message: string) => void }) { return <><div className="page-title"><div><span className="kicker">TU ESPACIO</span><h1>Ajustes</h1></div><Avatar name="Betu" /></div><section className="settings-list"><Action icon="◉" title="Perfil" caption="Nombre, alias y foto" onClick={() => notify('Perfil listo para editar.')} /><Action icon="♧" title="Notificaciones" caption="Recordatorios de grupos y pagos" onClick={() => notify('Solicitamos permiso de notificaciones.')} /><Action icon="◒" title="Apariencia" caption="Noche aurora" onClick={() => notify('La apariencia se adapta al sistema.')} /><Action icon="⊙" title="Mercado Pago" caption="Conectá tu cuenta para organizar pools" onClick={() => { api('/v1/mercadopago/oauth/start', 'POST').then((result: any) => result?.authorization_url && (window.location.href = result.authorization_url)).catch(() => notify('Configuraremos tu cuenta de Mercado Pago.')) }} /><Action icon="?" title="Ayuda" caption="Preguntas frecuentes y soporte" /></section><p className="version">SPLIT / 0.1.0<br />hecho para compartir</p></> }
+function Settings({ notify, onPremium }: { notify: (message: string) => void; onPremium: () => void }) { return <section className="workspace-card"><h2>Plan y cobros</h2><p>Accedé al checkout existente o conectá tu cuenta de Mercado Pago para recibir aportes. Estas acciones requieren configuración del servicio; no se activan al iniciar sesión.</p><div className="dashboard-actions"><button className="outline" onClick={onPremium}>Ver suscripción</button><button className="outline" onClick={() => { api('/v1/mercadopago/oauth/start', 'POST').then((result: any) => { if (result?.authorization_url) window.location.href = result.authorization_url; else notify('El servicio no devolvió un enlace para conectar Mercado Pago.') }).catch(() => notify('No pudimos iniciar la conexión con Mercado Pago.')) }}>Conectar Mercado Pago ↗</button></div></section> }
 
 function Gifts({ gifts, reserve, onBack, onPool }: { gifts: Gift[]; reserve: (gift: Gift) => void; onBack: () => void; onPool: () => void }) { return <><button className="back" onClick={onBack}>← Volver a grupos</button><div className="gift-hero"><span className="kicker">CUMPLEAÑOS · 21 SEP</span><h1>El regalo de<br /><em>Fran.</em></h1><p>Su wishlist es una sola, aunque esté en varios grupos. Sin regalos repetidos.</p></div><section className="pool-progress"><div><span>POOL ACTIVO</span><strong>$ 32.000 <small>de $ 48.000</small></strong></div><div className="progress"><i /></div><button onClick={onPool}>Aportar al pool →</button></section><div className="wishlist-head"><div><h2>Wishlist de Fran</h2><p>Solo Fran puede editar esta lista.</p></div><span className="privacy">◌ sin spoilers</span></div><div className="gift-list">{gifts.map(gift => <article className={`gift ${!gift.available ? 'reserved' : ''}`} key={gift.id}><div className="gift-visual">{gift.title.includes('Auriculares') ? '◖◗' : gift.title.includes('Cafetera') ? '♨' : '◒'}</div><div><h3>{gift.title}</h3><p>{money.format(gift.price)}</p>{!gift.available && <small>Este regalo ya fue elegido</small>}</div><button disabled={!gift.available} onClick={() => reserve(gift)}>{gift.available ? 'Elegir regalo' : 'No disponible'}</button></article>)}</div></> }
 
@@ -482,7 +464,6 @@ function ExpenseModal({ groupId, close, submit, onSaved }: { groupId: string; cl
   return <Modal title="Nuevo gasto" subtitle="El monto se divide en partes iguales entre las personas seleccionadas." close={close}><form className="expense-form" onSubmit={send}><label>Monto<input autoFocus value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9.,]/g, ''))} placeholder="$ 0" inputMode="decimal" required /></label><label>Descripción<input value={description} onChange={e => setDescription(e.target.value)} placeholder="¿Qué pagaste?" required /></label><fieldset><legend>Dividir entre</legend>{members.length ? members.filter(member => member.active || member.claim_state === 'pending').map(member => <label className="member-check" key={member.user_id}><input type="checkbox" checked={participants.includes(member.user_id)} onChange={event => setParticipants(current => event.target.checked ? [...current, member.user_id] : current.filter(id => id !== member.user_id))} /><Avatar name={member.display_name} /> {member.display_name}</label>) : <p className="empty-state">Cargando integrantes…</p>}</fieldset>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary" type="submit" disabled={saving || members.length === 0}>{saving ? 'Guardando…' : 'Confirmar gasto'} <b>→</b></button></form></Modal>
 }
 
-function Assistant({ chat, setChat, close }: { chat: string[]; setChat: (value: string[]) => void; close: () => void }) { const [prompt, setPrompt] = useState(''); const ask = (event: FormEvent) => { event.preventDefault(); if (!prompt.trim()) return; setChat([...chat, `Vos: ${prompt}`, 'Asistente: Para este grupo, lo más simple es cargarlo como gasto igual y cerrar la liquidación después.']); setPrompt('') }; return <Modal title="Asistente" subtitle="Tu ayuda para ordenar gastos" close={close} wide><div className="chat">{chat.map((line, index) => <p className={line.startsWith('Vos:') ? 'user' : ''} key={index}>{line}</p>)}</div><div className="suggestions"><button onClick={() => setChat([...chat, 'Asistente: Esta semana gastaste más en salidas, principalmente el viernes.'])}>¿En qué gasté más?</button><button onClick={() => setChat([...chat, 'Asistente: Fran tiene 3 regalos posibles; el pool ya completó el 67%.'])}>¿Cómo va el regalo?</button></div><form className="ask" onSubmit={ask}><input value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Escribí tu consulta…" /><button>↗</button></form></Modal> }
 
 function PremiumModal({ close, notify }: { close: () => void; notify: (message: string) => void }) {
   const [formLoading, setFormLoading] = useState(true)
