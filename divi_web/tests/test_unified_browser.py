@@ -4,8 +4,11 @@ Run: UNIFIED_WEB_URL=http://127.0.0.1:5178 python -m unittest discover -s tests 
 Requires playwright + Chromium. All remote requests are mocked or blocked.
 """
 import os
+import base64
+import json
+import time
 import unittest
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode
 
 from playwright.sync_api import sync_playwright
 
@@ -36,6 +39,11 @@ class UnifiedBrowser(unittest.TestCase):
         self.writes = []
         self.failure = False
         self.empty_groups = False
+        self.groups_bot = False
+        self.identity_links = 0
+        self.oauth_nonce = None
+        self.refreshes = 0
+        self.api_denials = 0
         self.context.route('**/*', self.route)
         self.page = self.context.new_page()
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
@@ -51,19 +59,40 @@ class UnifiedBrowser(unittest.TestCase):
         if parsed.netloc == urlparse(BASE).netloc:
             route.continue_()
             return
+        if parsed.path == '/oauth2/authorize':
+            params = parse_qs(parsed.query)
+            self.oauth_nonce = params['nonce'][0]
+            target = BASE + '/auth/callback?' + urlencode({'code': 'synthetic-code', 'state': params['state'][0]})
+            route.fulfill(content_type='text/html', body=f'<button onclick="location.href={json.dumps(target).replace(chr(34), chr(39))}">Acceso de prueba</button>')
+            return
+        if parsed.path == '/oauth2/token':
+            if 'grant_type=refresh_token' in request.post_data:
+                self.refreshes += 1
+            route.fulfill(json={'id_token': self.jwt(self.oauth_nonce), 'expires_in': 3600, 'refresh_token': 'synthetic-refresh'})
+            return
         if parsed.path.startswith('/v1/'):
+            if parsed.path == '/v1/identity-links' and request.method == 'POST':
+                self.identity_links += 1
+                route.fulfill(json={'code': 'SYNTHETICCODE', 'expires_in_minutes': 15})
+                return
             if request.method != 'GET':
                 self.writes.append(request.method + ' ' + parsed.path)
                 route.abort()
                 return
             data = []
+            if self.api_denials:
+                self.api_denials -= 1
+                route.fulfill(status=401, json={'message': 'Unauthorized'})
+                return
             if parsed.path == '/v1/finance/balance':
                 if self.failure:
                     route.fulfill(status=503, json={'error': 'Fuente financiera no disponible.'})
                     return
                 data = REPORT
             elif parsed.path == '/v1/profile/overview':
-                data = PROFILE
+                data = {**PROFILE, 'telegram': {**PROFILE['telegram'], 'groups_url': 'https://t.me/synthetic_groups_bot' if self.groups_bot else None}}
+            elif parsed.path == '/v1/me':
+                data = {'user_id': 'synthetic-owner-id'}
             elif parsed.path == '/v1/finance/forecast':
                 data = {'mode': 'preview'}  # Must never present preview amounts as real.
             elif parsed.path == '/v1/groups':
@@ -74,8 +103,43 @@ class UnifiedBrowser(unittest.TestCase):
             return
         route.abort()  # No fonts, Cognito, Telegram, analytics or production connections.
 
-    def login(self):
-        self.context.add_init_script("localStorage.setItem('split_access_token','synthetic-test-token')")
+    def jwt(self, nonce=None, expired=False):
+        # Synthetic JWT shape for a mocked API, never accepted by real Cognito.
+        expires = int(time.time()) + (-100 if expired else 3600)
+        claims = base64.urlsafe_b64encode(json.dumps({'aud': '132dokn7kaddbfmoba6e9882qq', 'token_use': 'id', 'exp': expires, 'nonce': nonce}).encode()).decode().rstrip('=')
+        return 'synthetic.' + claims + '.not-a-real-signature'
+
+    def login(self, expired=False):
+        record = json.dumps({'idToken': self.jwt(expired=expired), 'expiresAt': int(time.time() + (-100 if expired else 3600)) * 1000, 'refreshToken': 'synthetic-refresh'})
+        self.context.add_init_script(f"sessionStorage.setItem('split_session_v1', {json.dumps(record)})")
+
+    def test_oauth_error_recovery_and_synthetic_complete_round_trip(self):
+        self.page.goto(BASE + '/auth/callback?error=access_denied&error_description=private-details')
+        self.page.get_by_role('heading', name='No pudimos completar el acceso').wait_for()
+        self.assertNotIn('private-details', self.page.inner_text('body'))
+        self.assertNotIn('error=', self.page.url)
+        self.page.get_by_role('button', name='Volver a ingresar').click()
+        self.page.get_by_role('button', name='Acceso de prueba').click()
+        self.page.get_by_role('heading', name='Todo en perspectiva.').wait_for()
+        self.assertTrue(self.page.url.endswith('/inicio'))
+
+    def test_expired_session_refreshes_and_connections_have_real_actions(self):
+        self.login(expired=True)
+        self.context.add_init_script("Object.defineProperty(navigator, 'clipboard', {value: {writeText: async text => {if (text !== '/vincular SYNTHETICCODE') throw new Error('Unexpected synthetic command')}}})")
+        self.groups_bot = True
+        self.page.goto(BASE + '/conexiones')
+        self.page.get_by_role('button', name='Preparar vinculación').click()
+        self.page.get_by_label('ID de esta cuenta').wait_for()
+        self.assertEqual(self.page.get_by_label('ID de esta cuenta').input_value(), 'synthetic-owner-id')
+        self.assertEqual(self.refreshes, 1)
+        self.page.get_by_role('button', name='Telegram y alertas').click()
+        self.page.get_by_role('button', name='Generar código de vinculación').click()
+        self.page.get_by_label('Comando para el chat privado').wait_for()
+        self.assertEqual(self.page.get_by_label('Comando para el chat privado').input_value(), '/vincular SYNTHETICCODE')
+        self.assertEqual(self.identity_links, 1)
+        self.page.get_by_role('button', name='Copiar comando', exact=True).click()
+        self.page.get_by_role('button', name='Comando copiado', exact=True).wait_for()
+        self.no_overflow()
 
     def no_overflow(self):
         self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Page overflows viewport')

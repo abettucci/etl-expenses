@@ -14,6 +14,12 @@ env:
   # Divi is hosted only on Vercel. This origin is used by Cognito callbacks
   # and the API's restrictive CORS policy.
   TF_VAR_divi_frontend_origin: ${{ secrets.DIVI_FRONTEND_ORIGIN }}
+  # Explicit owner binding: never enable the personal warehouse for all users.
+  TF_VAR_divi_finance_forecast_enabled: ${{ vars.DIVI_FINANCE_FORECAST_ENABLED || 'false' }}
+  TF_VAR_divi_finance_forecast_owner_sub: ${{ secrets.DIVI_FINANCE_FORECAST_OWNER_SUB }}
+  # Public bot usernames, without @. These are not bot credentials.
+  TF_VAR_divi_finance_bot_username: ${{ vars.DIVI_FINANCE_BOT_USERNAME }}
+  TF_VAR_divi_groups_bot_username: ${{ vars.DIVI_GROUPS_BOT_USERNAME }}
   # Cognito hosted-UI prefixes are globally unique; don't hard-code one.
   TF_VAR_divi_cognito_domain_prefix: ${{ secrets.DIVI_COGNITO_DOMAIN_PREFIX }}
   TF_VAR_divi_google_client_id: ${{ secrets.DIVI_GOOGLE_CLIENT_ID }}

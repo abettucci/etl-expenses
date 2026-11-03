@@ -13,6 +13,7 @@ import { UnifiedDashboard } from './unified-dashboard'
 import { legacyWorkspaceView, loginDestination, workspacePaths } from './workspace-routing'
 import { landingArea, personalFinanceAnchor } from './landing-navigation'
 import './unified-theme.css'
+import { createAuthSession } from './auth-session'
 
 if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
@@ -53,6 +54,7 @@ const cognitoDomain = (import.meta.env.VITE_COGNITO_DOMAIN || 'https://divi-expe
 const cognitoClientId = import.meta.env.VITE_COGNITO_CLIENT_ID || '132dokn7kaddbfmoba6e9882qq'
 const authRedirectUri = import.meta.env.VITE_COGNITO_REDIRECT_URI || 'https://etl-expenses.vercel.app/auth/callback'
 const mercadoPagoPublicKey = import.meta.env.VITE_MERCADOPAGO_PUBLIC_KEY || ''
+const session = createAuthSession({ config: { domain: cognitoDomain, clientId: cognitoClientId, redirectUri: authRedirectUri, apiBase }, storage: sessionStorage, legacyStorage: localStorage, onExpired: () => window.dispatchEvent(new Event('split-session-expired')) })
 
 type MercadoPagoCardForm = {
   getCardFormData: () => { token?: string }
@@ -81,32 +83,11 @@ function loadMercadoPagoSdk(): Promise<void> {
   })
 }
 
-function base64Url(bytes: Uint8Array) {
-  let binary = ''
-  bytes.forEach(byte => { binary += String.fromCharCode(byte) })
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
 async function startCognitoLogin(returnView: View = 'home') {
-  if (!cognitoDomain || !cognitoClientId) throw new Error('No está configurado el acceso. Revisá VITE_COGNITO_DOMAIN y VITE_COGNITO_CLIENT_ID en Vercel.')
-  const random = new Uint8Array(48)
-  crypto.getRandomValues(random)
-  const verifier = base64Url(random)
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
-  sessionStorage.setItem('split_pkce_verifier', verifier)
-  sessionStorage.setItem('split_return_view', returnView)
-  const query = new URLSearchParams({
-    response_type: 'code', client_id: cognitoClientId, redirect_uri: authRedirectUri,
-    code_challenge_method: 'S256', code_challenge: base64Url(new Uint8Array(digest)),
-  })
-  window.location.assign(`${cognitoDomain}/login?${query}`)
+  window.location.assign(await session.begin(returnView, window.location.origin))
 }
 async function api(path: string, method = 'GET', body?: unknown) {
-  if (!apiBase) throw new Error('Falta configurar VITE_API_URL para conectar la aplicación.')
-  const token = localStorage.getItem('split_access_token')
-  const result = await fetch(`${apiBase}${path}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined })
-  if (!result.ok) throw new Error((await result.json()).error || 'No pudimos completar la acción')
-  return result.status === 204 ? null : result.json()
+  return session.request(path, method, body)
 }
 
 function Mark() { return <span className="mark"><i /><i /><i /><i /></span> }
@@ -129,7 +110,7 @@ function viewFromLocation(): View {
 }
 
 function App() {
-  const [view, setView] = useState<View>(() => viewFromLocation() === 'welcome' && !window.location.hash && localStorage.getItem('split_access_token') && !window.location.search ? 'home' : viewFromLocation())
+  const [view, setView] = useState<View>(() => viewFromLocation() === 'welcome' && !window.location.hash && session.hasSession() && !window.location.search ? 'home' : viewFromLocation())
   useEffect(() => {
     if (legacyWorkspaceView(window.location.pathname) || (window.location.pathname === '/' && view === 'home')) window.history.replaceState({}, '', viewPaths[view] + window.location.search)
   }, [])
@@ -167,17 +148,18 @@ function App() {
   const [groupsStatus, setGroupsStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [activeGroupId, setActiveGroupId] = useState('')
   const [groupRefresh, setGroupRefresh] = useState(0)
-  const [authenticated, setAuthenticated] = useState(() => Boolean(localStorage.getItem('split_access_token')))
+  const [authenticated, setAuthenticated] = useState(() => session.hasSession())
   const [authMessage, setAuthMessage] = useState('')
+  const [authError, setAuthError] = useState(false)
+  const [authPending, setAuthPending] = useState(false)
   const balance = useMemo(() => expenses.reduce((sum, expense) => sum + expense.amount, 0), [expenses])
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200) }
   const authenticate = async (returnView: View = view) => {
-    try { await startCognitoLogin(returnView) } catch (error) { setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') }
+    setAuthError(false); setAuthMessage(''); setAuthPending(true)
+    try { await startCognitoLogin(returnView) } catch (error) { setAuthError(true); setAuthPending(false); setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') }
   }
   const signOut = () => {
-    localStorage.removeItem('split_access_token')
-    sessionStorage.removeItem('split_pkce_verifier')
-    sessionStorage.removeItem('split_return_view')
+    session.clear()
     sessionStorage.removeItem('split_open_premium_after_login')
     setAuthenticated(false)
     setOverlay(null)
@@ -185,6 +167,7 @@ function App() {
     setActiveGroupId('')
     navigate('welcome')
     setAuthMessage('Sesión cerrada.')
+    window.location.assign(session.logoutUrl())
   }
   const openPremium = () => {
     if (authenticated) { setOverlay('premium'); return }
@@ -202,35 +185,32 @@ function App() {
     setGifts(items => items.map(item => item.id === gift.id ? { ...item, available: false } : item)); notify('Regalo reservado para este grupo. Los demás grupos ya no lo verán disponible.')
   }
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get('code')
-    if (!code) return
-    const verifier = sessionStorage.getItem('split_pkce_verifier')
-    if (!cognitoDomain || !cognitoClientId || !verifier) {
-      setAuthMessage('No pudimos completar la sesión. Volvé a intentarlo.')
+    const callbackUrl = new URL(window.location.href)
+    if (callbackUrl.searchParams.get('signin') === '1' && callbackUrl.origin === new URL(authRedirectUri).origin) {
+      window.history.replaceState({}, '', '/inicio')
+      void authenticate(loginDestination(callbackUrl.searchParams.get('next')) as View)
       return
     }
-    const payload = new URLSearchParams({ grant_type: 'authorization_code', client_id: cognitoClientId, code, redirect_uri: authRedirectUri, code_verifier: verifier })
-    void fetch(`${cognitoDomain}/oauth2/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: payload })
-      .then(async response => {
-        if (!response.ok) throw new Error('Cognito rechazó el inicio de sesión.')
-        return response.json() as Promise<{ id_token?: string }>
-      })
-      .then(tokens => {
-        if (!tokens.id_token) throw new Error('Cognito no devolvió un token de identidad.')
-        localStorage.setItem('split_access_token', tokens.id_token)
-        sessionStorage.removeItem('split_pkce_verifier')
-        const requestedView = sessionStorage.getItem('split_return_view')
-        const nextView = loginDestination(requestedView) as View
-        sessionStorage.removeItem('split_return_view')
+    if (callbackUrl.pathname !== '/auth/callback') return
+    window.history.replaceState({}, '', '/auth/callback')
+    setAuthPending(true)
+    void session.complete(callbackUrl).then(destination => {
+        const nextView = loginDestination(destination) as View
         const resumePremium = sessionStorage.getItem('split_open_premium_after_login') === 'true'
         sessionStorage.removeItem('split_open_premium_after_login')
         window.history.replaceState({}, '', viewPaths[nextView])
         setAuthenticated(true)
         setView(nextView)
+        setAuthPending(false); setAuthError(false)
         if (resumePremium) setOverlay('premium')
         setAuthMessage('Sesión iniciada.')
       })
-      .catch(error => setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.'))
+      .catch(error => { setAuthPending(false); setAuthError(true); setAuthMessage(error instanceof Error ? error.message : 'No pudimos iniciar sesión.') })
+  }, [])
+  useEffect(() => {
+    const expired = () => { setAuthenticated(false); setOverlay(null); setAuthError(true); setAuthMessage('Tu sesión venció. Volvé a ingresar para continuar.'); setGroups([]); setActiveGroupId('') }
+    window.addEventListener('split-session-expired', expired)
+    return () => window.removeEventListener('split-session-expired', expired)
   }, [])
   useEffect(() => {
     if (!authenticated) { setGroups([]); setActiveGroupId(''); return }
@@ -263,21 +243,23 @@ function App() {
   }, [authenticated])
   return <main className={`product-root ${authenticated ? 'account-layout' : ''}`}>
     <ProductNavigation area={view === 'home' ? 'home' : view === 'balance' || view === 'panorama' ? 'personal' : view === 'connections' ? 'connections' : view === 'groups' || view === 'splitter' ? 'groups' : 'account'} authenticated={authenticated} onNavigate={navigate} onLogin={() => void authenticate(view === 'balance' ? 'balance' : 'home')} onLogout={signOut} onAssistant={() => setOverlay('assistant')} />
+    {authPending && <section className="auth-feedback" role="status"><h2>Completando el acceso seguro…</h2><p>Esperá un momento. No cierres esta pestaña.</p></section>}
+    {authError && <section className="auth-feedback" role="alert"><h2>No pudimos completar el acceso</h2><p>{authMessage}</p><div><button className="primary" onClick={() => void authenticate(view)}>Volver a ingresar</button><button className="outline" onClick={() => { setAuthError(false); setAuthMessage(''); navigate('welcome') }}>Volver al inicio</button></div></section>}
     {view === 'welcome' || view === 'etl' || view === 'splitter' ? <>
       {view === 'splitter' ? <section className="calculator-workspace" aria-label="División rápida"><TicketSplitter hideNavigation page="calculator" authenticated={authenticated} onLogin={() => void authenticate('home')} onNavigate={destination => navigate(destination === '/app' ? 'home' : 'welcome')} /></section> : <UnifiedLanding onStart={() => authenticated ? navigate('home') : void authenticate('home')} onDivide={() => navigate('splitter')} onLearn={() => navigate('etl')} />}
       {view !== 'splitter' && <section id={personalFinanceAnchor} className="unified-personal" aria-label="Finanzas personales con ETL Expenses"><EtlOverview embedded onNavigate={navigate} onHome={() => navigate('welcome')} /></section>}
     </> : <>
       <section className="shell">
         {(view === 'balance' || view === 'panorama') && <nav className="finance-subnav" aria-label="Finanzas personales"><span>MIS FINANZAS</span><button aria-current={view === 'balance' ? 'page' : undefined} onClick={() => navigate('balance')}>Balance mensual</button><button aria-current={view === 'panorama' ? 'page' : undefined} onClick={() => navigate('panorama')}>Proyección y recurrentes</button></nav>}
-        {view === 'balance' && <FinancialBalance authenticated={authenticated} api={api} onLogin={() => void authenticate('balance')} />}
+        {view === 'balance' && <FinancialBalance authenticated={authenticated} api={api} onLogin={() => void authenticate('balance')} onConnections={() => navigate('connections')} />}
         {view === 'home' && <UnifiedDashboard authenticated={authenticated} api={api} groups={groups} groupsStatus={groupsStatus} onLogin={() => void authenticate('home')} onFinance={() => navigate('balance')} onIncome={() => navigate('balance')} onGroups={id => { if (id) setActiveGroupId(id); navigate('groups') }} onExpense={() => openExpense()} onAssistant={() => setOverlay('assistant')} onConnections={() => navigate('connections')} />}
         {(view === 'profile' || view === 'connections' || view === 'settings') && <PersonalProfile section={view === 'connections' ? 'connections' : 'account'} authenticated={authenticated} api={api} onLogin={() => void authenticate(view)} onGroups={() => navigate('groups')} onAssistant={() => setOverlay('assistant')} />}
         {view === 'settings' && authenticated && <Settings notify={notify} onPremium={openPremium} />}
         {view === 'groups' && <Groups initialGroupId={activeGroupId} authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} groupsStatus={groupsStatus} refreshSignal={groupRefresh} onRefresh={() => { setGroupsStatus('loading'); void api('/v1/groups').then(result => { if (!Array.isArray(result)) throw new Error('Respuesta inválida'); setGroups(result as GroupSummary[]); setGroupsStatus('ready'); setGroupRefresh(value => value + 1) }).catch(() => { setGroupsStatus('error'); notify('No pudimos actualizar tus grupos.') }) }} onSelectGroup={setActiveGroupId} onExpense={openExpense} />}
-        {view === 'panorama' && (authenticated ? <Panorama /> : <section className="workspace-card"><h1>Proyección y recurrentes</h1><p>Ingresá para consultar tu historial.</p><button className="primary" onClick={() => void authenticate('panorama')}>Ingresar</button></section>)}
+        {view === 'panorama' && (authenticated ? <Panorama onConnections={() => navigate('connections')} /> : <section className="workspace-card"><h1>Proyección y recurrentes</h1><p>Ingresá para consultar tu historial.</p><button className="primary" onClick={() => void authenticate('panorama')}>Ingresar</button></section>)}
       </section>
     </>}
-    {(notice || authMessage) && <div className="toast" role="status">{notice || authMessage}</div>}
+    {(notice || authMessage && !authError) && <div className="toast" role="status">{notice || authMessage}</div>}
     {overlay === 'expense' && <ExpenseModal groupId={activeGroupId} close={() => setOverlay(null)} submit={expense => { setExpenses([expense, ...expenses]); setOverlay(null); notify('Gasto agregado y dividido en el grupo.') }} onSaved={() => setGroupRefresh(value => value + 1)} />}
     {authenticated && <button className="assistant-fab" onClick={() => setOverlay('assistant')} aria-label="Abrir asistente financiero" aria-expanded={overlay === 'assistant'}>✧</button>}
     {overlay === 'assistant' && authenticated && <FinanceChat api={api} close={() => setOverlay(null)} />}
@@ -298,7 +280,7 @@ function monthShort(value: string) {
   return new Intl.DateTimeFormat('es-AR', { month: 'short' }).format(new Date(`${value}T12:00:00`)).replace('.', '')
 }
 
-function Panorama() {
+function Panorama({ onConnections }: { onConnections: () => void }) {
   const [forecast, setForecast] = useState<Forecast | null>(null)
   const [status, setStatus] = useState<'unavailable' | 'loading' | 'live'>('loading')
   const [message, setMessage] = useState('Cargando tu historial…')
@@ -320,7 +302,7 @@ function Panorama() {
     }
   }
   useEffect(() => { void reload() }, [])
-  if (!forecast) return <section className="workspace-card"><span className="kicker">MIS FINANZAS</span><h1>Proyección y recurrentes</h1><p role="status">{status === 'loading' ? 'Cargando tu historial…' : message}</p><button className="outline" onClick={() => void reload()} disabled={status === 'loading'}>Reintentar</button></section>
+  if (!forecast) return <section className="workspace-card"><span className="kicker">MIS FINANZAS</span><h1>Proyección y recurrentes</h1><p role="status">{status === 'loading' ? 'Cargando tu historial…' : message}</p><button className="outline" onClick={() => void reload()} disabled={status === 'loading'}>Reintentar</button>{status === 'unavailable' && <button className="text-link" onClick={onConnections}>Revisar conexiones →</button>}</section>
   const maxHistory = Math.max(...forecast.monthly_history.map(item => item.amount), 1)
   const trend = forecast.forecast.trend_vs_last_month
 

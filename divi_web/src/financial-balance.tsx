@@ -14,7 +14,7 @@ function Difference({ value, base }: { value: number | null; base: number | null
   return <span className="balance-difference">{delta ? `${delta.amount >= 0 ? '+' : '−'}${cash(Math.abs(delta.amount))} · ${delta.percent === null ? 'sin base porcentual' : `${delta.percent > 0 ? '+' : ''}${percent(delta.percent)}`}` : 'Sin comparación disponible'}</span>
 }
 
-export function FinancialBalance({ authenticated, api, onLogin }: { authenticated: boolean; api: Api; onLogin: () => void }) {
+export function FinancialBalance({ authenticated, api, onLogin, onConnections }: { authenticated: boolean; api: Api; onLogin: () => void; onConnections: () => void }) {
   const [report, setReport] = useState<BalanceReport | null>(null)
   const [selected, setSelected] = useState('')
   const [lookback, setLookback] = useState(6)
@@ -63,7 +63,7 @@ export function FinancialBalance({ authenticated, api, onLogin }: { authenticate
   return <div className="balance-page">
     <header className="balance-heading"><div><span className="kicker">FINANZAS PERSONALES · RESULTADOS REALES</span><h1>Tu mes,<br /><em>en balance.</em></h1><p>Lo que entra, lo que sale y lo que queda. Sin confundir el ahorro registrado con una proyección.</p></div>{authenticated && <button className="outline" onClick={() => void load()} disabled={status === 'loading' || saving}>↻ Actualizar</button>}</header>
     {!authenticated ? <section className="balance-panel"><h2>Tu balance es privado</h2><p>Ingresá con la cuenta vinculada al ETL para consultar tus gastos y registrar ingresos. No mostramos datos de ejemplo como si fueran tuyos.</p><button className="primary" onClick={onLogin}>Ingresar</button></section> : <>
-      {error && <p className="balance-error" role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
+      {error && <div className="balance-error" role="alert"><p>{error}</p><button className="outline" onClick={onConnections}>Revisar conexiones</button></div>}{notice && <p role="status">{notice}</p>}
       {status === 'loading' && <p role="status">Cargando tu balance…</p>}
       {report && row && <>
         <div className="balance-controls"><label>Mes<select value={selected} onChange={event => setSelected(event.target.value)} disabled={saving}>{[...report.months].reverse().map(item => <option key={item.month} value={item.month}>{monthName(item.month)}{item.partial ? ' · en curso' : ''}</option>)}</select></label><label>Promedios históricos<select value={lookback} onChange={event => setLookback(Number(event.target.value))}><option value={3}>Últimos 3 meses completos</option><option value={6}>Últimos 6 meses completos</option></select></label><small>Actualizado al {report.as_of} · ARS</small></div>

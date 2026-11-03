@@ -1,9 +1,10 @@
 # Espacio personal y agente web
 
-Después de “Ingresar”, el retorno predeterminado es `/perfil`. Allí se muestran
-nombre/correo de la sesión, edición del nombre, dashboard real, guía de fuentes,
-Telegram y acceso al asistente. `/app` también muestra el perfil en lugar del
-grupo de demostración. Los flujos explícitos de grupos conservan su destino.
+Después de “Ingresar”, el retorno predeterminado es `/inicio`. Allí se muestran
+el resumen personal y los grupos; `/perfil` contiene datos de cuenta y
+`/conexiones` contiene fuentes y Telegram. `/app` es un alias de Inicio.
+Los flujos explícitos de grupos conservan su destino. Ver
+`divi_web/AUTH_ONBOARDING.md` para sesiones, configuración y límites pendientes.
 
 ## Conexiones honestas
 

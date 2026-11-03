@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 import boto3
 import requests
 from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 from botocore.config import Config
 
@@ -378,22 +379,42 @@ def accept_invite(token: str, user_id: str) -> dict[str, Any]:
 
 def create_identity_link(user_id: str) -> dict[str, Any]:
     """Create a short-lived code that a pending Telegram member can claim."""
-    code = secrets.token_urlsafe(8).upper().replace("-", "").replace("_", "")[:10]
+    code = secrets.token_hex(24).upper()
     item = {"pk": f"IDENTITY_LINK#{code}", "sk": "META", "code": code, "user_id": user_id, "created_at": now(), "ttl": int(time.time()) + 15 * 60}
     table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
-    put_audit(user_id, "identity_link.created", code)
-    return {"code": code, "expires_in_minutes": 15, "instruction": "Enviá /vincular " + code + " al bot Divi Groups desde tu cuenta de Telegram."}
+    put_audit(user_id, "identity_link.created", "telegram")
+    return {"code": code, "expires_in_minutes": 15, "instruction": "Enviá /vincular " + code + " al bot de grupos desde tu chat privado de Telegram."}
 
 
 def claim_telegram_identity(code: str, telegram_user_id: str, display_name: str = "") -> dict[str, Any]:
     """Promote pending legacy Telegram memberships to the authenticated user."""
     link = get_item(f"IDENTITY_LINK#{code.strip().upper()}", "META", required=False)
-    if not link:
+    if not link or int(link.get("ttl", 0)) <= int(time.time()):
         raise ApiError(400, "El código venció o ya fue utilizado")
     identity_pk = f"EXTERNAL#TELEGRAM#{telegram_user_id}"
+    existing_identity = get_item(identity_pk, "META", required=False)
+    if existing_identity and existing_identity.get("user_id") != link["user_id"]:
+        raise ApiError(409, "Esta cuenta de Telegram ya está vinculada a otra cuenta web")
     links = table.query(KeyConditionExpression=Key("pk").eq(identity_pk) & Key("sk").begins_with("GROUP#")).get("Items", [])
     if not links:
-        raise ApiError(404, "No encontramos grupos pendientes para esta cuenta de Telegram")
+        # New users can link without legacy memberships. Bind the trusted
+        # webhook identity and consume the one-time code in one transaction.
+        try:
+            dynamodb.meta.client.transact_write_items(TransactItems=[
+                {"Put": {"TableName": TABLE_NAME, "Item": marshal({"pk": identity_pk, "sk": "META", "entity": "telegram_identity", "user_id": link["user_id"], "linked_at": now()}),
+                         "ConditionExpression": "attribute_not_exists(user_id) OR user_id = :user",
+                         "ExpressionAttributeValues": marshal({":user": link["user_id"]})}},
+                {"Delete": {"TableName": TABLE_NAME, "Key": marshal({"pk": link["pk"], "sk": "META"}),
+                            "ConditionExpression": "#ttl > :now AND user_id = :user",
+                            "ExpressionAttributeNames": {"#ttl": "ttl"},
+                            "ExpressionAttributeValues": marshal({":now": int(time.time()), ":user": link["user_id"]})}},
+            ])
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+                raise ApiError(409, "No pudimos usar este código. Generá uno nuevo y reintentá.") from None
+            raise
+        put_audit(link["user_id"], "identity_link.claimed", "telegram")
+        return {"linked_groups": 0, "user_id": link["user_id"]}
     user_id = link["user_id"]
     for external in links:
         group_id, old_member_key = external["group_id"], external["member_key"]
@@ -899,7 +920,7 @@ def oauth_callback(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def marshal(item: dict[str, Any]) -> dict[str, Any]:
-    return boto3.dynamodb.types.TypeSerializer().serialize(item)["M"]
+    return TypeSerializer().serialize(item)["M"]
 
 
 def group_bot_config() -> dict[str, str]:
@@ -985,8 +1006,14 @@ def handle_group_bot_webhook(event: dict[str, Any]) -> dict[str, Any]:
     if command in {"/start", "/help", "/ayuda"}:
         reply = "👋 Divi Groups\n\n/vincular CODIGO: vincular tu cuenta\n/grupos: listar tus grupos\nEn un grupo: /saldo, /gastos y /gasto MONTO DESCRIPCION."
     elif command == "/vincular" and arguments:
-        result = claim_telegram_identity(arguments[0], telegram_id, str(sender.get("first_name") or ""))
-        reply = f"✅ Cuenta vinculada. Reclamaste {result['linked_groups']} grupo(s) en Divi."
+        if chat.get("type") != "private":
+            reply = "Por seguridad, usá /vincular solo en un chat privado con el bot. No compartas códigos de vinculación."
+        else:
+            try:
+                result = claim_telegram_identity(arguments[0], telegram_id, str(sender.get("first_name") or ""))
+                reply = f"✅ Cuenta vinculada. Recuperaste {result['linked_groups']} grupo(s). Volvé a la web y actualizá Mis grupos."
+            except ApiError as exc:
+                reply = exc.message
     elif command == "/grupos":
         user_id = _group_bot_user(telegram_id)
         if not user_id:
