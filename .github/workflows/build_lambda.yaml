@@ -56,6 +56,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
         
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -82,7 +85,11 @@ jobs:
       - name: Build Docker image
         run: |
           ECR_REPO="${{ env.ECR_REPO }}"
-          docker build \
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --load \
             -t local-build:$IMAGE_TAG \
             -f $DOCKERFILE \
             ./$(dirname $DOCKERFILE)
