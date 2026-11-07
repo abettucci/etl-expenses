@@ -25,7 +25,7 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 from pydantic import ValidationError
 from variation_alerts import completed_comparison_periods, exceeds_variation_threshold
-from result_presenter import single_value_answer
+from result_presenter import single_value_answer, split_html_messages
 from agent_web import run_web_question, looks_read_only
 from question_period import calendar_context, dates_match_question
 from variation_commands import USAGE as VARIATION_COMMAND_USAGE, VariationCommandError, parse_variation_command
@@ -132,6 +132,9 @@ _TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
 
 # Etiquetas legibles (español) para columnas frecuentes en respuestas Telegram
 _COLUMN_LABELS_ES = {
+    "monto_ars": "Monto (ARS)",
+    "monto_original": "Monto original",
+    "moneda_original": "Moneda original",
     "COMERCIO": "Comercio",
     "MONTO": "Monto",
     "FECHA_PAGO": "Fecha de pago",
@@ -517,32 +520,30 @@ TABLE_METADATA = {
 SQL_EXAMPLES = """
     EJEMPLOS DE QUERIES CORRECTAS:
 
-    1. Pregunta: "¿Cuánto gasté en los últimos 3 meses?"
+    1. Pregunta: "¿Cuánto gasté con el banco en los últimos 3 meses?"
     SQL:
-    SELECT SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))) AS total_gasto_ars
+    SELECT SUM(COALESCE(SAFE_CAST(MONTO_ARS AS NUMERIC), IF(UPPER(DIVISA) = 'ARS', SAFE_CAST(MONTO AS NUMERIC), NULL))) AS total_gasto_ars
     FROM `{project}.{dataset}.bank_payments`
     WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)
 
     2. Pregunta: "¿Cuáles fueron mis mayores gastos del mes?"
     SQL:
-    SELECT COMERCIO, CAST(MONTO AS FLOAT64) AS monto, FECHA_PAGO
+    SELECT COMERCIO, COALESCE(SAFE_CAST(MONTO_ARS AS NUMERIC), IF(UPPER(DIVISA) = 'ARS', SAFE_CAST(MONTO AS NUMERIC), NULL)) AS monto_ars, FECHA_PAGO
     FROM `{project}.{dataset}.bank_payments`
     WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
-    ORDER BY CAST(MONTO AS FLOAT64) DESC
-    LIMIT 10
+    ORDER BY monto_ars DESC
 
     3. Pregunta: "Gastos por comercio este mes"
     SQL:
-    SELECT COMERCIO, SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))) AS total_ars, COUNT(*) AS cantidad_transacciones
+    SELECT COMERCIO, SUM(COALESCE(SAFE_CAST(MONTO_ARS AS NUMERIC), IF(UPPER(DIVISA) = 'ARS', SAFE_CAST(MONTO AS NUMERIC), NULL))) AS total_ars, COUNT(*) AS cantidad_transacciones
     FROM `{project}.{dataset}.bank_payments`
     WHERE PARSE_DATE('%d/%m/%Y', FECHA_PAGO) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
     GROUP BY COMERCIO
-    ORDER BY total DESC
-    LIMIT 20
+    ORDER BY total_ars DESC
 
     4. Pregunta: "¿Cuánto gasté este mes en Cabify?" (o cualquier comercio específico que NO sea Carrefour)
     SQL:
-    SELECT SUM(COALESCE(CAST(b.MONTO_ARS AS FLOAT64), IF(UPPER(b.DIVISA) = 'ARS', CAST(b.MONTO AS FLOAT64), NULL))) AS total_gasto_ars
+    SELECT SUM(COALESCE(SAFE_CAST(b.MONTO_ARS AS NUMERIC), IF(UPPER(b.DIVISA) = 'ARS', SAFE_CAST(b.MONTO AS NUMERIC), NULL))) AS total_gasto_ars
     FROM `{project}.{dataset}.bank_payments` b
     JOIN `{project}.{dataset}.dim_comercio_mapping` m
       ON m.flow = 'bank_payments'
@@ -552,14 +553,15 @@ SQL_EXAMPLES = """
 
     5. Pregunta: "Dame el detalle de mis últimos gastos en Cabify"
     SQL:
-    SELECT b.FECHA_PAGO, b.COMERCIO, CAST(b.MONTO AS FLOAT64) AS monto, m.comercio_depurado
+    SELECT b.FECHA_PAGO, b.COMERCIO,
+      COALESCE(SAFE_CAST(b.MONTO_ARS AS NUMERIC), IF(UPPER(b.DIVISA) = 'ARS', SAFE_CAST(b.MONTO AS NUMERIC), NULL)) AS monto_ars,
+      b.MONTO AS monto_original, b.DIVISA AS moneda_original, m.comercio_depurado
     FROM `{project}.{dataset}.bank_payments` b
     JOIN `{project}.{dataset}.dim_comercio_mapping` m
       ON m.flow = 'bank_payments'
      AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%')
     WHERE UPPER(m.comercio_depurado) = UPPER('Cabify')
     ORDER BY PARSE_DATE('%d/%m/%Y', b.FECHA_PAGO) DESC
-    LIMIT 20
 
     6. Pregunta: "¿Cuánto gasté este mes en Carrefour?" (Carrefour es CASO ESPECIAL: tiene su propia tabla con detalle de productos)
     SQL:
@@ -2810,6 +2812,33 @@ def build_enriched_schema_prompt():
     
     return "\n".join(schema_parts)
 
+FINANCIAL_QUERY_RULES = """
+No agregues LIMIT ni OFFSET: devuelve todas las filas del período solicitado.
+Conserva los filtros que pidió la persona; no agregues filtros de comercio o fuente que no pidió.
+Para detalles, totales y rankings usa el mismo criterio monetario y las mismas fuentes.
+En bank_payments, tanto el detalle como los totales y rankings deben usar
+COALESCE(SAFE_CAST(MONTO_ARS AS NUMERIC), IF(UPPER(DIVISA) = 'ARS', SAFE_CAST(MONTO AS NUMERIC), NULL)).
+En el detalle devuelve esa expresión AS monto_ars. Si incluyes MONTO, devuelve también
+DIVISA y usa los alias monto_original y moneda_original; nunca presentes el importe original USD como ARS.
+No reemplaces conversiones faltantes por cero; informa su ausencia.
+Identifica las fuentes consultadas en los resultados (columna fuente), especialmente si no se pidió una fuente.
+No sumes recibos con sus pagos ni mezcles ingresos con gastos.
+En detalles ordena por fecha y comercio para que el resultado sea estable.
+Para el comercio con mayor gasto agrega por comercio en ARS y usa QUALIFY DENSE_RANK()
+OVER (ORDER BY SUM(...) DESC) = 1; no cortes el detalle con LIMIT.
+"""
+
+
+def uncap_generated_sql(sql: str) -> str:
+    """Remove a model's terminal numeric row cap, preserving SQL literals."""
+    return re.sub(
+        r"\s+LIMIT\s+\d+(?:\s+OFFSET\s+\d+)?\s*;?\s*$",
+        "",
+        sql,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
 def generate_sql_with_openai2(question, bq_client, *, for_web=False):
     """Genera SQL usando OpenAI con metadata enriquecida y few-shot learning"""
     try:
@@ -2829,9 +2858,9 @@ REGLAS CRÍTICAS:
 1. NUNCA agregues filtros que el usuario no pidió explícitamente
 2. Si el usuario pregunta por "gastos del banco" o "banco santander", usa bank_payments SIN filtros de banco (toda la tabla ES del banco santander)
 3. Para campos de fecha tipo STRING con formato dd/mm/yyyy, SIEMPRE usar: PARSE_DATE('%d/%m/%Y', campo_fecha)
-4. Para totales de bank_payments expresados en ARS usar SUM(COALESCE(CAST(MONTO_ARS AS FLOAT64), IF(UPPER(DIVISA) = 'ARS', CAST(MONTO AS FLOAT64), NULL))). MONTO es el importe original y no se puede sumar si mezcla USD y ARS.
+4. Para detalles y totales de bank_payments expresados en ARS usar COALESCE(SAFE_CAST(MONTO_ARS AS NUMERIC), IF(UPPER(DIVISA) = 'ARS', SAFE_CAST(MONTO AS NUMERIC), NULL)); SUM de esa misma expresión para totales. MONTO es el importe original y no se puede sumar si mezcla USD y ARS.
 5. Usa fechas relativas (CURRENT_DATE(), DATE_SUB, DATE_TRUNC)
-6. LIMIT 20 siempre
+6. Devuelve todas las filas del período, sin LIMIT ni OFFSET.
 
 FILTRADO POR COMERCIO (MUY IMPORTANTE):
 7. NUNCA filtres por nombre de comercio con `WHERE COMERCIO = 'X'` ni con `LIKE '%X%'` directo sobre bank_payments o mp_data. Los nombres crudos del banco son raros (ej: 'CABIFY*RIDE', 'DLOCAL*RAPPI', 'HIPER CARREFOU 0123') y nunca matchean con lo que escribe el usuario.
@@ -2858,6 +2887,7 @@ Genera la consulta SQL:"""
         print('agent_sql_generation_started')
         
         system_prompt += '\n' + calendar_context(question, datetime.now(_TZ_AR).date())
+        system_prompt += '\n' + FINANCIAL_QUERY_RULES
         system_prompt += '\nUn gasto total sin fuente explícita no debe limitarse silenciosamente a bank_payments. Usá las fuentes compatibles disponibles en el esquema, sin duplicar importes. Nunca sumes monedas distintas sin conversión a ARS. No confundir NULL con cero.'
         model_client = openai_client.with_options(timeout=10, max_retries=0) if for_web else openai_client
         res = model_client.chat.completions.create(
@@ -2876,6 +2906,7 @@ Genera la consulta SQL:"""
         if sql.startswith("```"):
             sql = sql.replace("```sql", "").replace("```", "").strip()
         
+        sql = uncap_generated_sql(sql)
         if not dates_match_question(sql, question, datetime.now(_TZ_AR).date()):
             print('agent_query_period_rejected')
             return ''
@@ -2919,7 +2950,7 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
             6b. Los gastos manuales se encuentran en manual_expenses: usar expense_date, amount y merchant.
             7. Para información de productos, usa dim_producto y haz JOIN con carrefour_data si es necesario.
             7b. Cuando el usuario filtre por un comercio específico (NO Carrefour) - ej: Cabify, Rappi, McDonalds - hacer JOIN bank_payments con dim_comercio_mapping ON m.flow = 'bank_payments' AND UPPER(b.COMERCIO) LIKE CONCAT('%', UPPER(m.comercio_raw), '%'), y filtrar por UPPER(m.comercio_depurado) = UPPER('X'). Valores válidos de flow: 'bank_payments', 'bank_transfers', 'mp_data', 'mp_transfer_data', 'carrefour_data', 'supermarket_receipts'. NUNCA usar flow = 'bank' ni m.match_value ni REGEXP_REPLACE. NUNCA usar WHERE COMERCIO = 'X' directo.
-            8. Limita los resultados a máximo 20 filas con LIMIT 20.
+            8. Devuelve todas las filas del período solicitado, sin LIMIT ni OFFSET.
             9. Para filtros de fecha, usa funciones de BigQuery como DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH).
             10. No uses fechas hardcodeadas, usa funciones relativas (CURRENT_DATE(), DATE_SUB, etc).
             11. En bank_payments, al sumar o comparar gastos en ARS usar MONTO_ARS. Si MONTO_ARS es NULL, sólo podés usar MONTO como fallback cuando DIVISA = 'ARS'; nunca sumes USD sin conversión.
@@ -2928,6 +2959,7 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
             Genera solo el SQL, sin explicaciones adicionales:
         """
                 
+        prompt += '\n' + FINANCIAL_QUERY_RULES
         # Llamar a OpenAI
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",  # Modelo económico y rápido
@@ -2951,7 +2983,7 @@ def generate_sql_with_openai(question: str, bq_client) -> str:
         elif sql.startswith('```'):
             sql = sql.replace('```', '').strip()
         
-        return sql
+        return uncap_generated_sql(sql)
         
     except Exception as e:
         print(f"❌ Error generando SQL con OpenAI: {e}")
@@ -2996,7 +3028,7 @@ def query_bigquery(client, sql: str, *, timeout=None) -> tuple:
             )
         
         query_job = client.query(sql, job_config=bigquery.QueryJobConfig(maximum_bytes_billed=100_000_000))
-        results = query_job.result(max_results=20, timeout=timeout)  # Export usa otra ruta.
+        results = query_job.result(timeout=timeout)
         
         # Verificar si hay resultados
         if results.total_rows == 0:
@@ -3052,10 +3084,16 @@ def format_bigquery_results(results) -> str:
         title = f"📊 <b>Resultados</b> <i>({n} filas)</i>"
         footer = f"<i>Mostrando {n} filas</i>"
 
+    ars_column = next((col for col in columns if col.lower() == 'monto_ars'), None)
+    if ars_column:
+        amounts = [Decimal(str(row[ars_column])) for row in rows if row[ars_column] is not None]
+        missing = n - len(amounts)
+        if amounts:
+            total = sum(amounts, Decimal('0'))
+            footer += f"\n<b>Total del detalle (ARS):</b> {_format_money_ar(total)}"
+        if missing:
+            footer += f"\n⚠️ {missing} movimientos sin conversión disponible; no se incluyen en el total."
     out = f"{title}\n\n{body}\n\n{footer}"
-    max_len = 4000
-    if len(out) > max_len:
-        out = out[: max_len - 40] + "\n\n<i>… (mensaje truncado; acotá la consulta o pedí menos filas)</i>"
     return out
 
 def handle_message(text: str, bq_client) -> tuple:
@@ -3110,7 +3148,7 @@ Devuelve SOLO el SQL corregido, sin explicaciones."""
         res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Eres un experto en SQL para BigQuery. Corrige errores de SQL."},
+                {"role": "system", "content": "Eres un experto en SQL para BigQuery. Corrige errores de SQL.\n" + FINANCIAL_QUERY_RULES},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=600,
@@ -3124,7 +3162,7 @@ Devuelve SOLO el SQL corregido, sin explicaciones."""
         if not dates_match_question(sql, question, datetime.now(_TZ_AR).date()):
             return ''
         print('agent_sql_regenerated')
-        return sql
+        return uncap_generated_sql(sql)
         
     except Exception as e:
         print(f"❌ Error en retry: {e}")
@@ -3281,6 +3319,20 @@ def telegram_answer_callback(callback_query_id: str, text: str = None):
 
 def send_telegram_message(chat_id, text, token, parse_mode="Markdown", reply_markup=None):
     """Envía mensaje a Telegram. parse_mode=False omite formato (texto plano). HTML/Markdown según valor."""
+    if parse_mode == "HTML":
+        chunks = split_html_messages(text)
+        if len(chunks) > 1:
+            result = None
+            for index, chunk in enumerate(chunks):
+                if index:
+                    time.sleep(1.05)
+                result = send_telegram_message(
+                    chat_id, chunk, token, parse_mode="HTML",
+                    reply_markup=reply_markup if index == len(chunks) - 1 else None,
+                )
+                if result is None:
+                    return None
+            return result
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode is not False and parse_mode:

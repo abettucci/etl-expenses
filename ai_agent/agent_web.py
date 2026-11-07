@@ -37,7 +37,7 @@ def run_web_question(event, *, enabled, owner_sub, generate, execute):
         if text.startswith('❌'):
             return {'statusCode': 503, 'answer': 'No pude consultar los gastos ahora. Intentá nuevamente.'}
         parser = PlainText(); parser.feed(text)
-        answer = ''.join(parser.parts).strip()[:4000]
+        answer = ''.join(parser.parts).strip()
         if not answer:
             raise ValueError('empty')
         return {'statusCode': 200, 'answer': answer}
