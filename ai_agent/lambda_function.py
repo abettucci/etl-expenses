@@ -37,6 +37,9 @@ from voice_expenses import (
     TelegramVoiceMessage,
     TelegramManualExpenseMessage,
     TelegramVoiceCallback,
+    TelegramReceiptCallback,
+    TelegramReceiptPhotoJob,
+    TelegramReceiptFinalizeJob,
     build_voice_callback,
     parse_voice_callback,
     extract_manual_expense_regex,
@@ -88,6 +91,7 @@ UNMAPPED_TABLE = os.environ.get("UNMAPPED_TABLE", "comercio_unmapped_queue")
 MAPPING_REVIEW_TABLE = os.environ.get("MAPPING_REVIEW_TABLE", "comercio_mapping_review_queue")
 MAPPING_REVIEW_STATE_TABLE = os.environ.get("MAPPING_REVIEW_STATE_TABLE", "telegram_mapping_review_state")
 MERCHANT_SUGGESTIONS_QUEUE_URL = os.environ.get("MERCHANT_SUGGESTIONS_QUEUE_URL", "").strip()
+TELEGRAM_RECEIPT_PHOTO_QUEUE_URL = os.environ.get("TELEGRAM_RECEIPT_PHOTO_QUEUE_URL", "").strip()
 MERCHANT_SUGGESTIONS_ENABLED = os.environ.get("MERCHANT_SUGGESTIONS_ENABLED", "false").lower() == "true"
 MERCHANT_AUTO_APPLY_ENABLED = os.environ.get("MERCHANT_AUTO_APPLY_ENABLED", "false").lower() == "true"
 MERCHANT_PLACES_ENABLED = os.environ.get("MERCHANT_PLACES_ENABLED", "false").lower() == "true"
@@ -575,7 +579,7 @@ sfn_client = boto3.client("stepfunctions", region_name=REGION)
 # Tabla DynamoDB para control de idempotencia de mensajes de Telegram
 DDB_PROCESSED_MESSAGES_TABLE = os.environ.get("DDB_PROCESSED_MESSAGES_TABLE", "telegram_processed_messages")
 DDB_PENDING_TICKETS_TABLE = os.environ.get("DDB_PENDING_TICKETS_TABLE", "telegram_pending_tickets")
-MULTI_PHOTO_TIMEOUT_SECONDS = 120  # 2 minutos para esperar más fotos
+MULTI_PHOTO_TIMEOUT_SECONDS = 600  # 10 minutos para elegir o enviar más fotos
 
 # Indicadores de que el ticket está completo (fin del ticket)
 TICKET_END_INDICATORS = [
@@ -600,7 +604,10 @@ def is_message_already_processed(message_id: int) -> bool:
     """Verifica si un mensaje de Telegram ya fue procesado (control de idempotencia)"""
     try:
         processed_table = dynamo.Table(DDB_PROCESSED_MESSAGES_TABLE)
-        response = processed_table.get_item(Key={"message_id": str(message_id)})
+        response = processed_table.get_item(
+            Key={"message_id": str(message_id)},
+            ConsistentRead=True,
+        )
         return "Item" in response
     except Exception as e:
         print(f"⚠️ Error verificando idempotencia: {e}")
@@ -659,7 +666,10 @@ def get_pending_ticket(chat_id: int) -> dict:
     """Obtiene un ticket pendiente (incompleto) para un chat_id"""
     try:
         pending_table = dynamo.Table(DDB_PENDING_TICKETS_TABLE)
-        response = pending_table.get_item(Key={"chat_id": str(chat_id)})
+        response = pending_table.get_item(
+            Key={"chat_id": str(chat_id)},
+            ConsistentRead=True,
+        )
         item = response.get("Item")
         
         if not item:
@@ -688,7 +698,7 @@ def save_pending_ticket(chat_id: int, partial_data: dict, s3_keys: list, photo_c
                 "s3_keys": s3_keys,
                 "photo_count": photo_count,
                 "created_at": Decimal(str(time.time())),
-                "ttl": int(time.time()) + 300  # TTL de 5 minutos
+                "ttl": int(time.time()) + 900  # TTL de 15 minutos; el timeout efectivo es 10 min
             }
         )
         print(f"💾 Ticket pendiente guardado para chat {chat_id} ({photo_count} fotos)")
@@ -703,6 +713,88 @@ def delete_pending_ticket(chat_id: int) -> None:
         print(f"🗑️ Ticket pendiente eliminado para chat {chat_id}")
     except Exception as e:
         print(f"⚠️ Error eliminando ticket pendiente: {e}")
+
+def _ticket_resolution_keyboard() -> dict:
+    return {"inline_keyboard": [[
+        {"text": "📸 Voy a enviar más", "callback_data": "tk:more"},
+        {"text": "✅ Es la única", "callback_data": "tk:single"},
+    ]]}
+
+
+def handle_ticket_resolution_callback(event: dict, data: dict) -> dict:
+    """Validate and queue an explicit choice for an incomplete receipt."""
+    try:
+        callback = data.get("callback_query") or {}
+        callback_message = callback.get("message") or {}
+        callback_chat = callback_message.get("chat") or {}
+        parsed = TelegramReceiptCallback.model_validate({
+            "callback_id": callback.get("id"),
+            "chat_id": callback_chat.get("id"),
+            "callback_data": callback.get("data"),
+        })
+    except (AttributeError, TypeError, ValueError, ValidationError):
+        return {"statusCode": 200}
+
+    if not _telegram_webhook_is_authorized(event, parsed.chat_id):
+        telegram_answer_callback(parsed.callback_id, "No autorizado")
+        return {"statusCode": 200}
+
+    if parsed.callback_data == "tk:more":
+        if not get_pending_ticket(parsed.chat_id):
+            telegram_answer_callback(parsed.callback_id, "El ticket pendiente venció")
+            send_telegram_message(
+                parsed.chat_id,
+                "El ticket pendiente venció. Enviá nuevamente las fotos, una detrás de la otra.",
+                TELEGRAM_BOT_TOKEN,
+                parse_mode=False,
+            )
+            return {"statusCode": 200}
+        telegram_answer_callback(parsed.callback_id, "Perfecto, te espero")
+        send_telegram_message(
+            parsed.chat_id,
+            "Perfecto. Enviá la siguiente foto cuando quieras; tenés hasta 10 minutos.",
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=False,
+        )
+        return {"statusCode": 200}
+
+    if not get_pending_ticket(parsed.chat_id):
+        telegram_answer_callback(parsed.callback_id, "El ticket pendiente venció")
+        send_telegram_message(
+            parsed.chat_id,
+            "El ticket pendiente venció. Enviá nuevamente las fotos, una detrás de la otra.",
+            TELEGRAM_BOT_TOKEN,
+            parse_mode=False,
+        )
+        return {"statusCode": 200}
+    if not TELEGRAM_RECEIPT_PHOTO_QUEUE_URL:
+        telegram_answer_callback(parsed.callback_id, "No pude programar el procesamiento")
+        return {"statusCode": 200}
+    try:
+        job = TelegramReceiptFinalizeJob(
+            job_type="telegram_receipt_finalize",
+            chat_id=parsed.chat_id,
+            callback_id=parsed.callback_id,
+        )
+        boto3.client("sqs", region_name=REGION).send_message(
+            QueueUrl=TELEGRAM_RECEIPT_PHOTO_QUEUE_URL,
+            MessageBody=job.model_dump_json(),
+            MessageGroupId=str(parsed.chat_id),
+            MessageDeduplicationId=f"finalize-{parsed.chat_id}-{parsed.callback_id}",
+        )
+    except Exception as exc:
+        print(f"telegram_receipt_finalize_enqueue_failed: {type(exc).__name__}")
+        telegram_answer_callback(parsed.callback_id, "No pude programar el procesamiento; probá otra vez")
+        return {"statusCode": 200}
+
+    telegram_answer_callback(parsed.callback_id, "Procesando ticket")
+    send_telegram_message(
+        parsed.chat_id,
+        "✅ Listo. Voy a procesar el ticket con las fotos recibidas.",
+        TELEGRAM_BOT_TOKEN,
+        parse_mode=False,
+    )
+    return {"statusCode": 200}
 
 def check_ticket_is_complete(s3_key: str) -> tuple:
     """
@@ -883,29 +975,48 @@ def merge_ticket_data(data_parts: list) -> dict:
 # PROCESAMIENTO DE IMÁGENES DE TICKETS
 # =============================================================================
 
+def _telegram_get_with_retry(url: str, timeout: int, attempts: int = 3):
+    """Retry only transient failures against the fixed Telegram API host."""
+    for attempt in range(attempts):
+        try:
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(1 + attempt)
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", 0)
+            if status not in (429, 500, 502, 503, 504) or attempt + 1 == attempts:
+                raise
+            time.sleep(1 + attempt)
+    raise RuntimeError("Telegram download attempts exhausted")
+
+
 def download_telegram_photo(file_id: str) -> bytes:
-    """Descarga una foto de Telegram usando el file_id"""
+    """Descarga una foto de Telegram y reintenta fallos de red transitorios."""
     try:
-        # Obtener información del archivo
         file_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
-        response = requests.get(file_info_url, timeout=10)
+        response = _telegram_get_with_retry(file_info_url, timeout=10)
         file_info = response.json()
-        
-        if not file_info.get("ok"):
-            raise Exception(f"Error obteniendo info del archivo: {file_info}")
-        
-        file_path = file_info["result"]["file_path"]
-        
-        # Descargar el archivo
+
+        if not isinstance(file_info, dict) or not file_info.get("ok"):
+            raise ValueError("Telegram no devolvió información válida del archivo")
+        file_path = file_info.get("result", {}).get("file_path")
+        if (
+            not isinstance(file_path, str)
+            or not re.fullmatch(r"[A-Za-z0-9_./-]{1,512}", file_path)
+            or ".." in file_path.split("/")
+        ):
+            raise ValueError("Telegram devolvió una ruta de archivo inválida")
+
         download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
-        response = requests.get(download_url, timeout=30)
-        response.raise_for_status()
-        
+        response = _telegram_get_with_retry(download_url, timeout=30)
         print(f"✅ Foto descargada de Telegram: {len(response.content)} bytes")
         return response.content
-        
-    except Exception as e:
-        print(f"❌ Error descargando foto de Telegram: {e}")
+    except Exception as exc:
+        print(f"❌ Error descargando foto de Telegram: {type(exc).__name__}")
         raise
 
 
@@ -2459,7 +2570,7 @@ def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
         if not file_id:
             return "❌ No se pudo obtener el ID de la foto.", True
         
-        print(f"📷 Procesando foto: {file_id}")
+        print("📷 Procesando foto recibida")
         
         # 1. Descargar foto de Telegram y subir a S3
         image_bytes = download_telegram_photo(file_id)
@@ -2494,16 +2605,14 @@ def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
             print(f"📎 Agregando foto {photo_count} al ticket en progreso")
             
             if is_complete:
-                # ¡Ticket completo! Procesar todo
                 print(f"✅ Ticket completo después de {photo_count} fotos")
-                delete_pending_ticket(chat_id)
-                
-                # Fusionar todos los datos
                 existing_data["extraction_method"] = "openai_vision_multi"
                 existing_data["s3_keys"] = existing_s3_keys
-                
-                # Procesar el ticket completo
-                return process_complete_ticket(existing_data, bq_client, photo_count)
+                save_pending_ticket(chat_id, existing_data, existing_s3_keys, photo_count)
+                response_text, should_send = process_complete_ticket(existing_data, bq_client, photo_count)
+                if not response_text.startswith("❌"):
+                    delete_pending_ticket(chat_id)
+                return response_text, should_send
             else:
                 # Aún incompleto, guardar y esperar más fotos
                 save_pending_ticket(chat_id, existing_data, existing_s3_keys, photo_count)
@@ -2521,9 +2630,7 @@ def process_telegram_photo(message: dict, bq_client, chat_id: int) -> tuple:
                 return "📄 Primera parte del ticket recibida.\n\n⏳ Parece que el ticket continúa...\n_Envía la siguiente foto para completarlo._", True
         
     except Exception as e:
-        print(f"❌ Error procesando foto: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error procesando foto: {type(e).__name__}")
         return (
             "❌ No pude procesar el ticket en este momento. "
             "Probá enviar una foto más nítida o intentá nuevamente en unos minutos.",
@@ -5145,6 +5252,64 @@ def apply_transaction_detail(bq_client, extraido_de: str, transaction_key: str, 
     )
     bq_client.query(merge_q, job_config=cfg).result()
 
+def _send_receipt_processing_result(chat_id: int, response_text: str) -> None:
+    reply_markup = _ticket_resolution_keyboard() if response_text.startswith("📄") else None
+    send_telegram_message(
+        chat_id,
+        response_text,
+        TELEGRAM_BOT_TOKEN,
+        reply_markup=reply_markup,
+    )
+
+
+def _process_telegram_receipt_queue_job(payload: dict, bq_client) -> str:
+    job_type = payload.get("job_type")
+    if job_type == "telegram_receipt_photo":
+        job = TelegramReceiptPhotoJob.model_validate(payload)
+        processed_key = f"receipt:{job.chat_id}:{job.message_id}"
+        if is_message_already_processed(processed_key):
+            return "duplicate_photo_skipped"
+        message = {
+            "message_id": job.message_id,
+            "chat": {"id": job.chat_id},
+            "photo": [{"file_id": job.file_id, "file_size": job.file_size}],
+        }
+        response_text, _ = process_telegram_photo(message, bq_client, job.chat_id)
+        _send_receipt_processing_result(job.chat_id, response_text)
+        mark_message_as_processed(processed_key)
+        return "photo_processed"
+
+    if job_type == "telegram_receipt_finalize":
+        job = TelegramReceiptFinalizeJob.model_validate(payload)
+        processed_key = f"receipt_finalize:{job.chat_id}:{job.callback_id}"
+        if is_message_already_processed(processed_key):
+            return "duplicate_finalize_skipped"
+        pending = get_pending_ticket(job.chat_id)
+        if not pending:
+            send_telegram_message(
+                job.chat_id,
+                "El ticket pendiente venció. Enviá nuevamente las fotos, una detrás de la otra.",
+                TELEGRAM_BOT_TOKEN,
+                parse_mode=False,
+            )
+            mark_message_as_processed(processed_key)
+            return "pending_ticket_expired"
+        partial_data = json.loads(pending.get("partial_data", "{}"))
+        photo_count = int(pending.get("photo_count", 1))
+        partial_data["s3_keys"] = pending.get("s3_keys", [])
+        partial_data["extraction_method"] = (
+            "openai_vision_single" if photo_count == 1 else "openai_vision_multi"
+        )
+        response_text, _ = process_complete_ticket(partial_data, bq_client, photo_count)
+        if not response_text.startswith("❌"):
+            delete_pending_ticket(job.chat_id)
+        _send_receipt_processing_result(job.chat_id, response_text)
+        mark_message_as_processed(processed_key)
+        return "ticket_finalized" if not response_text.startswith("❌") else "ticket_finalize_failed"
+
+    raise ValueError("Tipo de trabajo de recibo desconocido")
+
+
 def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
@@ -5155,8 +5320,7 @@ def lambda_handler(event, context):
                 generate=lambda question: generate_sql_with_openai2(question, None, for_web=True),
                 execute=lambda sql: query_bigquery(get_bigquery_client(), sql, timeout=10))
 
-        # Worker asíncrono de sugerencias. El batch de Terraform es 1 para que
-        # un candidato fallido pueda reintentarse sin duplicar otros mensajes.
+        # Workers asíncronos de sugerencias y fotos de tickets.
         if isinstance(event, dict) and event.get("Records"):
             records = event.get("Records") or []
             if records and all(record.get("eventSource") == "aws:sqs" for record in records):
@@ -5164,6 +5328,9 @@ def lambda_handler(event, context):
                 results = []
                 for record in records:
                     payload = json.loads(record.get("body") or "{}")
+                    if payload.get("job_type") in {"telegram_receipt_photo", "telegram_receipt_finalize"}:
+                        results.append(_process_telegram_receipt_queue_job(payload, bq_client))
+                        continue
                     candidate_id = str(payload.get("candidate_id") or "").strip()
                     if not candidate_id:
                         raise ValueError("Mensaje SQS sin candidate_id")
@@ -5206,6 +5373,8 @@ def lambda_handler(event, context):
         
         if "callback_query" in data:
             raw_callback_data = str((data.get("callback_query") or {}).get("data") or "")
+            if raw_callback_data.startswith("tk:"):
+                return handle_ticket_resolution_callback(event, data)
             if raw_callback_data.startswith("ve:"):
                 return handle_telegram_voice_callback(event, data)
             if raw_callback_data.startswith("me:"):
@@ -5242,43 +5411,60 @@ def lambda_handler(event, context):
                 )
             return {"statusCode": 200}
 
-        bq_client = get_bigquery_client()
-        
-        # Verificar si el mensaje contiene una foto
+        # Recibos se aceptan en un chat autorizado y se procesan fuera del webhook.
         if "photo" in message:
-            print("📷 Mensaje con foto detectado")
-            
-            # Control de idempotencia ATÓMICO: intentar adquirir lock
-            telegram_message_id = message.get("message_id")
-            if telegram_message_id and not try_acquire_message_lock(telegram_message_id):
-                print(f"⚠️ Mensaje {telegram_message_id} ya fue procesado o está siendo procesado, ignorando")
+            if not _telegram_webhook_is_authorized(event, chat_id):
+                print("telegram_receipt_photo_unauthorized")
                 return {"statusCode": 200}
-            
-            # Verificar si hay un ticket pendiente (para no enviar "Recibí tu ticket" en cada foto)
-            pending_ticket = get_pending_ticket(chat_id)
-            
-            if not pending_ticket:
-                print("""
-                *Recibí tu ticket!*
-                🔄 Procesando imagen...
-                Esto puede tomar unos segundos.
-                """)
-                # Primera foto - enviar mensaje de "procesando"
-                send_telegram_message(
-                    chat_id, 
-                    "📷 *Recibí tu ticket!*\n\n🔄 Procesando imagen...\nEsto puede tomar unos segundos.", 
-                    TELEGRAM_BOT_TOKEN
+            try:
+                photos = message.get("photo") or []
+                if not photos:
+                    raise ValueError("missing photo")
+                photo = max(photos, key=lambda item: item.get("file_size") or 0)
+                job = TelegramReceiptPhotoJob(
+                    job_type="telegram_receipt_photo",
+                    chat_id=chat_id,
+                    message_id=message.get("message_id"),
+                    file_id=photo.get("file_id"),
+                    file_size=photo.get("file_size") or 0,
                 )
-            
-            # Procesar la foto (ahora retorna tupla: response_text, should_send)
-            response_text, should_send = process_telegram_photo(message, bq_client, chat_id)
-            print('response_text: ' , response_text)
-            
-            if should_send:
-                send_telegram_message(chat_id, response_text, TELEGRAM_BOT_TOKEN)
-            
+            except (AttributeError, TypeError, ValueError, ValidationError):
+                send_telegram_message(
+                    chat_id,
+                    "No pude validar la foto recibida. Volvé a enviarla.",
+                    TELEGRAM_BOT_TOKEN,
+                    parse_mode=False,
+                )
+                return {"statusCode": 200}
+            if not TELEGRAM_RECEIPT_PHOTO_QUEUE_URL:
+                send_telegram_message(
+                    chat_id,
+                    "No pude poner la foto en cola. Intentá nuevamente en unos minutos.",
+                    TELEGRAM_BOT_TOKEN,
+                    parse_mode=False,
+                )
+                return {"statusCode": 200}
+            try:
+                boto3.client("sqs", region_name=REGION).send_message(
+                    QueueUrl=TELEGRAM_RECEIPT_PHOTO_QUEUE_URL,
+                    MessageBody=job.model_dump_json(),
+                    MessageGroupId=str(job.chat_id),
+                    MessageDeduplicationId=f"photo-{job.chat_id}-{job.message_id}",
+                )
+            except Exception as exc:
+                print(f"telegram_receipt_photo_enqueue_failed: {type(exc).__name__}")
+                return {"statusCode": 500}
+
+            send_telegram_message(
+                chat_id,
+                "📥 Foto recibida. La estoy procesando y te aviso cuando termine.",
+                TELEGRAM_BOT_TOKEN,
+                parse_mode=False,
+            )
             return {"statusCode": 200}
-        
+
+        bq_client = get_bigquery_client()
+
         # Si no es foto, debe ser texto
         text = message.get("text", "")
         
@@ -5730,6 +5916,9 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
            }
 
     except Exception as e:
+        if isinstance(event, dict) and event.get("Records"):
+            # SQS retries only failed invocations, not successful HTTP responses.
+            raise
         print(f"[ERROR] Exception en Lambda: {str(e)}")
         import traceback
         traceback.print_exc()

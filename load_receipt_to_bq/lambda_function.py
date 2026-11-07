@@ -60,7 +60,7 @@ def extracted_data_to_rows(extracted_data: dict, s3_key: str) -> list:
         for item in line_items:
             row = common_data.copy()
             row["item_name"] = item.get("item_name")
-            row["item_quantity"] = int(item.get("item_quantity") or 1)
+            row["item_quantity"] = float(item.get("item_quantity") or 1)
             row["item_unit_price"] = float(item.get("item_unit_price") or 0)
             row["item_total_price"] = float(item.get("item_total_price") or 0)
             rows.append(row)
@@ -95,7 +95,7 @@ def ensure_table_exists(client, table_id: str):
             bigquery.SchemaField("currency", "STRING"),
             bigquery.SchemaField("payment_method", "STRING"),
             bigquery.SchemaField("item_name", "STRING"),
-            bigquery.SchemaField("item_quantity", "INT64"),
+            bigquery.SchemaField("item_quantity", "FLOAT64"),
             bigquery.SchemaField("item_unit_price", "FLOAT64"),
             bigquery.SchemaField("item_total_price", "FLOAT64"),
             bigquery.SchemaField("extraction_method", "STRING"),
