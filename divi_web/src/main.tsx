@@ -14,6 +14,7 @@ import { legacyWorkspaceView, loginDestination, workspacePaths } from './workspa
 import { landingArea, personalFinanceAnchor } from './landing-navigation'
 import './unified-theme.css'
 import { createAuthSession } from './auth-session'
+import { argentinaDate, expenseDate, householdMonth } from './household'
 
 if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
@@ -30,9 +31,9 @@ if ('serviceWorker' in navigator) {
 type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance' | 'profile' | 'connections'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
-type GroupSummary = { group_id: string; name: string; currency: string; role?: string; legacy_source_key?: string }
+type GroupSummary = { group_id: string; name: string; currency: string; role?: string; kind?: 'general' | 'household'; legacy_source_key?: string }
 type GroupMember = { user_id: string; display_name: string; role: string; active: boolean; claim_state: string }
-type GroupExpenseRecord = { expense_id: string; description: string; amount: string; currency: string; category?: string; created_at: string; deleted_at?: string; allocations?: Record<string, string> }
+type GroupExpenseRecord = { expense_id: string; description: string; amount: string; currency: string; category?: string; created_at: string; expense_date?: string; deleted_at?: string; allocations?: Record<string, string>; shares?: Record<string, string>; payers?: { user_id: string; amount: string }[]; paid_by?: string }
 type GroupSettlement = { from_user_id: string; to_user_id: string; amount: string }
 type Forecast = {
   mode?: 'live' | 'preview'
@@ -343,6 +344,9 @@ function Groups({ initialGroupId, authenticated, onLogin, groups, groupsStatus, 
   const [error, setError] = useState('')
   const [creating, setCreating] = useState(false)
   const [groupName, setGroupName] = useState('')
+  const [groupKind, setGroupKind] = useState<'general' | 'household'>('general')
+  const [month, setMonth] = useState(() => argentinaDate(new Date().toISOString()).slice(0, 7))
+  const [userId, setUserId] = useState('')
   const [createError, setCreateError] = useState('')
   const [inviteUrl, setInviteUrl] = useState('')
   const [inviteError, setInviteError] = useState('')
@@ -356,12 +360,13 @@ function Groups({ initialGroupId, authenticated, onLogin, groups, groupsStatus, 
     Promise.all([
       api(`/v1/groups/${selected.group_id}/members`),
       api(`/v1/groups/${selected.group_id}/expenses`),
-      api(`/v1/groups/${selected.group_id}/settlements`),
-    ]).then(([memberRows, expenseRows, settlementResult]) => {
+      api(`/v1/groups/${selected.group_id}/settlements`), api('/v1/me'),
+    ]).then(([memberRows, expenseRows, settlementResult, me]) => {
       if (!active) return
       setMembers(Array.isArray(memberRows) ? memberRows as GroupMember[] : [])
       setGroupExpenses(Array.isArray(expenseRows) ? expenseRows as GroupExpenseRecord[] : [])
       setSettlement(settlementResult && typeof settlementResult === 'object' ? settlementResult as typeof settlement : {})
+      setUserId(typeof me?.user_id === 'string' ? me.user_id : '')
     }).catch(e => { if (active) setError(e instanceof Error ? e.message : 'No pudimos cargar el grupo.') })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
@@ -374,10 +379,16 @@ function Groups({ initialGroupId, authenticated, onLogin, groups, groupsStatus, 
   const createGroup = async (event: FormEvent) => {
     event.preventDefault(); setCreateError('')
     try {
-      const result = await api('/v1/groups', 'POST', { name: groupName.trim() }) as GroupSummary | null
+      const result = await api('/v1/groups', 'POST', { name: groupName.trim(), kind: groupKind }) as GroupSummary | null
       if (!result?.group_id) throw new Error('La API no devolvió el grupo creado. Revisá tu sesión e intentá de nuevo.')
       setGroupName(''); setCreating(false); setSelectedId(result.group_id); onSelectGroup(result.group_id); onRefresh()
     } catch (e) { setCreateError(e instanceof Error ? e.message : 'No se pudo crear el grupo.') }
+  }
+  const changeKind = async () => {
+    if (!selected) return
+    setError('')
+    try { await api(`/v1/groups/${selected.group_id}`, 'PATCH', { kind: selected.kind === 'household' ? 'general' : 'household' }); onRefresh() }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'No pudimos actualizar el grupo.') }
   }
   const createInvite = async () => {
     if (!selected) return
@@ -392,27 +403,30 @@ function Groups({ initialGroupId, authenticated, onLogin, groups, groupsStatus, 
   }
   const nameFor = (id: string) => members.find(member => member.user_id === id)?.display_name || 'Integrante'
   const balances = Object.entries(settlement.balances || {}).filter(([, amount]) => Number(amount) !== 0)
-  const visibleExpenses = groupExpenses.filter(expense => !expense.deleted_at)
+  const visibleExpenses = groupExpenses.filter(expense => !expense.deleted_at && (selected?.kind !== 'household' || expenseDate(expense).slice(0, 7) === month)).sort((a, b) => expenseDate(b).localeCompare(expenseDate(a)))
+  const household = householdMonth(groupExpenses, month, userId)
+  const preciseMoney = (amount: number, currency = 'ARS') => /^[A-Z]{3}$/.test(currency) ? new Intl.NumberFormat('es-AR', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount) : `${amount.toFixed(2)} ${currency}`
 
   return <>
     <div className="page-title"><div><span className="kicker">TU ESPACIO · GASTOS COMPARTIDOS</span><h1>Mis grupos</h1><p className="page-description">Dividí gastos, invitá integrantes y cerrá cuentas sin mezclarlo con tu balance personal.</p></div><button className="outline" onClick={startCreatingGroup}>{authenticated ? '＋ Crear grupo' : 'Ingresar'}</button></div>
-    {creating && <form className="group-create" onSubmit={createGroup}><label>Nombre del grupo<input autoFocus maxLength={80} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="Ej. Viaje a Bariloche" required minLength={2} /></label><button className="primary" type="submit">Crear grupo</button><button type="button" className="outline" onClick={() => setCreating(false)}>Cancelar</button>{createError && <p className="form-error" role="alert">{createError}</p>}</form>}
+    {creating && <form className="group-create" onSubmit={createGroup}><label>Nombre del grupo<input autoFocus maxLength={80} value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="Ej. Nuestra casa" required minLength={2} /></label><label>Tipo de grupo<select value={groupKind} onChange={event => setGroupKind(event.target.value as 'general' | 'household')}><option value="general">Otros gastos compartidos</option><option value="household">Convivencia</option></select></label><button className="primary" type="submit">Crear grupo</button><button type="button" className="outline" onClick={() => setCreating(false)}>Cancelar</button>{createError && <p className="form-error" role="alert">{createError}</p>}</form>}
     {!authenticated && <section className="insight"><span>♧</span><div><h3>Ingresá para abrir tus grupos</h3><p>Acá vas a encontrar gastos divididos, integrantes, balances y liquidaciones.</p><button onClick={onLogin}>Ingresar →</button></div></section>}
     {authenticated && groupsStatus === 'loading' && <p role="status">Cargando tus grupos…</p>}
     {authenticated && groupsStatus === 'error' && <p className="form-error" role="alert">No pudimos cargar tus grupos. <button className="outline" onClick={onRefresh}>Reintentar</button></p>}
     {authenticated && groupsStatus === 'ready' && groups.length === 0 && !loading && <section className="insight"><span>♧</span><div><h3>Todavía no tenés grupos</h3><p>Creá uno para empezar a cargar gastos compartidos e invitar a tus amigos.</p><button onClick={() => setCreating(true)}>＋ Crear mi primer grupo</button></div></section>}
     {authenticated && groups.length > 0 && <>
-      <section className="group-grid">{groups.map(group => <button className={`group-card ${group.group_id === selected?.group_id ? 'selected' : ''}`} onClick={() => { setSelectedId(group.group_id); onSelectGroup(group.group_id) }} key={group.group_id}><span className="orb cyan">♧</span><div><h2>{group.name}</h2><p>{group.legacy_source_key ? 'Grupo migrado · vinculá a sus miembros' : `Grupo activo · ${group.currency}`}</p></div><strong>{group.group_id === selected?.group_id ? 'Seleccionado' : 'Ver grupo'}</strong><i>→</i></button>)}</section>
+      <section className="group-grid">{groups.map(group => <button className={`group-card ${group.group_id === selected?.group_id ? 'selected' : ''}`} onClick={() => { setSelectedId(group.group_id); onSelectGroup(group.group_id) }} key={group.group_id}><span className="orb cyan">♧</span><div><h2>{group.name}</h2><p>{group.kind === 'household' ? 'Convivencia' : group.legacy_source_key ? 'Grupo migrado · vinculá a sus miembros' : `Grupo activo · ${group.currency}`}</p></div><strong>{group.group_id === selected?.group_id ? 'Seleccionado' : 'Ver grupo'}</strong><i>→</i></button>)}</section>
       {selected && <section className="group-detail">
-        <header className="group-detail-head"><div><span className="kicker">DETALLE DEL GRUPO</span><h2>{selected.name}</h2><p>{members.length} integrantes · moneda {selected.currency}</p></div><div><button className="outline" onClick={createInvite}>↗ Invitar</button><button className="outline" onClick={() => onExpense(selected.group_id)}>＋ Agregar gasto</button></div></header>
+        <header className="group-detail-head"><div><span className="kicker">{selected.kind === 'household' ? 'CONVIVENCIA' : 'DETALLE DEL GRUPO'}</span><h2>{selected.name}</h2><p>{members.length} integrantes · moneda {selected.currency}</p></div><div><button className="outline" onClick={createInvite}>↗ Invitar</button><button className="outline" onClick={() => onExpense(selected.group_id)}>＋ Agregar gasto</button>{selected.role === 'owner' && <button className="outline" onClick={() => void changeKind()}>{selected.kind === 'household' ? 'Marcar como grupo general' : 'Marcar como convivencia'}</button>}</div></header>
         {inviteUrl && <div className="invite-link" role="status"><b>Link de invitación listo</b><input value={inviteUrl} readOnly aria-label="Link de invitación" /><small>Se copió al portapapeles si tu navegador lo permitió. Es de un solo uso y vence en 7 días.</small></div>}
         {inviteError && <p className="form-error" role="alert">{inviteError}</p>}
         {loading && <p className="empty-state" role="status">Cargando movimientos y balances…</p>}
         {error && <div className="form-error" role="alert">{error} <button className="outline" onClick={onRefresh}>Reintentar</button></div>}
         {!loading && !error && <>
+          {selected.kind === 'household' && <article className="group-subpanel"><h3>Gastos de convivencia</h3><label>Mes <input type="month" value={month} onChange={event => setMonth(event.target.value)} /></label>{household.currencies.length ? household.currencies.map(item => <p key={item.currency}>Total compartido: <strong>{preciseMoney(item.total, item.currency)}</strong>{userId && <> · Tu parte: <strong>{item.share === null ? 'Sin datos' : preciseMoney(item.share, item.currency)}</strong></>}</p>) : <p>No hay gastos de convivencia en este mes.</p>}<p>{household.count} gastos</p><p className="muted">Este resumen muestra los gastos cargados en este grupo.</p></article>}
           <div className="group-detail-grid"><article className="group-subpanel"><h3>Integrantes</h3>{members.length ? members.map(member => <div className="member-row" key={member.user_id}><Avatar name={member.display_name} /><div><b>{member.display_name}</b><small>{member.role === 'owner' ? 'Organizador' : 'Integrante'}{member.claim_state === 'pending' ? ' · pendiente de vincular Telegram' : ''}</small></div><span className="pill">{member.active ? 'Activo' : 'Inactivo'}</span></div>) : <p className="empty-state">No hay integrantes para mostrar.</p>}</article>
             <article className="group-subpanel"><h3>Balances</h3>{balances.length ? balances.map(([id, amount]) => <div className="balance-row" key={id}><span>{nameFor(id)}</span><strong className={Number(amount) > 0 ? 'credit' : 'debit'}>{Number(amount) > 0 ? 'recibe ' : 'debe '}{money.format(Math.abs(Number(amount)))}</strong></div>) : <p className="empty-state">Todos están al día por ahora.</p>}{settlement.settlements?.length ? <div className="settlement-list"><h4>Liquidaciones sugeridas</h4>{settlement.settlements.map((item, index) => <div className="balance-row" key={`${item.from_user_id}-${item.to_user_id}-${index}`}><span>{nameFor(item.from_user_id)} → {nameFor(item.to_user_id)}</span><strong>{money.format(Number(item.amount))}</strong></div>)}</div> : null}</article></div>
-          <article className="group-subpanel group-ledger"><h3>Gastos recientes <span>{visibleExpenses.length}</span></h3>{visibleExpenses.length ? visibleExpenses.slice(0, 20).map(expense => <div className="expense" key={expense.expense_id}><span className="category c0">⌇</span><div><h3>{expense.description}</h3><p>{expense.category || 'Otro'} · {new Date(expense.created_at).toLocaleDateString('es-AR')}</p></div><strong>{money.format(Number(expense.amount))}</strong></div>) : <p className="empty-state">Todavía no hay gastos en este grupo.</p>}</article>
+          <article className="group-subpanel group-ledger"><h3>{selected.kind === 'household' ? 'Gastos del mes' : 'Gastos'} <span>{visibleExpenses.length}</span></h3>{visibleExpenses.length ? visibleExpenses.map(expense => <div className="expense" key={expense.expense_id}><span className="category c0">⌇</span><div><h3>{expense.description}</h3><p>{expense.category || 'Otro'} · {expenseDate(expense)}{(expense.payers?.length || expense.paid_by) ? ` · Pagó ${expense.payers?.map(payer => nameFor(payer.user_id)).join(', ') || nameFor(expense.paid_by || '')}` : ''}</p></div><strong>{preciseMoney(Number(expense.amount), expense.currency)}</strong></div>) : <p className="empty-state">No hay gastos para mostrar.</p>}</article>
         </>}
       </section>}
     </>}
@@ -429,6 +443,8 @@ function Gifts({ gifts, reserve, onBack, onPool }: { gifts: Gift[]; reserve: (gi
 
 function ExpenseModal({ groupId, close, submit, onSaved }: { groupId: string; close: () => void; submit: (expense: Expense) => void; onSaved: () => void }) {
   const [amount, setAmount] = useState(''); const [description, setDescription] = useState(''); const [members, setMembers] = useState<GroupMember[]>([]); const [participants, setParticipants] = useState<string[]>([]); const [error, setError] = useState(''); const [saving, setSaving] = useState(false)
+  const [expenseDateValue, setExpenseDateValue] = useState(() => argentinaDate(new Date().toISOString()))
+  const [paidBy, setPaidBy] = useState('')
   useEffect(() => { let active = true; api(`/v1/groups/${groupId}/members`).then(result => { if (!active) return; const rows = Array.isArray(result) ? result as GroupMember[] : []; setMembers(rows); setParticipants(rows.filter(member => member.active || member.claim_state === 'pending').map(member => member.user_id)) }).catch(e => { if (active) setError(e instanceof Error ? e.message : 'No pudimos cargar los integrantes.') }); return () => { active = false } }, [groupId])
   const send = async (event: FormEvent) => {
     event.preventDefault(); setError('')
@@ -437,13 +453,13 @@ function ExpenseModal({ groupId, close, submit, onSaved }: { groupId: string; cl
     if (!description.trim() || !Number.isFinite(amountValue) || amountValue <= 0 || !participants.length) { setError('Completá descripción, monto válido y al menos un participante.'); return }
     setSaving(true)
     try {
-      const result = await api(`/v1/groups/${groupId}/expenses`, 'POST', { amount: normalizedAmount, description: description.trim(), participants, split_method: 'equal', category: 'Otro' }) as GroupExpenseRecord | null
+      const result = await api(`/v1/groups/${groupId}/expenses`, 'POST', { amount: normalizedAmount, description: description.trim(), participants, split_method: 'equal', category: 'Otro', expense_date: expenseDateValue, ...(paidBy ? { paid_by: paidBy } : {}) }) as GroupExpenseRecord | null
       if (!result?.expense_id) throw new Error('No se confirmó el gasto. Verificá tu sesión e intentá de nuevo.')
       onSaved(); submit({ title: result.description, category: result.category || 'Otro', amount: Number(result.amount), payer: 'Vos', date: 'ahora' })
     } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo guardar el gasto.') }
     finally { setSaving(false) }
   }
-  return <Modal title="Nuevo gasto" subtitle="El monto se divide en partes iguales entre las personas seleccionadas." close={close}><form className="expense-form" onSubmit={send}><label>Monto<input autoFocus value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9.,]/g, ''))} placeholder="$ 0" inputMode="decimal" required /></label><label>Descripción<input value={description} onChange={e => setDescription(e.target.value)} placeholder="¿Qué pagaste?" required /></label><fieldset><legend>Dividir entre</legend>{members.length ? members.filter(member => member.active || member.claim_state === 'pending').map(member => <label className="member-check" key={member.user_id}><input type="checkbox" checked={participants.includes(member.user_id)} onChange={event => setParticipants(current => event.target.checked ? [...current, member.user_id] : current.filter(id => id !== member.user_id))} /><Avatar name={member.display_name} /> {member.display_name}</label>) : <p className="empty-state">Cargando integrantes…</p>}</fieldset>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary" type="submit" disabled={saving || members.length === 0}>{saving ? 'Guardando…' : 'Confirmar gasto'} <b>→</b></button></form></Modal>
+  return <Modal title="Nuevo gasto" subtitle="El monto se divide en partes iguales entre las personas seleccionadas." close={close}><form className="expense-form" onSubmit={send}><label>Monto<input autoFocus value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9.,]/g, ''))} placeholder="$ 0" inputMode="decimal" required /></label><label>Descripción<input value={description} onChange={e => setDescription(e.target.value)} placeholder="¿Qué pagaron?" required /></label><label>Fecha<input type="date" value={expenseDateValue} onChange={event => setExpenseDateValue(event.target.value)} required /></label><label>¿Quién pagó?<select value={paidBy} onChange={event => setPaidBy(event.target.value)}><option value="">Yo</option>{members.filter(member => member.active).map(member => <option key={member.user_id} value={member.user_id}>{member.display_name}</option>)}</select></label><fieldset><legend>Dividir entre</legend>{members.length ? members.filter(member => member.active || member.claim_state === 'pending').map(member => <label className="member-check" key={member.user_id}><input type="checkbox" checked={participants.includes(member.user_id)} onChange={event => setParticipants(current => event.target.checked ? [...current, member.user_id] : current.filter(id => id !== member.user_id))} /><Avatar name={member.display_name} /> {member.display_name}</label>) : <p className="empty-state">Cargando integrantes…</p>}</fieldset>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary" type="submit" disabled={saving || members.length === 0}>{saving ? 'Guardando…' : 'Confirmar gasto'} <b>→</b></button></form></Modal>
 }
 
 

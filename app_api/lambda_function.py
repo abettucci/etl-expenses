@@ -342,14 +342,33 @@ def create_group(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     name = str(payload.get("name", "")).strip()
     if not 2 <= len(name) <= 80:
         raise ApiError(400, "El nombre del grupo debe tener entre 2 y 80 caracteres")
+    kind = payload.get('kind', 'general')
+    if kind not in ('general', 'household'):
+        raise ApiError(400, 'Tipo de grupo inválido')
     group_id = uuid.uuid4().hex
     created = now()
-    group = {"pk": f"GROUP#{group_id}", "sk": "META", "group_id": group_id, "name": name, "currency": "ARS", "owner_user_id": user_id, "created_at": created}
+    group = {"pk": f"GROUP#{group_id}", "sk": "META", "group_id": group_id, "name": name, "kind": kind, "currency": "ARS", "owner_user_id": user_id, "created_at": created}
     membership = {"pk": f"GROUP#{group_id}", "sk": f"MEMBER#{user_id}", "group_id": group_id, "user_id": user_id, "role": "owner", "active": True, "created_at": created}
     reverse = {"pk": f"USER#{user_id}", "sk": f"GROUP#{group_id}", "group_id": group_id, "role": "owner", "created_at": created}
     dynamodb.meta.client.transact_write_items(TransactItems=[{"Put": {"TableName": TABLE_NAME, "Item": marshal(group)}}, {"Put": {"TableName": TABLE_NAME, "Item": marshal(membership)}}, {"Put": {"TableName": TABLE_NAME, "Item": marshal(reverse)}}])
     put_audit(user_id, "group.created", group_id)
     return group
+
+
+def update_group_kind(group_id: str, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    member = assert_member(group_id, user_id)
+    if member.get('role') != 'owner':
+        raise ApiError(403, 'Solo quien administra el grupo puede cambiar su tipo')
+    if set(payload) != {'kind'} or payload['kind'] not in ('general', 'household'):
+        raise ApiError(400, 'Tipo de grupo inválido')
+    result = table.update_item(Key={'pk': f'GROUP#{group_id}', 'sk': 'META'},
+                               UpdateExpression='SET #kind = :kind',
+                               ConditionExpression='attribute_exists(pk)',
+                               ExpressionAttributeNames={'#kind': 'kind'},
+                               ExpressionAttributeValues={':kind': payload['kind']},
+                               ReturnValues='ALL_NEW')
+    put_audit(user_id, 'group.kind.updated', group_id)
+    return result['Attributes']
 
 
 def create_invite(group_id: str, user_id: str) -> dict[str, Any]:
@@ -497,10 +516,18 @@ def _expense_member_ids(group_id: str) -> set[str]:
 
 def list_group_expenses(group_id: str, user_id: str) -> list[dict[str, Any]]:
     assert_member(group_id, user_id)
-    return table.query(
-        KeyConditionExpression=Key("pk").eq(f"GROUP#{group_id}") & Key("sk").begins_with("EXPENSE#"),
-        ScanIndexForward=False,
-    ).get("Items", [])
+    return _group_ledger_rows(group_id, 'EXPENSE#')
+
+
+def _group_ledger_rows(group_id: str, prefix: str) -> list[dict[str, Any]]:
+    rows = []
+    args = {'KeyConditionExpression': Key('pk').eq(f'GROUP#{group_id}') & Key('sk').begins_with(prefix), 'ConsistentRead': True}
+    while True:
+        page = table.query(**args)
+        rows.extend(page.get('Items', []))
+        if not page.get('LastEvaluatedKey'):
+            return rows
+        args['ExclusiveStartKey'] = page['LastEvaluatedKey']
 
 
 def _expense_item(group_id: str, expense_id: str) -> dict[str, Any]:
@@ -516,8 +543,8 @@ def _expense_item(group_id: str, expense_id: str) -> dict[str, Any]:
 
 
 def _expense_ledger(group_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    expenses = table.query(KeyConditionExpression=Key("pk").eq(f"GROUP#{group_id}") & Key("sk").begins_with("EXPENSE#")).get("Items", [])
-    payments = table.query(KeyConditionExpression=Key("pk").eq(f"GROUP#{group_id}") & Key("sk").begins_with("SETTLEMENT#")).get("Items", [])
+    expenses = _group_ledger_rows(group_id, 'EXPENSE#')
+    payments = _group_ledger_rows(group_id, 'SETTLEMENT#')
     return expenses, payments
 
 
@@ -535,6 +562,12 @@ def create_expense(group_id: str, user_id: str, payload: dict[str, Any]) -> dict
         participants = list(allocations)
     if not description or not isinstance(participants, list):
         raise ApiError(400, "Descripción y participantes son requeridos")
+    expense_date = payload.get('expense_date') or datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date().isoformat()
+    try:
+        if not isinstance(expense_date, str) or date.fromisoformat(expense_date).isoformat() != expense_date:
+            raise ValueError('invalid date')
+    except ValueError:
+        raise ApiError(400, 'La fecha del gasto es inválida') from None
     participants = [str(value) for value in participants]
     eligible_participants = _expense_member_ids(group_id)
     active_ids = _active_member_ids(group_id)
@@ -562,7 +595,7 @@ def create_expense(group_id: str, user_id: str, payload: dict[str, Any]) -> dict
         "group_id": group_id, "description": description, "amount": str(total), "currency": "ARS", "payers": payers,
         "allocations": {key: str(value) for key, value in allocations.items()}, "split_method": split_method,
         "items": items, "category": payload.get("category", "Otro"),
-        "created_by": user_id, "created_at": now(),
+        "created_by": user_id, "created_at": now(), "expense_date": expense_date,
     }
     table.put_item(Item=expense)
     put_audit(user_id, "expense.created", expense_id)
@@ -582,6 +615,7 @@ def update_expense(group_id: str, expense_id: str, user_id: str, payload: dict[s
         "split_values": payload.get("split_values", expense.get("allocations") or expense.get("shares") or {}),
         "payers": payload.get("payers", expense.get("payers") or [{"user_id": expense.get("paid_by"), "amount": expense.get("amount")}]),
         "items": payload.get("items", expense.get("items", [])), "category": payload.get("category", expense.get("category", "Otro")),
+        "expense_date": payload.get('expense_date', expense.get('expense_date') or str(expense.get('created_at', ''))[:10]),
     }
     replacement = create_expense(group_id, user_id, merged)
     expense["deleted_at"], expense["deleted_by"], expense["replaced_by"] = now(), user_id, replacement["expense_id"]
@@ -1098,6 +1132,8 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
     if path == "/v1/groups":
         if method == "GET": return response(200, list_groups(identity["user_id"]))
         if method == "POST": return response(201, create_group(identity["user_id"], payload))
+    if len(segments) == 3 and segments[:2] == ['v1', 'groups'] and method == 'PATCH':
+        return response(200, update_group_kind(segments[2], identity['user_id'], payload))
     if len(segments) == 4 and segments[:2] == ["v1", "groups"] and segments[3] == "invites" and method == "POST":
         return response(201, create_invite(segments[2], identity["user_id"]))
     if len(segments) == 4 and segments[:2] == ["v1", "invitations"] and segments[3] == "accept" and method == "POST":
