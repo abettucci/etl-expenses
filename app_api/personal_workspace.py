@@ -16,7 +16,7 @@ def overview(identity, profile, *, enabled, owner_sub, finance_bot='', groups_bo
     return {'profile': {'display_name': profile.get('display_name', identity.get('name', 'Usuario')), 'email': identity.get('email', '')},
             'finance_linked': linked,
             'sources': [
-                {'id': 'gmail', 'name': 'Gmail y bancos', 'status': 'linked' if linked else 'setup_required', 'detail': 'El ETL administrado procesa comprobantes y avisos compatibles de Gmail. La web todavía no ofrece autorización OAuth por cuenta.'},
+                {'id': 'gmail', 'name': 'Gmail y bancos', 'status': 'setup_required', 'detail': 'El ETL procesa comprobantes y avisos de la cuenta configurada. La web todavía no conecta cuentas nuevas de Gmail ni bancos.'},
                 {'id': 'mercadopago', 'name': 'Mercado Pago', 'status': 'setup_required', 'detail': 'Los reportes de gastos se configuran en el ETL. Conectar Mercado Pago para pagos de grupos no conecta tu historial financiero.'},
                 {'id': 'telegram', 'name': 'Tickets, texto y voz', 'status': 'setup_required', 'detail': 'Se registran desde el bot financiero autorizado. Verificá el chat habilitado antes de enviar datos personales.'},
                 {'id': 'balanz', 'name': 'Balanz', 'status': 'not_available', 'detail': 'Conector de inversiones todavía no implementado. No solicitamos claves ni mostramos saldos simulados.'},

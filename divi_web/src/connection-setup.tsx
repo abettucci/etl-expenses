@@ -1,18 +1,36 @@
 import { useEffect, useState } from 'react'
 type Api = (path: string, method?: string, body?: unknown) => Promise<any>
 
-export function FinanceSetup({ api, linked }: { api: Api; linked: boolean }) {
-  const [accountId, setAccountId] = useState(''), [pending, setPending] = useState(false), [message, setMessage] = useState('')
+export function FinanceSetup({ api, linked, botUrl, onRefresh }: { api: Api; linked: boolean; botUrl: string | null; onRefresh: () => void }) {
+  const [code, setCode] = useState(''), [expiresAt, setExpiresAt] = useState(0), [pending, setPending] = useState(false), [verifying, setVerifying] = useState(false), [message, setMessage] = useState(''), [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!expiresAt) return
+    const timeout = setTimeout(() => { setCode(''); setMessage('El código venció. Generá uno nuevo para continuar.') }, Math.max(0, expiresAt - Date.now()))
+    return () => clearTimeout(timeout)
+  }, [expiresAt])
   async function prepare() {
-    setPending(true); setMessage('')
+    setPending(true); setMessage(''); setCode(''); setCopied(false)
     try {
-      const result = await api('/v1/me')
-      if (typeof result?.user_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(result.user_id)) throw new Error('No pudimos identificar tu cuenta. Volvé a ingresar.')
-      setAccountId(result.user_id)
+      const result = await api('/v1/finance/connection', 'POST')
+      if (typeof result?.code !== 'string' || !/^[A-F0-9]{48}$/.test(result.code) || result.expires_in_minutes !== 15) throw new Error('No recibimos un código válido. Reintentá.')
+      setCode(result.code); setExpiresAt(Date.now() + result.expires_in_minutes * 60000)
     } catch (error) { setMessage(error instanceof Error ? error.message : 'No pudimos preparar la vinculación.') }
     finally { setPending(false) }
   }
-  return <section className="workspace-card connection-setup"><span className={`workspace-status ${linked ? 'linked' : ''}`}>{linked ? 'Historial habilitado para tu cuenta' : 'Pendiente de habilitación'}</span><h2>Vincular mi historial financiero</h2><p>{linked ? 'Tu cuenta tiene permiso para consultar el ETL existente. No hace falta reconectar las fuentes administradas desde esta pantalla.' : 'El historial existente tiene un único dueño. Para habilitarlo, primero identificá esta cuenta y pedí al administrador que confirme que ese historial es tuyo.'}</p>{!linked && <><button className="outline" disabled={pending} onClick={() => void prepare()}>{pending ? 'Identificando cuenta…' : 'Preparar vinculación'}</button>{accountId && <div className="connection-instructions"><label>ID de esta cuenta<input value={accountId} readOnly onFocus={event => event.target.select()} /></label><p>Compartí este identificador con el administrador del ETL. No es una contraseña y no concede acceso por sí solo.</p><details><summary>Configuración necesaria en GitHub Actions</summary><ol><li>Confirmar el propietario antes de habilitar los datos.</li><li>Configurar el secret <code>DIVI_FINANCE_FORECAST_OWNER_SUB</code> con el ID de esta cuenta.</li><li>Configurar la variable <code>DIVI_FINANCE_FORECAST_ENABLED</code> en <code>true</code> y ejecutar el despliegue.</li></ol><p>No uses el ID de otra persona ni habilites el mismo historial para todas las cuentas.</p></details></div>}</>}{message && <p role="alert" className="balance-error">{message}</p>}<p className="muted">Gmail por cuenta, Balanz y Binance todavía no tienen un conector autoservicio. No ingreses claves aquí. Esta vinculación da acceso al ETL administrado; no conecta una cuenta bancaria nueva.</p></section>
+  async function copy() {
+    try { await navigator.clipboard.writeText(`/conectar_historial ${code}`); setCopied(true) }
+    catch { setMessage('Seleccioná el comando y copialo para enviarlo al bot.') }
+  }
+  async function verify() {
+    setVerifying(true); setMessage('')
+    try {
+      const result = await api('/v1/profile/overview')
+      if (result?.finance_linked === true) onRefresh()
+      else setMessage('Todavía no recibimos la confirmación. Enviá el comando al bot financiero y volvé a intentar.')
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'No pudimos verificar la vinculación.') }
+    finally { setVerifying(false) }
+  }
+  return <section id="vincular-historial" className="workspace-card connection-setup"><span className={`workspace-status ${linked ? 'linked' : ''}`}>{linked ? 'Historial vinculado' : 'Sin vincular'}</span><h2>Vincular mi historial financiero</h2><p>{linked ? 'Tu cuenta ya puede consultar tu historial de gastos existente.' : 'Conectá el historial que ya usás con tu bot financiero. Para confirmar que es tuyo, enviá un código al mismo bot desde tu chat autorizado.'}</p>{!linked && <><button className="outline" disabled={pending || Boolean(code)} onClick={() => void prepare()}>{pending ? 'Generando código…' : 'Vincular mi historial'}</button>{code && <div className="connection-instructions"><ol><li>Copiá el comando y envialo en privado a tu bot financiero.</li><li>Cuando el bot confirme la vinculación, volvé acá y tocá «Ya lo envié».</li></ol><label>Comando para el bot financiero<input value={`/conectar_historial ${code}`} readOnly onFocus={event => event.target.select()} /></label><button className="outline" onClick={() => void copy()}>{copied ? 'Copiado' : 'Copiar comando'}</button>{botUrl && <a className="workspace-bot-link" href={botUrl} target="_blank" rel="noopener noreferrer">Abrir bot financiero ↗</a>}<button className="outline" disabled={verifying} onClick={() => void verify()}>{verifying ? 'Verificando…' : 'Ya lo envié · actualizar estado'}</button><small>El código vence a las {new Date(expiresAt).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })} y se usa una sola vez.</small></div>}</>}{message && <p role="alert" className="balance-error">{message}</p>}<p className="muted">Esta opción vincula el historial que ya procesa tu ETL. Conectar nuevas cuentas de Gmail, bancos, Balanz o Binance requiere sus respectivos conectores.</p></section>
 }
 
 export function TelegramLink({ api, available }: { api: Api; available: boolean }) {

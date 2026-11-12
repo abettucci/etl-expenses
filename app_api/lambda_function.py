@@ -142,6 +142,29 @@ def ensure_profile(identity: dict[str, str]) -> dict[str, Any]:
     return get_item(f"USER#{identity['user_id']}", "PROFILE")
 
 
+def finance_owner_config() -> tuple[bool, str]:
+    """Resolve the sole warehouse owner, including a verified Telegram pairing."""
+    if FORECAST_OWNER_SUB:
+        return FORECAST_ENABLED, FORECAST_OWNER_SUB
+    item = table.get_item(Key={'pk': 'FINANCE_SOURCE#PRIMARY', 'sk': 'OWNER'}, ConsistentRead=True).get('Item') or {}
+    owner = item.get('user_id', '')
+    return bool(isinstance(owner, str) and owner), owner if isinstance(owner, str) else ''
+
+
+def create_finance_link(identity: dict[str, str], payload: dict) -> dict:
+    if payload:
+        raise ApiError(400, 'No se necesitan datos adicionales para vincular el historial')
+    _, owner = finance_owner_config()
+    if owner:
+        raise ApiError(409, 'Este historial ya está vinculado a una cuenta')
+    code = secrets.token_hex(24).upper()
+    digest = hashlib.sha256(code.encode('ascii')).hexdigest()
+    table.put_item(Item={'pk': f'FINANCE_LINK#{digest}', 'sk': 'META',
+                         'user_id': identity['user_id'], 'ttl': int(time.time()) + 900},
+                   ConditionExpression='attribute_not_exists(pk)')
+    return {'code': code, 'expires_in_minutes': 15}
+
+
 def _forecast_lookback_months() -> int:
     try:
         months = int(os.environ.get("FINANCE_FORECAST_LOOKBACK_MONTHS", "6"))
@@ -187,9 +210,10 @@ def finance_forecast(identity: dict[str, str]) -> dict[str, Any]:
     access-control bug. The route is therefore opt-in and constrained to one
     configured Cognito subject.
     """
-    if not FORECAST_ENABLED or not FORECAST_OWNER_SUB:
+    enabled, owner_sub = finance_owner_config()
+    if not enabled or not owner_sub:
         raise ApiError(503, "El panorama financiero todavía no está conectado")
-    if not hmac.compare_digest(identity["user_id"], FORECAST_OWNER_SUB):
+    if not hmac.compare_digest(identity["user_id"], owner_sub):
         raise ApiError(403, "Tu cuenta todavía no tiene una fuente financiera vinculada")
 
     client, bigquery = _forecast_bigquery_client()
@@ -268,8 +292,9 @@ def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
 
 def finance_save_income(identity: dict[str, str], month: str, payload: dict) -> dict:
     try:
-        return save_income(table, user_id=identity['user_id'], enabled=FORECAST_ENABLED,
-                           owner_sub=FORECAST_OWNER_SUB, month=month, payload=payload,
+        enabled, owner_sub = finance_owner_config()
+        return save_income(table, user_id=identity['user_id'], enabled=enabled,
+                           owner_sub=owner_sub, month=month, payload=payload,
                            today=datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date(), updated_at=now())
     except PermissionError:
         raise ApiError(403, 'Tu cuenta todavía no tiene una fuente financiera vinculada') from None
@@ -281,14 +306,16 @@ def finance_save_income(identity: dict[str, str], month: str, payload: dict) -> 
 
 
 def profile_overview(identity):
-    return workspace_overview(identity, ensure_profile(identity), enabled=FORECAST_ENABLED,
-        owner_sub=FORECAST_OWNER_SUB, finance_bot=os.environ.get('FINANCE_BOT_USERNAME', ''),
+    enabled, owner_sub = finance_owner_config()
+    return workspace_overview(identity, ensure_profile(identity), enabled=enabled,
+        owner_sub=owner_sub, finance_bot=os.environ.get('FINANCE_BOT_USERNAME', ''),
         groups_bot=os.environ.get('GROUPS_BOT_USERNAME', ''))
 
 
 def finance_question(identity, payload):
     try:
-        require_finance_owner(identity['user_id'], FORECAST_ENABLED, FORECAST_OWNER_SUB)
+        enabled, owner_sub = finance_owner_config()
+        require_finance_owner(identity['user_id'], enabled, owner_sub)
         question = question_body(payload)
     except PermissionError:
         raise ApiError(403, 'Tu cuenta todavía no tiene una fuente financiera vinculada') from None
@@ -1119,6 +1146,8 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
             profile = ensure_profile(identity); profile["display_name"] = str(payload.get("display_name", profile["display_name"]))[:80]; table.put_item(Item=profile); return response(200, profile)
     if path == '/v1/profile/overview' and method == 'GET':
         return response(200, profile_overview(identity))
+    if path == '/v1/finance/connection' and method == 'POST':
+        return response(201, create_finance_link(identity, payload))
     if path == '/v1/finance/assistant' and method == 'POST':
         return response(200, finance_question(identity, payload))
     if path == "/v1/finance/forecast" and method == "GET":

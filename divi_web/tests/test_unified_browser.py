@@ -41,6 +41,7 @@ class UnifiedBrowser(unittest.TestCase):
         self.empty_groups = False
         self.groups_bot = False
         self.identity_links = 0
+        self.finance_links = 0
         self.oauth_nonce = None
         self.refreshes = 0
         self.api_denials = 0
@@ -71,6 +72,10 @@ class UnifiedBrowser(unittest.TestCase):
             route.fulfill(json={'id_token': self.jwt(self.oauth_nonce), 'expires_in': 3600, 'refresh_token': 'synthetic-refresh'})
             return
         if parsed.path.startswith('/v1/'):
+            if parsed.path == '/v1/finance/connection' and request.method == 'POST':
+                self.finance_links += 1
+                route.fulfill(json={'code': 'A' * 48, 'expires_in_minutes': 15})
+                return
             if parsed.path == '/v1/identity-links' and request.method == 'POST':
                 self.identity_links += 1
                 route.fulfill(json={'code': 'SYNTHETICCODE', 'expires_in_minutes': 15})
@@ -128,9 +133,10 @@ class UnifiedBrowser(unittest.TestCase):
         self.context.add_init_script("Object.defineProperty(navigator, 'clipboard', {value: {writeText: async text => {if (text !== '/vincular SYNTHETICCODE') throw new Error('Unexpected synthetic command')}}})")
         self.groups_bot = True
         self.page.goto(BASE + '/conexiones')
-        self.page.get_by_role('button', name='Preparar vinculación').click()
-        self.page.get_by_label('ID de esta cuenta').wait_for()
-        self.assertEqual(self.page.get_by_label('ID de esta cuenta').input_value(), 'synthetic-owner-id')
+        self.page.get_by_role('button', name='Vincular mi historial').click()
+        self.page.get_by_label('Comando para el bot financiero').wait_for()
+        self.assertEqual(self.page.get_by_label('Comando para el bot financiero').input_value(), '/conectar_historial ' + 'A' * 48)
+        self.assertEqual(self.finance_links, 1)
         self.assertEqual(self.refreshes, 1)
         self.page.get_by_role('button', name='Telegram y alertas').click()
         self.page.get_by_role('button', name='Generar código de vinculación').click()
