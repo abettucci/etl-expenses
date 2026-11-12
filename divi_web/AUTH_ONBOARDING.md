@@ -29,7 +29,7 @@ Los usernames no reemplazan los tokens/webhooks existentes ni autorizan un chat 
 
 ## Límites que siguen vigentes
 
-- Gmail por cuenta, bancos nuevos, Balanz y Binance aún no tienen un conector autoservicio. Preparar el acceso al ETL **no implementa** esos conectores.
+- Gmail y Binance tienen conexiones personales independientes del ETL administrado. Gmail importa compras Santander compatibles y Binance consulta saldos y movimientos con permisos de lectura; ver `app_api/USER_CONNECTIONS.md` para sus límites y configuración. Otros bancos y Balanz aún no tienen conector autoservicio.
 - El bot de finanzas personales sigue separado del bot de grupos. La vinculación Telegram de grupos no habilita BigQuery ni destinos de alertas financieras.
 - `lang=es` solicita español en Cognito **managed login**. La Hosted UI clásica puede seguir en inglés; no se cambió de plan/tier ni se contrataron servicios para localizarla.
 - El almacenamiento en el navegador sigue expuesto ante XSS en ese origen. Para una solución con cookies HttpOnly hace falta un BFF; no se presenta este cambio como sustituto de esa arquitectura.

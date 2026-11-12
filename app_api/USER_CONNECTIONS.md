@@ -1,0 +1,20 @@
+# Conexiones personales de Gmail y Binance
+
+Cada conexión pertenece al `sub` autenticado por Cognito. Los secretos se guardan en AWS Secrets Manager bajo `divi/user-connections/`; una tabla DynamoDB separada guarda solo la referencia y los datos importados en la partición del usuario. La API usa un rol dedicado que puede acceder a esa tabla y a esos secrets; el rol compartido del ETL no recibe esos permisos. El historial previo del ETL continúa protegido por su propietario y no se mezcla automáticamente con Gmail.
+
+## Configuración del proyecto
+
+1. En Google Cloud, crear un cliente OAuth **de aplicación web**, configurar la pantalla de consentimiento y habilitar la API de Gmail. Agregar como URI de redirección autorizada `https://<API_DIVI>/v1/integrations/gmail/callback`, usando el valor de Terraform `divi_api_url` sin la barra final.
+2. Guardar el ID y secret del cliente en los secrets de GitHub Actions `DIVI_GMAIL_OAUTH_CLIENT_ID` y `DIVI_GMAIL_OAUTH_CLIENT_SECRET`. Estos pertenecen a la aplicación, no a cada usuario. El despliegue los copia a `divi/gmail-oauth` en Secrets Manager.
+3. La aplicación solicita `https://www.googleapis.com/auth/gmail.readonly`. Google trata este permiso como restringido: para uso público puede exigir verificación y evaluación de seguridad; en modo de prueba solo pueden ingresar los usuarios de prueba habilitados y los tokens pueden caducar antes.
+4. Binance puede bloquear peticiones desde ciertas regiones de AWS. Si hace falta, configurar la variable de GitHub Actions `DIVI_BINANCE_REGIONAL_FUNCTION_ARN` con el ARN de una Lambda regional autorizada que implemente el contrato de la función regional de Binance. La implementación admite el puente existente de Finance Bot, pero usar el recurso de desarrollo en producción crea una dependencia de ese entorno. Sin variable se consulta `api.binance.com` directamente.
+5. Desplegar la API y el frontend. El workflow recibe `DIVI_FINANCE_FORECAST_ENABLED` como variable o como secret. Las credenciales se cobran como secrets individuales de Secrets Manager; la tabla de conexiones usa capacidad bajo demanda y recuperación continua.
+
+## Flujo y límites
+
+- Cada usuario autoriza Gmail desde Conexiones. OAuth usa estado de un solo uso, vencimiento, PKCE y confirmación con la misma cuenta autenticada; el refresh token no llega al navegador. Los gastos se guardan bajo el usuario y la cuenta de Gmail autorizada. No se almacenan cuerpos de correos.
+- La importación consulta compras Santander compatibles de los últimos 90 días. Se ejecuta automáticamente al conectar y al abrir Conexiones cuando corresponde; no hay sincronización en segundo plano mientras la web está cerrada. Si se interrumpe, se reanuda al volver. Otros bancos, transferencias y correos sin el formato compatible quedan fuera.
+- Un usuario sin acceso al ETL administrado puede ver sus compras Santander en el balance, marcadas como parciales. No se calcula ahorro porque pueden faltar gastos; los montos en USD se muestran en Conexiones y no se suman en ARS. Si el usuario es dueño del ETL administrado, su balance sigue usando ese ETL para evitar duplicaciones.
+- Binance exige una API Key con lectura y sin permisos de operaciones, retiros o transferencias. La aplicación valida restricciones antes de guardar la clave y antes de consultar. Permite consultar saldos, depósitos, retiros y las últimas 1.000 operaciones por par indicado. Los movimientos se consultan al proveedor y no se suman al gasto personal.
+- Desconectar Gmail revoca la autorización y programa la eliminación del secret. Los gastos ya importados permanecen guardados, asociados a esa cuenta, y se vuelven a mostrar si se conecta la misma cuenta. Desconectar Binance elimina el acceso desde Split; para invalidar la clave en el proveedor también debe borrarse en Binance.
+- El asistente y la proyección existente siguen consultando solo el ETL administrado; no acceden a los gastos importados por otros usuarios. La sincronización y los proveedores requieren una prueba real autorizada antes de considerarlos operativos.

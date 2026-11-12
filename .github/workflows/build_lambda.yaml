@@ -15,7 +15,7 @@ env:
   # and the API's restrictive CORS policy.
   TF_VAR_divi_frontend_origin: ${{ secrets.DIVI_FRONTEND_ORIGIN }}
   # Explicit owner binding: never enable the personal warehouse for all users.
-  TF_VAR_divi_finance_forecast_enabled: ${{ vars.DIVI_FINANCE_FORECAST_ENABLED || 'false' }}
+  TF_VAR_divi_finance_forecast_enabled: ${{ vars.DIVI_FINANCE_FORECAST_ENABLED || secrets.DIVI_FINANCE_FORECAST_ENABLED || 'false' }}
   TF_VAR_divi_finance_forecast_owner_sub: ${{ secrets.DIVI_FINANCE_FORECAST_OWNER_SUB }}
   # Public bot usernames, without @. These are not bot credentials.
   TF_VAR_divi_finance_bot_username: ${{ vars.DIVI_FINANCE_BOT_USERNAME }}
@@ -24,6 +24,9 @@ env:
   TF_VAR_divi_cognito_domain_prefix: ${{ secrets.DIVI_COGNITO_DOMAIN_PREFIX }}
   TF_VAR_divi_google_client_id: ${{ secrets.DIVI_GOOGLE_CLIENT_ID }}
   TF_VAR_divi_google_client_secret: ${{ secrets.DIVI_GOOGLE_CLIENT_SECRET }}
+  TF_VAR_divi_gmail_oauth_client_id: ${{ secrets.DIVI_GMAIL_OAUTH_CLIENT_ID }}
+  TF_VAR_divi_gmail_oauth_client_secret: ${{ secrets.DIVI_GMAIL_OAUTH_CLIENT_SECRET }}
+  TF_VAR_divi_binance_regional_function_arn: ${{ vars.DIVI_BINANCE_REGIONAL_FUNCTION_ARN }}
   TF_VAR_divi_mp_access_token: ${{ secrets.DIVI_MP_ACCESS_TOKEN }}
   TF_VAR_divi_mp_webhook_secret: ${{ secrets.DIVI_MP_WEBHOOK_SECRET }}
   TF_VAR_divi_mp_premium_plan_id: ${{ secrets.DIVI_MP_PREMIUM_PLAN_ID }}

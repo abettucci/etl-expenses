@@ -14,6 +14,7 @@ import os
 import secrets
 import time
 import uuid
+from urllib.parse import urlencode
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -28,11 +29,13 @@ from botocore.config import Config
 
 from domain import allocations_from_items, expense_allocations, group_balances, money, normalize_payers, parse_amount_text, replace_ledger_user_id, simplify_debts
 from forecast import build_monthly_forecast, monthly_expenses_query
-from finance_balance import build_balance, save_income
+from finance_balance import build_balance, build_gmail_balance, save_income
 from finance_balance import require_finance_owner
 from personal_workspace import overview as workspace_overview, question_body
+import user_integrations
 
 TABLE_NAME = os.environ["APP_TABLE"]
+CONNECTIONS_TABLE_NAME = os.environ.get('CONNECTIONS_TABLE', '').strip()
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
 MP_WEBHOOK_BASE_URL = os.environ.get("MP_WEBHOOK_BASE_URL", "")
 FORECAST_ENABLED = os.environ.get("FINANCE_FORECAST_ENABLED", "false").lower() == "true"
@@ -46,6 +49,7 @@ FORECAST_MAPPING_TABLE = os.environ.get("FINANCE_FORECAST_MAPPING_TABLE", "dim_c
 
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME)
+connections_table = dynamodb.Table(CONNECTIONS_TABLE_NAME) if CONNECTIONS_TABLE_NAME else None
 
 
 def payment_secrets() -> dict[str, str]:
@@ -251,6 +255,21 @@ def finance_forecast(identity: dict[str, str]) -> dict[str, Any]:
 
 
 def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
+    if not (FORECAST_ENABLED and FORECAST_OWNER_SUB and hmac.compare_digest(identity['user_id'], FORECAST_OWNER_SUB)):
+        try:
+            connection = user_integrations._connection(connections_table, identity['user_id'], 'gmail') if connections_table is not None else {}
+        except Exception as exc:
+            print(f'gmail_connection_read_failed: {type(exc).__name__}')
+            raise ApiError(503, 'No pudimos cargar la conexión de Gmail') from None
+        if connection.get('secret_arn'):
+            try:
+                rows = user_integrations.gmail_expenses(connections_table, identity['user_id'])
+                result = connections_table.query(KeyConditionExpression=Key('pk').eq(f"USER#{identity['user_id']}") & Key('sk').begins_with('FINANCE_INCOME#'), ConsistentRead=True)
+                incomes = [{'month': row['sk'].split('#', 1)[1], 'amount': row['amount']} for row in result.get('Items', [])]
+                return build_gmail_balance(rows, incomes, today=datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date(), incomplete=bool(connection.get('next_page_token')) or not connection.get('last_sync_at'))
+            except Exception as exc:
+                print(f'gmail_balance_failed: {type(exc).__name__}')
+                raise ApiError(503, 'No pudimos cargar el balance de Gmail') from None
     forecast = finance_forecast(identity)  # Existing owner guard also protects the warehouse read.
     start = forecast['period']['history_start'][:7]
     end = forecast['period']['forecast_month'][:7]
@@ -268,8 +287,11 @@ def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
 
 def finance_save_income(identity: dict[str, str], month: str, payload: dict) -> dict:
     try:
-        return save_income(table, user_id=identity['user_id'], enabled=FORECAST_ENABLED,
-                           owner_sub=FORECAST_OWNER_SUB, month=month, payload=payload,
+        is_owner = bool(FORECAST_ENABLED and FORECAST_OWNER_SUB and hmac.compare_digest(identity['user_id'], FORECAST_OWNER_SUB))
+        gmail_connected = False if is_owner or connections_table is None else bool(user_integrations._connection(connections_table, identity['user_id'], 'gmail').get('secret_arn'))
+        income_table = table if is_owner or not gmail_connected else connections_table
+        return save_income(income_table, user_id=identity['user_id'], enabled=is_owner or gmail_connected,
+                           owner_sub=identity['user_id'] if is_owner or gmail_connected else '', month=month, payload=payload,
                            today=datetime.now(ZoneInfo('America/Argentina/Buenos_Aires')).date(), updated_at=now())
     except PermissionError:
         raise ApiError(403, 'Tu cuenta todavía no tiene una fuente financiera vinculada') from None
@@ -281,9 +303,20 @@ def finance_save_income(identity: dict[str, str], month: str, payload: dict) -> 
 
 
 def profile_overview(identity):
-    return workspace_overview(identity, ensure_profile(identity), enabled=FORECAST_ENABLED,
+    overview = workspace_overview(identity, ensure_profile(identity), enabled=FORECAST_ENABLED,
         owner_sub=FORECAST_OWNER_SUB, finance_bot=os.environ.get('FINANCE_BOT_USERNAME', ''),
         groups_bot=os.environ.get('GROUPS_BOT_USERNAME', ''))
+    try:
+        connections = user_integrations.status(connections_table, identity['user_id']) if connections_table is not None else {}
+    except Exception as exc:
+        print(f'integrations_status_failed: {type(exc).__name__}')
+        connections = {}
+    for source in overview['sources']:
+        if source['id'] in connections:
+            source['status'] = 'linked' if connections[source['id']]['connected'] else 'setup_required'
+            source['detail'] = ('Importá compras Santander compatibles desde tu Gmail.' if source['id'] == 'gmail'
+                                else 'Consultá saldos y movimientos de Binance con una clave de lectura.')
+    return overview
 
 
 def finance_question(identity, payload):
@@ -1107,12 +1140,58 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, handle_payment_webhook(event, "subscription"))
     if path == "/v1/mercadopago/oauth/callback" and method == "GET":
         return oauth_callback(event)
+    if path == '/v1/integrations/gmail/callback' and method == 'GET':
+        params = event.get('queryStringParameters') or {}
+        if params.get('error'):
+            location = f'{FRONTEND_ORIGIN}/conexiones?gmail=cancelled'
+        else:
+            try:
+                parsed = user_integrations.GmailCallback.model_validate({'state': params.get('state'), 'code': params.get('code')})
+                location = f'{FRONTEND_ORIGIN}/conexiones#' + urlencode({'gmail': 'confirm', 'state': parsed.state, 'code': parsed.code})
+            except Exception:
+                location = f'{FRONTEND_ORIGIN}/conexiones?gmail=error'
+        return {'statusCode': 303, 'headers': {'location': location, 'cache-control': 'no-store'}, 'body': ''}
     if path == "/v1/group-bot/telegram" and method == "POST":
         return handle_group_bot_webhook(event)
     identity = principal(event)
     ensure_profile(identity)
     payload = parse_body(event) if method in {"POST", "PATCH", "PUT"} else {}
     segments = [part for part in path.split("/") if part]
+    if path.startswith('/v1/integrations/'):
+        try:
+            if connections_table is None:
+                raise ApiError(503, 'Las conexiones todavía no están habilitadas.')
+            if path == '/v1/integrations/status' and method == 'GET':
+                return response(200, user_integrations.status(connections_table, identity['user_id']))
+            if path == '/v1/integrations/gmail/authorize' and method == 'POST' and not payload:
+                return response(200, user_integrations.start_gmail(connections_table, identity['user_id']))
+            if path == '/v1/integrations/gmail/confirm' and method == 'POST' and set(payload) == {'state', 'code'}:
+                return response(200, user_integrations.finish_gmail(connections_table, identity['user_id'], payload['state'], payload['code']))
+            if path == '/v1/integrations/gmail/sync' and method == 'POST' and not payload:
+                return response(200, user_integrations.sync_gmail(connections_table, identity['user_id']))
+            if path == '/v1/integrations/gmail/expenses' and method == 'GET':
+                return response(200, user_integrations.gmail_expenses(connections_table, identity['user_id']))
+            if path == '/v1/integrations/binance/connect' and method == 'POST':
+                return response(200, user_integrations.connect_binance(connections_table, identity['user_id'], payload))
+            if path == '/v1/integrations/binance/balances' and method == 'GET':
+                return response(200, user_integrations.binance_balances(connections_table, identity['user_id']))
+            if len(segments) == 6 and segments[:4] == ['v1', 'integrations', 'binance', 'movements'] and method == 'GET':
+                raw_offset = segments[5]
+                if not raw_offset.isdigit() or len(raw_offset) > 7:
+                    raise ApiError(400, 'Página de movimientos inválida')
+                return response(200, user_integrations.binance_movements(connections_table, identity['user_id'], segments[4], int(raw_offset)))
+            if len(segments) == 5 and segments[:4] == ['v1', 'integrations', 'binance', 'trades'] and method == 'GET':
+                return response(200, user_integrations.binance_trades(connections_table, identity['user_id'], segments[4]))
+            if path in ('/v1/integrations/gmail', '/v1/integrations/binance') and method == 'DELETE':
+                return response(200, user_integrations.disconnect(connections_table, identity['user_id'], segments[-1]))
+        except ApiError:
+            raise
+        except user_integrations.IntegrationError as exc:
+            raise ApiError(exc.status, exc.message) from None
+        except Exception as exc:
+            print(f'integration_request_failed: {type(exc).__name__}')
+            raise ApiError(503, 'No pudimos completar la conexión. Intentá nuevamente.') from None
+        raise ApiError(404, 'Ruta no encontrada')
     if path == "/v1/me":
         if method == "GET": return response(200, ensure_profile(identity))
         if method == "PATCH":
