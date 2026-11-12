@@ -291,6 +291,12 @@ resource "aws_lambda_function" "divi_app_api" {
       GCP_PROJECT_ID                 = var.GCP_PROJECT_ID
       BQ_DATASET_PROD                = "PRD"
       BQ_LOCATION                    = "US"
+      FINANCE_MERCHANT_MAPPING_ENABLED       = tostring(var.divi_finance_forecast_enabled)
+      FINANCE_MERCHANT_MAPPING_OWNER_SUB    = var.divi_finance_forecast_owner_sub
+      FINANCE_MERCHANT_MAPPING_REVIEW_TABLE = "comercio_mapping_review_queue"
+      FINANCE_MERCHANT_MAPPING_UNMAPPED_TABLE = "comercio_unmapped_queue"
+      MERCHANT_PLACES_ENABLED               = tostring(var.GOOGLE_PLACES_API_KEY != "")
+      GOOGLE_PLACES_API_KEY                 = var.GOOGLE_PLACES_API_KEY
     }
   }
 

@@ -441,6 +441,38 @@ class TelegramVoiceCallback(BaseModel):
     callback_data: str = Field(min_length=1, max_length=64)
 
 
+class TelegramReceiptCallback(BaseModel):
+    """Validated actions for choosing whether a receipt has more photos."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    callback_id: str = Field(min_length=1, max_length=128)
+    chat_id: int = Field(strict=True)
+    callback_data: Literal["tk:more", "tk:single"]
+
+
+class TelegramReceiptPhotoJob(BaseModel):
+    """Minimal validated photo metadata persisted to the receipt work queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_type: Literal["telegram_receipt_photo"]
+    chat_id: int = Field(strict=True)
+    message_id: int = Field(ge=1, strict=True)
+    file_id: str = Field(min_length=1, max_length=512)
+    file_size: int = Field(default=0, ge=0, le=20 * 1024 * 1024, strict=True)
+
+
+class TelegramReceiptFinalizeJob(BaseModel):
+    """Validated request to finish the pending receipt with its current photos."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_type: Literal["telegram_receipt_finalize"]
+    chat_id: int = Field(strict=True)
+    callback_id: str = Field(min_length=1, max_length=128)
+
+
 def build_voice_callback(action: Literal["confirm", "cancel", "suggestion"], token: str) -> str:
     """Build a compact Telegram callback payload with no financial data."""
     if not re.fullmatch(VOICE_CALLBACK_TOKEN_PATTERN, token):

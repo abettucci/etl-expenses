@@ -897,6 +897,7 @@ resource "aws_lambda_function" "ai_agent" {
       MAPPING_REVIEW_TABLE           = "comercio_mapping_review_queue"
       MAPPING_REVIEW_STATE_TABLE     = aws_dynamodb_table.telegram_mapping_review_state.name
       MERCHANT_SUGGESTIONS_QUEUE_URL = aws_sqs_queue.merchant_mapping_suggestions.url
+      TELEGRAM_RECEIPT_PHOTO_QUEUE_URL = aws_sqs_queue.telegram_receipt_photos.url
       MERCHANT_SUGGESTIONS_ENABLED   = "true"
       MERCHANT_AUTO_APPLY_ENABLED    = "true"
       MERCHANT_PLACES_ENABLED        = "true"
@@ -912,6 +913,35 @@ resource "aws_lambda_event_source_mapping" "merchant_mapping_suggestions" {
   enabled          = true
 
   depends_on = [aws_iam_role_policy.lambda_merchant_mapping_sqs]
+}
+
+resource "aws_sqs_queue" "telegram_receipt_photos_dlq" {
+  name                      = "telegram-receipt-photos-dlq.fifo"
+  fifo_queue                = true
+  content_based_deduplication = false
+  message_retention_seconds = 1209600
+}
+
+resource "aws_sqs_queue" "telegram_receipt_photos" {
+  name                        = "telegram-receipt-photos.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = false
+  visibility_timeout_seconds  = 5400
+  message_retention_seconds   = 345600
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.telegram_receipt_photos_dlq.arn
+    maxReceiveCount     = 3
+  })
+}
+
+resource "aws_lambda_event_source_mapping" "telegram_receipt_photos" {
+  event_source_arn = aws_sqs_queue.telegram_receipt_photos.arn
+  function_name    = aws_lambda_function.ai_agent.arn
+  batch_size       = 1
+  enabled          = true
+
+  depends_on = [aws_iam_role_policy.lambda_telegram_receipt_photos_sqs]
 }
 
 resource "aws_cloudwatch_event_rule" "ai_agent_budget_alert" {
@@ -1495,6 +1525,28 @@ resource "aws_iam_policy" "lambda_dynamo_policy" {
 resource "aws_iam_role_policy_attachment" "lambda_dynamo_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_dynamo_policy.arn
+}
+
+resource "aws_iam_role_policy" "lambda_telegram_receipt_photos_sqs" {
+  name = "lambda-telegram-receipt-photos-sqs"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sqs:SendMessage",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueAttributes"
+      ]
+      Resource = [
+        aws_sqs_queue.telegram_receipt_photos.arn
+      ]
+    }]
+  })
 }
 
 resource "aws_iam_role_policy" "lambda_merchant_mapping_sqs" {

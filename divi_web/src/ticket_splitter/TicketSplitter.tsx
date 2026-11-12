@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { ArrowRight, Calculator, Layers3, ReceiptText } from 'lucide-react'
+import { ArrowRight, Calculator, Database, Layers3, ReceiptText } from 'lucide-react'
 import { Hero } from './Hero'
 import { Features } from './Features'
 import { HowItWorks } from './HowItWorks'
@@ -20,6 +20,7 @@ export function TicketSplitter({ page, authenticated, onLogin, onNavigate }: {
         <Link to="/" className="classic-logo"><ReceiptText aria-hidden="true" /><span>split<span className="classic-logo-detail"> / Ticket Splitter</span></span></Link>
         <nav aria-label="Espacios de la aplicación">
           <Link to="/dividir" className="classic-nav-divide">Dividir gastos</Link>
+          <Link to="/etl" className="classic-nav-etl">ETL Expenses</Link>
           <Link to="/app" className="classic-nav-space">Mi espacio <ArrowRight aria-hidden="true" /></Link>
           {!authenticated && <button onClick={onLogin} className="classic-nav-login">Ingresar</button>}
         </nav>
@@ -27,11 +28,12 @@ export function TicketSplitter({ page, authenticated, onLogin, onNavigate }: {
       <Hero />
       <section className="classic-spaces" aria-labelledby="classic-spaces-title">
         <div className="container">
-          <p className="classic-eyebrow">DOS FORMAS DE ORDENAR LA PLATA</p>
+          <p className="classic-eyebrow">TRES ESPACIOS PARA ORDENAR LA PLATA</p>
           <h2 id="classic-spaces-title">La cuenta de hoy.<br /><span>Y el panorama de todos los días.</span></h2>
           <div className="classic-space-grid">
             <article><Calculator aria-hidden="true" /><span className="classic-space-label">TICKET SPLITTER CLÁSICO</span><h3>Dividí una cuenta.</h3><p>Agregá personas y gastos, elegí quién pagó y compartí las transferencias. Sin registro, con guardado en este navegador.</p><Link to="/dividir">Empezar a dividir <ArrowRight aria-hidden="true" /></Link></article>
             <article><Layers3 aria-hidden="true" /><span className="classic-space-label">MI ESPACIO</span><h3>Seguí todas tus cuentas.</h3><p>Entrá a tus grupos con cuenta, finanzas personales, actividad, panorama de gastos y regalos compartidos.</p><Link to="/app">Abrir mi espacio <ArrowRight aria-hidden="true" /></Link></article>
+            <article><Database aria-hidden="true" /><span className="classic-space-label">ETL EXPENSES</span><h3>De cada fuente, a una decisión.</h3><p>Conocé cómo se ingieren, normalizan y analizan tus gastos con BigQuery, consultas conversacionales y alertas.</p><Link to="/etl">Ver el flujo ETL <ArrowRight aria-hidden="true" /></Link></article>
           </div>
         </div>
       </section>

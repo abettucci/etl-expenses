@@ -1,0 +1,5 @@
+# Isolated FinanceOps Copilot POC only. Do not add these to ai_agent/requirements.txt.
+langgraph==1.2.11
+langchain-core==1.6.3
+pydantic==2.13.5
+google-cloud-bigquery==3.45.1
