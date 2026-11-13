@@ -5621,7 +5621,7 @@ def lambda_handler(event, context):
             )
             return {"statusCode": 200}
         
-        if text == "/help":
+        if text in ("/help", "/ayuda"):
             register_telegram_command_menu()
             help_message = r"""📚 *Ayuda del Bot*
 
@@ -5936,6 +5936,17 @@ Matchea "MERPAGO*SHELL PALERMO", "SHELL YPF", etc.
                     parse_mode=False,
                     reply_markup=typed_keyboard,
                 )
+            return {"statusCode": 200}
+
+        # Un "/" que no es comando registrado no es una pregunta: responder con
+        # ayuda en vez de generar SQL y volcar filas de la base.
+        if text.startswith("/"):
+            send_telegram_message(
+                chat_id,
+                f"❓ Comando no reconocido: {text.split()[0]}\n\nUsá /help para ver los comandos disponibles.",
+                TELEGRAM_BOT_TOKEN,
+                parse_mode=False,
+            )
             return {"statusCode": 200}
 
         # =========================================
