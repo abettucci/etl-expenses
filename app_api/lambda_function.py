@@ -36,6 +36,8 @@ import user_integrations
 from insights import build_insights
 import data_explorer
 import alert_settings
+import period_comparisons
+from forecast import payment_methods_query
 from merchant_mappings import (
     FLOW_LABELS,
     SUPPORTED_FLOWS,
@@ -523,6 +525,39 @@ def finance_data_preview(identity: dict[str, str], params: dict[str, Any]) -> di
                 "rows": data_explorer.shape_rows(rows, request["columns"]), "limit": request["limit"],
                 "offset": request["offset"], "sort": request["sort"], "dir": request["dir"]}
     return _data_call(identity, "preview", build)
+
+
+def finance_comparisons(identity: dict[str, str]) -> dict[str, Any]:
+    """Period comparisons by merchant and category, monthly evolution and payment-method share."""
+    client, bigquery = _owner_bigquery(identity)
+    today = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+    start = date(today.year, today.month, 1)
+    for _ in range(12):
+        start = date(start.year - (start.month == 1), 12 if start.month == 1 else start.month - 1, 1)
+    try:
+        expense_rows = _monthly_expense_rows(client, bigquery, start, today)
+        gastos_schema = {
+            field.name.lower()
+            for field in client.get_table(f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_GASTOS_VIEW}").schema
+        }
+        payment_sql = payment_methods_query(
+            project_id=FORECAST_GCP_PROJECT_ID, dataset=FORECAST_BQ_DATASET,
+            gastos_view=FORECAST_GASTOS_VIEW, has_monto_ars="monto_ars" in gastos_schema)
+        payment_rows = _run_bigquery(client, bigquery, payment_sql, [
+            ("start_date", "DATE", start), ("end_date", "DATE", today)])
+    except ApiError:
+        raise
+    except Exception as exc:
+        print(f"comparisons_query_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos calcular las comparaciones ahora") from exc
+    result = {
+        "comparisons": period_comparisons.compare_periods(expense_rows, as_of=today),
+        "evolution": period_comparisons.evolution(expense_rows, as_of=today),
+        "payment_methods": period_comparisons.payment_share(payment_rows, as_of=today),
+        "currency": "ARS",
+    }
+    put_audit(identity["user_id"], "finance.comparisons.read", result["comparisons"]["partial_month"])
+    return result
 
 
 def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
@@ -1704,6 +1739,8 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_question(identity, payload))
     if path == "/v1/finance/forecast" and method == "GET":
         return response(200, finance_forecast(identity))
+    if path == "/v1/finance/comparisons" and method == "GET":
+        return response(200, finance_comparisons(identity))
     if path == "/v1/finance/insights" and method == "GET":
         return response(200, finance_insights(identity))
     if path == "/v1/finance/data/sources" and method == "GET":
