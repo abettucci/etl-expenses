@@ -31,21 +31,50 @@ const TABLE_COLUMNS: ExportColumn[] = [
   { key: 'share_avg_3m', label: 'Share 3 meses %' }, { key: 'share_avg_6m', label: 'Share 6 meses %' }, { key: 'share_vs_avg_3m_pp', label: 'Share vs 3 meses (pp)' },
 ]
 
+type CompareKey = keyof Item
+const NOMINAL_COLUMNS: { key: CompareKey; label: string }[] = [
+  { key: 'name', label: 'Nombre' }, { key: 'current', label: 'Mes actual' }, { key: 'avg_3m', label: 'Prom. 3 meses' },
+  { key: 'vs_avg_3m_abs', label: 'Vs 3 meses' }, { key: 'avg_6m', label: 'Prom. 6 meses' }, { key: 'vs_avg_6m_pct', label: 'Vs 6 meses' },
+]
+const SHARE_COLUMNS: { key: CompareKey; label: string }[] = [
+  { key: 'name', label: 'Nombre' }, { key: 'share_current', label: 'Share actual' }, { key: 'share_avg_3m', label: 'Share 3 meses' },
+  { key: 'share_vs_avg_3m_pp', label: 'Vs 3 meses' }, { key: 'share_avg_6m', label: 'Share 6 meses' },
+]
+
+// Numbers sort numerically, text alphabetically, and missing values always go last.
+function compareValues(a: unknown, b: unknown, dir: 1 | -1): number {
+  const missing = (v: unknown) => v === null || v === undefined
+  if (missing(a) && missing(b)) return 0
+  if (missing(a)) return 1
+  if (missing(b)) return -1
+  if (typeof a === 'number' && typeof b === 'number') return (a - b) * dir
+  return String(a).localeCompare(String(b), 'es-AR') * dir
+}
+
 function ComparisonTable({ dimension, mode }: { dimension: Dimension; mode: 'nominal' | 'share' }) {
+  const [sort, setSort] = useState<{ key: CompareKey; dir: 'asc' | 'desc' } | null>(null)
   if (!dimension.items.length) return <p className="alert-note">Sin movimientos para comparar.</p>
+  const columns = mode === 'nominal' ? NOMINAL_COLUMNS : SHARE_COLUMNS
+  const rows = sort ? [...dimension.items].sort((a, b) => compareValues(a[sort.key], b[sort.key], sort.dir === 'asc' ? 1 : -1)) : dimension.items
+  function toggle(key: CompareKey) {
+    setSort(prev => prev && prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' })
+  }
+  function cell(item: Item, key: CompareKey) {
+    switch (key) {
+      case 'name': return item.name
+      case 'current': case 'avg_3m': case 'avg_6m': return cash(item[key])
+      case 'vs_avg_3m_abs': return <span className={item.vs_avg_3m_abs > 0 ? 'insight-delta up' : item.vs_avg_3m_abs < 0 ? 'insight-delta down' : ''}>{cash(item.vs_avg_3m_abs)} · {pct(item.vs_avg_3m_pct, true)}</span>
+      case 'vs_avg_6m_pct': return pct(item.vs_avg_6m_pct, true)
+      case 'share_current': case 'share_avg_3m': case 'share_avg_6m': return pct(item[key])
+      case 'share_vs_avg_3m_pp': return pp(item.share_vs_avg_3m_pp)
+      default: return ''
+    }
+  }
   return <div className="data-table-wrap"><table className="data-table">
-    <thead><tr><th>Nombre</th>
-      {mode === 'nominal' ? <><th>Mes actual</th><th>Prom. 3 meses</th><th>Vs 3 meses</th><th>Prom. 6 meses</th><th>Vs 6 meses</th></>
-        : <><th>Share actual</th><th>Share 3 meses</th><th>Vs 3 meses</th><th>Share 6 meses</th></>}</tr></thead>
-    <tbody>{dimension.items.map(item => <tr key={item.name}>
-      <td>{item.name}</td>
-      {mode === 'nominal' ? <>
-        <td>{cash(item.current)}</td><td>{cash(item.avg_3m)}</td>
-        <td><span className={item.vs_avg_3m_abs > 0 ? 'insight-delta up' : item.vs_avg_3m_abs < 0 ? 'insight-delta down' : ''}>{cash(item.vs_avg_3m_abs)} · {pct(item.vs_avg_3m_pct, true)}</span></td>
-        <td>{cash(item.avg_6m)}</td><td>{pct(item.vs_avg_6m_pct, true)}</td></>
-        : <>
-          <td>{pct(item.share_current)}</td><td>{pct(item.share_avg_3m)}</td><td>{pp(item.share_vs_avg_3m_pp)}</td><td>{pct(item.share_avg_6m)}</td></>}
-    </tr>)}</tbody></table></div>
+    <thead><tr>{columns.map(c => <th key={c.key}>
+      <button className="data-sort" onClick={() => toggle(c.key)} aria-label={`Ordenar por ${c.label}`}>
+        {c.label}{sort?.key === c.key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ' ↕'}</button></th>)}</tr></thead>
+    <tbody>{rows.map(item => <tr key={item.name}>{columns.map(c => <td key={c.key}>{cell(item, c.key)}</td>)}</tr>)}</tbody></table></div>
 }
 
 const PALETTE = ['#a1ffd0', '#4fbf8f', '#ffb494', '#8fb8ff', '#e6d27a', '#c6a0ff', '#7fd1d1']
