@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import './financial-data.css'
 import { ExportMenu } from './export-menu'
+import { PayslipsTab } from './payslips'
 
 type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>
-type Tab = 'sources' | 'files' | 'catalog' | 'transactions'
+type Tab = 'sources' | 'files' | 'catalog' | 'transactions' | 'payslips'
 type Flag = { kind: 'invalid_dates' | 'no_currency'; count: number }
 type SourceEntry = { source: string; label: string; rows: number; totals: { currency: string; amount: number; rows: number }[]; first_date: string | null; last_date: string | null; last_ingested_at: string | null; invalid_dates: number; flags: Flag[] }
 type SourcesReport = { sources: SourceEntry[]; total_rows: number; categories: { name: string; rows: number }[]; dataset: string; view: string }
@@ -231,7 +232,7 @@ export function FinancialData({ authenticated, api, onLogin, onConnections }: { 
   if (gate === 'unlinked') return <section className="workspace-card"><h1>Datos</h1><p>{gateMessage}</p><p>Vinculá tu historial financiero desde Conexiones.</p><button className="primary" onClick={onConnections}>Ir a Conexiones</button></section>
   if (gate === 'error') return <section className="workspace-card"><h1>Datos</h1><p role="alert" className="balance-error">{gateMessage}</p></section>
 
-  const tabs: [Tab, string][] = [['sources', 'Fuentes'], ['files', 'Archivos'], ['catalog', 'Tablas y vistas'], ['transactions', 'Movimientos']]
+  const tabs: [Tab, string][] = [['sources', 'Fuentes'], ['files', 'Archivos'], ['catalog', 'Tablas y vistas'], ['transactions', 'Movimientos'], ['payslips', 'Recibos de sueldo']]
   return <section className="data-page">
     <header className="data-heading"><span className="data-eyebrow">MIS FINANZAS</span><h1>Datos</h1>
       <p>Qué se ingiere, desde cuándo, cuánto trae cada fuente, y todos los movimientos para validar o explorar.</p></header>
@@ -242,5 +243,6 @@ export function FinancialData({ authenticated, api, onLogin, onConnections }: { 
     {tab === 'files' && <FilesTab api={api} />}
     {tab === 'catalog' && <CatalogTab api={api} />}
     {tab === 'transactions' && <TransactionsTab api={api} categories={categories} />}
+    {tab === 'payslips' && <PayslipsTab api={api} />}
   </section>
 }

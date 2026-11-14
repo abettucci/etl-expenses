@@ -9,8 +9,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -37,6 +39,7 @@ from insights import build_insights
 import data_explorer
 import alert_settings
 import period_comparisons
+import payslip
 from forecast import payment_methods_query
 from merchant_mappings import (
     FLOW_LABELS,
@@ -558,6 +561,103 @@ def finance_comparisons(identity: dict[str, str]) -> dict[str, Any]:
     }
     put_audit(identity["user_id"], "finance.comparisons.read", result["comparisons"]["partial_month"])
     return result
+
+
+PAYSLIP_MAX_BYTES = 3 * 1024 * 1024
+PAYSLIP_MAX_PAGES = 3
+
+
+def _owner_only(identity: dict[str, str]) -> None:
+    enabled, owner_sub = finance_owner_config()
+    if not enabled or not owner_sub:
+        raise ApiError(503, "Los recibos todavía no están habilitados")
+    if not hmac.compare_digest(identity["user_id"], owner_sub):
+        raise ApiError(403, "Esta sección está disponible para la cuenta dueña")
+
+
+def _to_dynamo(value: Any) -> Any:
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _to_dynamo(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_dynamo(v) for v in value]
+    return value
+
+
+def _from_dynamo(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _from_dynamo(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_from_dynamo(v) for v in value]
+    return value
+
+
+def _payslip_items(identity: dict[str, str]) -> list[dict[str, Any]]:
+    result = table.query(KeyConditionExpression=Key("pk").eq(f"USER#{identity['user_id']}") & Key("sk").begins_with("PAYSLIP#"),
+                         ConsistentRead=True)
+    return [_from_dynamo(item) for item in result.get("Items", [])]
+
+
+def payslips_upload(identity: dict[str, str], payload: Any) -> dict[str, Any]:
+    _owner_only(identity)
+    if not isinstance(payload, dict) or not isinstance(payload.get("pdf_base64"), str):
+        raise ApiError(400, "Subí el recibo como archivo PDF")
+    try:
+        raw = base64.b64decode(payload["pdf_base64"], validate=True)
+    except (ValueError, TypeError):
+        raise ApiError(400, "El archivo no se pudo leer")
+    if len(raw) > PAYSLIP_MAX_BYTES:
+        raise ApiError(413, "El PDF supera 3 MB")
+    if not raw.startswith(b"%PDF"):
+        raise ApiError(400, "El archivo no es un PDF")
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(raw))
+        if len(reader.pages) > PAYSLIP_MAX_PAGES:
+            raise ApiError(400, "El PDF tiene más páginas de las esperadas para un recibo")
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except ApiError:
+        raise
+    except Exception as exc:
+        print(f"payslip_pdf_read_failed: {type(exc).__name__}")
+        raise ApiError(400, "No pude leer el texto del PDF") from exc
+    try:
+        slip = payslip.parse_payslip(text)
+    except payslip.PayslipError as exc:
+        raise ApiError(400, str(exc)) from exc
+    # Only the parsed amounts and masked identifiers are stored. The PDF bytes and text are not.
+    table.put_item(Item=_to_dynamo({
+        "pk": f"USER#{identity['user_id']}", "sk": f"PAYSLIP#{slip['period']}", **slip,
+        "uploaded_at": now(),
+    }))
+    put_audit(identity["user_id"], "finance.payslip.saved", slip["period"])
+    return payslips_list(identity)
+
+
+def payslips_list(identity: dict[str, str]) -> dict[str, Any]:
+    _owner_only(identity)
+    try:
+        items = _payslip_items(identity)
+    except Exception as exc:
+        print(f"payslips_read_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos leer los recibos ahora") from exc
+    for item in items:
+        item.pop("sk", None)
+        item.pop("pk", None)
+    summary = payslip.summarize(items)
+    return {"payslips": sorted(items, key=lambda s: s["period"], reverse=True), "summary": summary, "currency": "ARS"}
+
+
+def payslips_delete(identity: dict[str, str], period: str) -> dict[str, Any]:
+    _owner_only(identity)
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period or ""):
+        raise ApiError(400, "Período inválido")
+    table.delete_item(Key={"pk": f"USER#{identity['user_id']}", "sk": f"PAYSLIP#{period}"})
+    put_audit(identity["user_id"], "finance.payslip.deleted", period)
+    return payslips_list(identity)
 
 
 def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
@@ -1739,6 +1839,12 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_question(identity, payload))
     if path == "/v1/finance/forecast" and method == "GET":
         return response(200, finance_forecast(identity))
+    if path == "/v1/finance/payslips" and method == "GET":
+        return response(200, payslips_list(identity))
+    if path == "/v1/finance/payslips" and method == "POST":
+        return response(201, payslips_upload(identity, payload))
+    if len(segments) == 4 and segments[:3] == ["v1", "finance", "payslips"] and method == "DELETE":
+        return response(200, payslips_delete(identity, segments[3]))
     if path == "/v1/finance/comparisons" and method == "GET":
         return response(200, finance_comparisons(identity))
     if path == "/v1/finance/insights" and method == "GET":
