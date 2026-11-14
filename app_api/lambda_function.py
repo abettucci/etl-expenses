@@ -33,6 +33,14 @@ from finance_balance import build_balance, build_gmail_balance, save_income
 from finance_balance import require_finance_owner
 from personal_workspace import overview as workspace_overview, question_body
 import user_integrations
+from merchant_mappings import (
+    FLOW_LABELS,
+    SUPPORTED_FLOWS,
+    category_hint_for_place,
+    normalize_merchant,
+    suggest_existing_mapping,
+    validate_mapping_payload,
+)
 
 TABLE_NAME = os.environ["APP_TABLE"]
 CONNECTIONS_TABLE_NAME = os.environ.get('CONNECTIONS_TABLE', '').strip()
@@ -46,6 +54,12 @@ FORECAST_BQ_DATASET = os.environ.get("BQ_DATASET_PROD", "PRD").strip()
 FORECAST_BQ_LOCATION = os.environ.get("BQ_LOCATION", "US").strip()
 FORECAST_GASTOS_VIEW = os.environ.get("FINANCE_FORECAST_GASTOS_VIEW", "gastos_totales").strip()
 FORECAST_MAPPING_TABLE = os.environ.get("FINANCE_FORECAST_MAPPING_TABLE", "dim_comercio_mapping").strip()
+MERCHANT_MAPPING_ENABLED = os.environ.get("FINANCE_MERCHANT_MAPPING_ENABLED", "false").lower() == "true"
+MERCHANT_MAPPING_OWNER_SUB = os.environ.get("FINANCE_MERCHANT_MAPPING_OWNER_SUB", "").strip()
+MERCHANT_MAPPING_REVIEW_TABLE = os.environ.get("FINANCE_MERCHANT_MAPPING_REVIEW_TABLE", "comercio_mapping_review_queue").strip()
+MERCHANT_MAPPING_UNMAPPED_TABLE = os.environ.get("FINANCE_MERCHANT_MAPPING_UNMAPPED_TABLE", "comercio_unmapped_queue").strip()
+MERCHANT_PLACES_ENABLED = os.environ.get("MERCHANT_PLACES_ENABLED", "false").lower() == "true"
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "").strip()
 
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME)
@@ -386,6 +400,232 @@ def finance_question(identity, payload):
     except Exception as exc:
         print(f'finance_assistant_failed type={type(exc).__name__}')
         raise ApiError(503, 'No pude consultar tus gastos ahora. Probá nuevamente en unos minutos.') from None
+def _merchant_mapping_client(identity: dict[str, str]):
+    if not MERCHANT_MAPPING_ENABLED:
+        raise ApiError(503, "La revisión de comercios todavía no está habilitada")
+    if not MERCHANT_MAPPING_OWNER_SUB:
+        raise ApiError(503, "La fuente personal de BigQuery todavía no está vinculada")
+    if not hmac.compare_digest(identity["user_id"], MERCHANT_MAPPING_OWNER_SUB):
+        raise ApiError(403, "Esta sección está disponible para la cuenta dueña de los datos")
+    return _forecast_bigquery_client()
+
+
+def _merchant_fqn(table_name: str) -> str:
+    if not table_name.replace("_", "").isalnum():
+        raise ApiError(503, "La configuración de las tablas de mapeo es inválida")
+    if not FORECAST_GCP_PROJECT_ID or not FORECAST_BQ_DATASET:
+        raise ApiError(503, "BigQuery todavía no está conectado")
+    return f"`{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{table_name}`"
+
+
+def merchant_mapping_options(identity: dict[str, str]) -> dict[str, Any]:
+    client, bigquery = _merchant_mapping_client(identity)
+    query = f"""
+    SELECT DISTINCT flow, match_type, match_value, comercio_raw, comercio_depurado,
+           categoria, IFNULL(subcategoria, '') AS subcategoria
+    FROM {_merchant_fqn(FORECAST_MAPPING_TABLE)}
+    WHERE IFNULL(activo, TRUE) = TRUE
+      AND IFNULL(review_status, 'confirmed') IN ('confirmed', 'corrected', 'manual', 'auto_applied')
+      AND NULLIF(TRIM(comercio_depurado), '') IS NOT NULL
+      AND NULLIF(TRIM(categoria), '') IS NOT NULL
+    ORDER BY comercio_depurado, categoria, subcategoria
+    LIMIT @limit
+    """
+    rows = [dict(row.items()) for row in client.query(
+        query,
+        job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("limit", "INT64", 2500),
+        ]),
+    ).result()]
+    categories = sorted({str(row.get("categoria") or "").strip() for row in rows if row.get("categoria")})
+    subcategories: dict[str, set[str]] = {}
+    for row in rows:
+        category = str(row.get("categoria") or "").strip()
+        subcategory = str(row.get("subcategoria") or "").strip()
+        if category and subcategory:
+            subcategories.setdefault(category, set()).add(subcategory)
+    return {
+        "mappings": rows,
+        "merchants": sorted({str(row.get("comercio_depurado") or "").strip() for row in rows if row.get("comercio_depurado")}),
+        "categories": categories,
+        "subcategories": {key: sorted(values) for key, values in subcategories.items()},
+        "flows": [{"value": value, "label": FLOW_LABELS[value]} for value in sorted(SUPPORTED_FLOWS)],
+        "places_enabled": bool(MERCHANT_PLACES_ENABLED and GOOGLE_PLACES_API_KEY),
+    }
+
+
+def merchant_mapping_candidates(identity: dict[str, str], limit: int = 40) -> list[dict[str, Any]]:
+    client, bigquery = _merchant_mapping_client(identity)
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError) as exc:
+        raise ApiError(400, "El límite debe ser un número") from exc
+    query = f"""
+    SELECT candidate_id, flow, comercio_raw, comercio_normalizado, first_seen,
+           last_seen, appearance_count, status, suggested_match_type,
+           suggested_match_value, suggested_comercio_depurado, suggested_categoria,
+           suggested_subcategoria, confidence, suggestion_source, rationale, place_id
+    FROM {_merchant_fqn(MERCHANT_MAPPING_REVIEW_TABLE)}
+    WHERE status IN ('pending', 'suggested', 'needs_manual', 'auto_applied')
+    ORDER BY appearance_count DESC, last_seen DESC
+    LIMIT @limit
+    """
+    try:
+        rows = client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
+        ])).result()
+        return [{
+            key: value.isoformat() if hasattr(value, "isoformat") else value
+            for key, value in dict(row.items()).items()
+        } for row in rows]
+    except Exception as exc:
+        print(f"merchant_mapping_candidates_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos cargar los comercios pendientes") from exc
+
+
+def _google_place_suggestions(query: str, categories: list[str]) -> list[dict[str, Any]]:
+    if not (MERCHANT_PLACES_ENABLED and GOOGLE_PLACES_API_KEY):
+        return []
+    try:
+        result = requests.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": "places.id,places.displayName,places.primaryType,places.formattedAddress",
+            },
+            json={"textQuery": query, "languageCode": "es", "regionCode": "AR", "maxResultCount": 3},
+            timeout=5,
+        )
+        result.raise_for_status()
+        places = result.json().get("places") or []
+        return [{
+            "place_id": place.get("id"),
+            "merchant": (place.get("displayName") or {}).get("text", ""),
+            "primary_type": place.get("primaryType", ""),
+            "address": place.get("formattedAddress", ""),
+            "category": category_hint_for_place(place.get("primaryType", ""), categories),
+            "source": "google_places",
+        } for place in places if (place.get("displayName") or {}).get("text")]
+    except Exception as exc:
+        print(f"merchant_places_lookup_failed: {type(exc).__name__}")
+        return []
+
+
+def suggest_merchant_mapping(identity: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    flow = str(payload.get("flow") or "").strip()
+    raw = str(payload.get("raw_merchant") or "").strip()
+    if flow not in SUPPORTED_FLOWS or not raw or len(raw) > 200:
+        raise ApiError(400, "Indicá un comercio y un origen válidos")
+    client, bigquery = _merchant_mapping_client(identity)
+    options = merchant_mapping_options(identity)
+    existing = suggest_existing_mapping(raw, flow, options["mappings"])
+    places = _google_place_suggestions(raw, options["categories"]) if payload.get("include_places") else []
+    return {"existing_match": existing, "places": places, "places_enabled": options["places_enabled"]}
+
+
+def save_merchant_mapping(identity: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        mapping = validate_mapping_payload(payload)
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from exc
+    client, bigquery = _merchant_mapping_client(identity)
+    mapping_table = _merchant_fqn(FORECAST_MAPPING_TABLE)
+    match_norm = (
+        str(mapping["match_value"] or "")
+        if mapping["match_type"] == "regex"
+        else normalize_merchant(mapping["match_value"] or "")
+    )
+    provenance = str(payload.get("source") or "manual")
+    if provenance not in {"manual", "existing_mapping", "google_places"}:
+        provenance = "manual"
+    mapping_source = f"web:{provenance}"
+    merge = f"""
+    MERGE {mapping_table} AS target
+    USING (SELECT
+      @flow AS flow, @match_type AS match_type, @match_value AS match_value,
+      @merchant AS comercio_depurado, @category AS categoria,
+      @subcategory AS subcategoria, @raw AS comercio_raw,
+      @mapping_source AS mapping_source, @candidate_id AS candidate_id
+    ) AS source
+    ON target.flow = source.flow
+      AND target.match_type = source.match_type
+      AND target.match_value = source.match_value
+    WHEN MATCHED THEN UPDATE SET
+      comercio_depurado = source.comercio_depurado,
+      categoria = source.categoria,
+      subcategoria = source.subcategoria,
+      comercio_raw = source.comercio_raw,
+      mapping_source = source.mapping_source,
+      confidence = 100,
+      review_status = 'confirmed',
+      candidate_id = source.candidate_id,
+      prioridad = 100,
+      activo = TRUE,
+      ins_dttm = CURRENT_TIMESTAMP(),
+      updated_at = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN INSERT (
+      flow, match_type, match_value, comercio_depurado, categoria, subcategoria,
+      comercio_raw, prioridad, activo, ins_dttm, mapping_source, confidence,
+      review_status, candidate_id, updated_at
+    ) VALUES (
+      source.flow, source.match_type, source.match_value, source.comercio_depurado,
+      source.categoria, source.subcategoria, source.comercio_raw, 100, TRUE,
+      CURRENT_TIMESTAMP(), source.mapping_source, 100, 'confirmed',
+      source.candidate_id, CURRENT_TIMESTAMP()
+    )
+    """
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("flow", "STRING", mapping["flow"]),
+        bigquery.ScalarQueryParameter("match_type", "STRING", mapping["match_type"]),
+        bigquery.ScalarQueryParameter("match_value", "STRING", match_norm),
+        bigquery.ScalarQueryParameter("merchant", "STRING", mapping["merchant"]),
+        bigquery.ScalarQueryParameter("category", "STRING", mapping["category"]),
+        bigquery.ScalarQueryParameter("subcategory", "STRING", mapping["subcategory"]),
+        bigquery.ScalarQueryParameter("raw", "STRING", mapping["raw_merchant"]),
+        bigquery.ScalarQueryParameter("mapping_source", "STRING", mapping_source),
+        bigquery.ScalarQueryParameter("candidate_id", "STRING", mapping["candidate_id"]),
+    ])
+    try:
+        client.query(merge, job_config=config).result()
+    except Exception as exc:
+        print(f"merchant_mapping_save_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos guardar el mapeo en BigQuery") from exc
+
+    candidate_id = mapping["candidate_id"]
+    if candidate_id:
+        try:
+            client.query(
+                f"""UPDATE {_merchant_fqn(MERCHANT_MAPPING_REVIEW_TABLE)}
+                    SET status = 'confirmed', reviewed_at = CURRENT_TIMESTAMP(),
+                        reviewed_by = @reviewed_by, updated_at = CURRENT_TIMESTAMP()
+                    WHERE candidate_id = @candidate_id""",
+                job_config=bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("reviewed_by", "STRING", f"web:{identity['user_id']}"),
+                    bigquery.ScalarQueryParameter("candidate_id", "STRING", candidate_id),
+                ]),
+            ).result()
+        except Exception as exc:
+            print(f"merchant_mapping_candidate_update_failed: {type(exc).__name__}")
+    if mapping["match_type"] != "regex":
+        try:
+            client.query(
+                f"""UPDATE {_merchant_fqn(MERCHANT_MAPPING_UNMAPPED_TABLE)}
+                    SET resolved = TRUE
+                    WHERE flow = @flow AND IFNULL(resolved, FALSE) = FALSE
+                      AND REGEXP_REPLACE(UPPER(IFNULL(comercio_normalizado, '')), r'[^A-Z0-9]+', '')
+                          LIKE CONCAT('%', @match_value, '%')""",
+                job_config=bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("flow", "STRING", mapping["flow"]),
+                    bigquery.ScalarQueryParameter("match_value", "STRING", match_norm),
+                ]),
+            ).result()
+        except Exception as exc:
+            # The mapping is already committed; a streaming-buffer delay must not
+            # make the UI report the confirmed rule as failed.
+            print(f"merchant_mapping_queue_resolve_skipped: {type(exc).__name__}")
+    put_audit(identity["user_id"], "merchant_mapping.saved", f"{mapping['flow']}:{match_norm}")
+    return {"saved": True, "flow": mapping["flow"], "merchant": mapping["merchant"], "category": mapping["category"], "subcategory": mapping["subcategory"] or ""}
 
 
 def list_groups(user_id: str) -> list[dict[str, Any]]:
@@ -1235,6 +1475,14 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_balance(identity))
     if len(segments) == 4 and segments[:3] == ['v1', 'finance', 'income'] and method == 'PUT':
         return response(200, finance_save_income(identity, segments[3], payload))
+    if path == "/v1/finance/merchant-mapping/options" and method == "GET":
+        return response(200, merchant_mapping_options(identity))
+    if path == "/v1/finance/merchant-mapping/candidates" and method == "GET":
+        return response(200, merchant_mapping_candidates(identity))
+    if path == "/v1/finance/merchant-mapping/suggest" and method == "POST":
+        return response(200, suggest_merchant_mapping(identity, payload))
+    if path == "/v1/finance/merchant-mapping/save" and method == "POST":
+        return response(201, save_merchant_mapping(identity, payload))
     if path == "/v1/identity-links" and method == "POST":
         return response(201, create_identity_link(identity["user_id"]))
     if path == "/v1/groups":
