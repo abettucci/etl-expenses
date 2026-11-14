@@ -19,6 +19,11 @@ _PROJECT_IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{4,61}[a-z0-9]$")
 _WRITE_SQL = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE|CALL|EXPORT)\b", re.IGNORECASE)
 
 
+# Transfers between the owner's own accounts are not spending. The merchant mapping
+# classifies them with this category, so every expense aggregate leaves them out.
+OWN_TRANSFER_CATEGORY = 'Transferencias propias'
+
+
 def _safe_identifier(value: str, name: str, *, project: bool = False) -> str:
     if not (pattern := _PROJECT_IDENTIFIER if project else _IDENTIFIER).fullmatch(value):
         raise ValueError(f"invalid {name} identifier")
@@ -37,13 +42,17 @@ def payment_methods_query(
     project_id: str,
     dataset: str,
     gastos_view: str,
+    mapping_table: str,
     has_monto_ars: bool,
+    use_mapping: bool,
 ) -> str:
     """Monthly ARS spending by payment method. Same date and amount rules as monthly_expenses_query."""
     project_id = _safe_identifier(project_id, "project", project=True)
     dataset = _safe_identifier(dataset, "dataset")
     gastos_view = _safe_identifier(gastos_view, "gastos view")
+    mapping_table = _safe_identifier(mapping_table, "mapping table")
     gastos_fqn = f"`{project_id}.{dataset}.{gastos_view}`"
+    mapping_fqn = f"`{project_id}.{dataset}.{mapping_table}`"
     expense_date = """
       COALESCE(
         SAFE_CAST(NULLIF(TRIM(CAST(g.fecha AS STRING)), '') AS DATE),
@@ -58,14 +67,27 @@ def payment_methods_query(
         else "IF(UPPER(TRIM(CAST(g.divisa AS STRING))) = 'ARS', SAFE_CAST(g.monto_total AS FLOAT64), NULL)"
     )
     method = "COALESCE(NULLIF(TRIM(CAST(g.metodo_pago AS STRING)), ''), 'Sin dato')"
+    category = (
+        "COALESCE(NULLIF(TRIM(m.categoria), ''), NULLIF(TRIM(CAST(g.categoria AS STRING)), ''), 'Sin categorizar')"
+        if use_mapping
+        else "COALESCE(NULLIF(TRIM(CAST(g.categoria AS STRING)), ''), 'Sin categorizar')"
+    )
+    mapping_join = f"""
+      LEFT JOIN {mapping_fqn} AS m
+        ON UPPER(TRIM(CAST(g.comercio AS STRING))) = UPPER(TRIM(m.comercio_raw))
+       AND g.extraido_de = m.flow
+       AND IFNULL(m.activo, TRUE) = TRUE
+    """ if use_mapping else ""
     query = f"""
     WITH normalized AS (
-      SELECT {expense_date} AS expense_date, {method} AS method, {amount} AS amount
+      SELECT {expense_date} AS expense_date, {method} AS method, {amount} AS amount, {category} AS category
       FROM {gastos_fqn} AS g
+      {mapping_join}
     )
     SELECT DATE_TRUNC(expense_date, MONTH) AS month_start, method, SUM(amount) AS amount
     FROM normalized
     WHERE expense_date BETWEEN @start_date AND @end_date AND amount > 0
+      AND category <> '{OWN_TRANSFER_CATEGORY}'
     GROUP BY month_start, method
     ORDER BY month_start ASC
     """
@@ -141,6 +163,7 @@ def monthly_expenses_query(
       SUM(amount) AS amount
     FROM normalized_expenses
     WHERE expense_date BETWEEN @start_date AND @end_date
+      AND category <> '{OWN_TRANSFER_CATEGORY}'
       AND amount > 0
     GROUP BY month_start, merchant, category
     ORDER BY month_start ASC, amount DESC

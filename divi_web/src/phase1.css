@@ -18,3 +18,20 @@
 .balance-error{color:var(--danger)}
 
 .active-chip{background:var(--moss-deep)!important;border-color:var(--mint)!important;color:var(--ink)!important}
+
+.evo-chart{display:grid;gap:8px;overflow-x:auto}
+.evo-chart svg{width:100%;min-width:560px;height:auto;max-height:340px}
+.evo-grid{stroke:var(--line);stroke-width:1}
+.evo-label{fill:var(--muted);font-size:12px;text-transform:capitalize}
+.evo-value{fill:var(--ink-soft);font-size:11px}
+.evo-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.82rem;color:var(--ink-soft)}
+.evo-legend span{display:inline-flex;align-items:center;gap:6px}
+.evo-legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.method-bars{display:grid;gap:12px}
+.method-row{display:grid;grid-template-columns:minmax(120px,200px) 1fr 70px 120px;gap:12px;align-items:center}
+.method-name{overflow-wrap:anywhere}
+.method-track{height:14px;background:var(--paper-deep);border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+.method-track i{display:block;height:100%;border-radius:8px}
+.method-row strong{text-align:right}
+.method-row small{color:var(--muted);text-align:right}
+@media (max-width:620px){.method-row{grid-template-columns:1fr;gap:4px}.method-row strong,.method-row small{text-align:left}}
