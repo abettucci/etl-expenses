@@ -7,6 +7,7 @@ import { EtlOverview } from './etl-overview'
 import { ProductNavigation } from './product-navigation'
 import { FinancialBalance } from './financial-balance'
 import { FinancialInsights } from './financial-insights'
+import { FinancialData } from './financial-data'
 import { PersonalProfile } from './personal-profile'
 import { FinanceChat } from './finance-chat'
 import { UnifiedLanding } from './unified-landing'
@@ -30,7 +31,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => { /* The app still works without offline caching. */ }) })
 }
 
-type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance' | 'insights' | 'profile' | 'connections' | 'mappings'
+type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance' | 'insights' | 'data' | 'profile' | 'connections' | 'mappings'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
 type GroupSummary = { group_id: string; name: string; currency: string; role?: string; kind?: 'general' | 'household'; legacy_source_key?: string }
@@ -245,7 +246,7 @@ function App() {
       .catch(error => notify(error instanceof Error ? error.message : 'No pudimos aceptar la invitación.'))
   }, [authenticated])
   return <main className={`product-root ${authenticated ? 'account-layout' : ''}`}>
-    <ProductNavigation area={view === 'home' ? 'home' : view === 'balance' || view === 'insights' || view === 'panorama' ? 'personal' : view === 'connections' ? 'connections' : view === 'groups' || view === 'splitter' ? 'groups' : 'account'} authenticated={authenticated} onNavigate={navigate} onLogin={() => void authenticate(view === 'balance' ? 'balance' : 'home')} onLogout={signOut} onAssistant={() => setOverlay('assistant')} />
+    <ProductNavigation area={view === 'home' ? 'home' : view === 'balance' || view === 'insights' || view === 'data' || view === 'panorama' ? 'personal' : view === 'connections' ? 'connections' : view === 'groups' || view === 'splitter' ? 'groups' : 'account'} authenticated={authenticated} onNavigate={navigate} onLogin={() => void authenticate(view === 'balance' ? 'balance' : 'home')} onLogout={signOut} onAssistant={() => setOverlay('assistant')} />
     {authPending && <section className="auth-feedback" role="status"><h2>Completando el acceso seguro…</h2><p>Esperá un momento. No cierres esta pestaña.</p></section>}
     {authError && <section className="auth-feedback" role="alert"><h2>No pudimos completar el acceso</h2><p>{authMessage}</p><div><button className="primary" onClick={() => void authenticate(view)}>Volver a ingresar</button><button className="outline" onClick={() => { setAuthError(false); setAuthMessage(''); navigate('welcome') }}>Volver al inicio</button></div></section>}
     {view === 'welcome' || view === 'etl' || view === 'splitter' ? <>
@@ -253,7 +254,8 @@ function App() {
       {view !== 'splitter' && <section id={personalFinanceAnchor} className="unified-personal" aria-label="Finanzas personales con ETL Expenses"><EtlOverview embedded onNavigate={navigate} onHome={() => navigate('welcome')} /></section>}
     </> : <>
       <section className="shell">
-        {(view === 'balance' || view === 'insights' || view === 'panorama') && <nav className="finance-subnav" aria-label="Finanzas personales"><span>MIS FINANZAS</span><button aria-current={view === 'insights' ? 'page' : undefined} onClick={() => navigate('insights')}>Análisis de gastos</button><button aria-current={view === 'balance' ? 'page' : undefined} onClick={() => navigate('balance')}>Balance mensual</button><button aria-current={view === 'panorama' ? 'page' : undefined} onClick={() => navigate('panorama')}>Proyección y recurrentes</button></nav>}
+        {(view === 'balance' || view === 'insights' || view === 'data' || view === 'panorama') && <nav className="finance-subnav" aria-label="Finanzas personales"><span>MIS FINANZAS</span><button aria-current={view === 'insights' ? 'page' : undefined} onClick={() => navigate('insights')}>Análisis de gastos</button><button aria-current={view === 'data' ? 'page' : undefined} onClick={() => navigate('data')}>Datos</button><button aria-current={view === 'balance' ? 'page' : undefined} onClick={() => navigate('balance')}>Balance mensual</button><button aria-current={view === 'panorama' ? 'page' : undefined} onClick={() => navigate('panorama')}>Proyección y recurrentes</button></nav>}
+        {view === 'data' && <FinancialData authenticated={authenticated} api={api} onLogin={() => void authenticate('data')} onConnections={() => navigate('connections')} />}
         {view === 'insights' && <FinancialInsights authenticated={authenticated} api={api} onLogin={() => void authenticate('insights')} onConnections={() => navigate('connections')} />}
         {view === 'balance' && <FinancialBalance authenticated={authenticated} api={api} onLogin={() => void authenticate('balance')} onConnections={() => navigate('connections')} />}
         {view === 'home' && <UnifiedDashboard authenticated={authenticated} api={api} groups={groups} groupsStatus={groupsStatus} onLogin={() => void authenticate('home')} onFinance={() => navigate('balance')} onIncome={() => navigate('balance')} onGroups={id => { if (id) setActiveGroupId(id); navigate('groups') }} onExpense={() => openExpense()} onAssistant={() => setOverlay('assistant')} onConnections={() => navigate('connections')} />}
