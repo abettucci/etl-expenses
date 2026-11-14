@@ -87,8 +87,8 @@ class CacheTests(unittest.TestCase):
             def read(self):
                 return __import__('json').dumps(PAYLOAD).encode('utf-8')
 
-        def fake_open(url, timeout):
-            calls.append(url)
+        def fake_open(request, timeout):
+            calls.append(request.full_url)
             return Response()
 
         with patch.object(fx.urllib.request, 'urlopen', side_effect=fake_open):
