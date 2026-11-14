@@ -95,6 +95,89 @@ def payment_methods_query(
     return query
 
 
+def _shared_expense_parts(project_id: str, dataset: str, gastos_view: str, mapping_table: str,
+                          use_mapping: bool) -> tuple[str, str, str, str, str]:
+    """SQL fragments shared by the daily queries. Identifiers are validated before interpolation."""
+    project_id = _safe_identifier(project_id, "project", project=True)
+    dataset = _safe_identifier(dataset, "dataset")
+    gastos_view = _safe_identifier(gastos_view, "gastos view")
+    mapping_table = _safe_identifier(mapping_table, "mapping table")
+    gastos_fqn = f"`{project_id}.{dataset}.{gastos_view}`"
+    mapping_fqn = f"`{project_id}.{dataset}.{mapping_table}`"
+    expense_date = """
+      COALESCE(
+        SAFE_CAST(NULLIF(TRIM(CAST(g.fecha AS STRING)), '') AS DATE),
+        DATE(SAFE_CAST(NULLIF(TRIM(CAST(g.fecha AS STRING)), '') AS TIMESTAMP)),
+        SAFE.PARSE_DATE('%d/%m/%Y', NULLIF(TRIM(CAST(g.fecha AS STRING)), ''))
+      )
+    """
+    merchant = (
+        "COALESCE(NULLIF(TRIM(m.comercio_depurado), ''), NULLIF(TRIM(CAST(g.comercio AS STRING)), ''), 'Sin comercio')"
+        if use_mapping
+        else "COALESCE(NULLIF(TRIM(CAST(g.comercio AS STRING)), ''), 'Sin comercio')"
+    )
+    category = (
+        "COALESCE(NULLIF(TRIM(m.categoria), ''), NULLIF(TRIM(CAST(g.categoria AS STRING)), ''), 'Sin categorizar')"
+        if use_mapping
+        else "COALESCE(NULLIF(TRIM(CAST(g.categoria AS STRING)), ''), 'Sin categorizar')"
+    )
+    mapping_join = f"""
+      LEFT JOIN {mapping_fqn} AS m
+        ON UPPER(TRIM(CAST(g.comercio AS STRING))) = UPPER(TRIM(m.comercio_raw))
+       AND g.extraido_de = m.flow
+       AND IFNULL(m.activo, TRUE) = TRUE
+    """ if use_mapping else ""
+    return gastos_fqn, expense_date, merchant, category, mapping_join
+
+
+def expense_days_query(*, project_id: str, dataset: str, gastos_view: str, mapping_table: str, use_mapping: bool) -> str:
+    """Daily expenses in their original currency (ARS or USD), before any conversion.
+
+    The caller converts USD with the official rate of each day. Own transfers are left out.
+    """
+    gastos_fqn, expense_date, merchant, category, mapping_join = _shared_expense_parts(
+        project_id, dataset, gastos_view, mapping_table, use_mapping)
+    query = f"""
+    WITH normalized AS (
+      SELECT {expense_date} AS expense_date, {merchant} AS merchant, {category} AS category,
+             UPPER(TRIM(CAST(g.divisa AS STRING))) AS divisa, SAFE_CAST(g.monto_total AS FLOAT64) AS amount
+      FROM {gastos_fqn} AS g
+      {mapping_join}
+    )
+    SELECT expense_date, merchant, category, divisa, SUM(amount) AS amount
+    FROM normalized
+    WHERE expense_date BETWEEN @start_date AND @end_date
+      AND divisa IN ('ARS', 'USD') AND amount > 0
+      AND category <> '{OWN_TRANSFER_CATEGORY}'
+    GROUP BY expense_date, merchant, category, divisa
+    """
+    assert_read_only_query(query)
+    return query
+
+
+def payment_days_query(*, project_id: str, dataset: str, gastos_view: str, mapping_table: str, use_mapping: bool) -> str:
+    """Daily expenses by payment method and original currency, before conversion."""
+    gastos_fqn, expense_date, _merchant, category, mapping_join = _shared_expense_parts(
+        project_id, dataset, gastos_view, mapping_table, use_mapping)
+    method = "COALESCE(NULLIF(TRIM(CAST(g.metodo_pago AS STRING)), ''), 'Sin dato')"
+    query = f"""
+    WITH normalized AS (
+      SELECT {expense_date} AS expense_date, {method} AS method, {category} AS category,
+             UPPER(TRIM(CAST(g.divisa AS STRING))) AS divisa, SAFE_CAST(g.monto_total AS FLOAT64) AS amount
+      FROM {gastos_fqn} AS g
+      {mapping_join}
+    )
+    SELECT expense_date, method, divisa, SUM(amount) AS amount
+    FROM normalized
+    WHERE expense_date BETWEEN @start_date AND @end_date
+      AND divisa IN ('ARS', 'USD') AND amount > 0
+      AND category <> '{OWN_TRANSFER_CATEGORY}'
+    GROUP BY expense_date, method, divisa
+    """
+    assert_read_only_query(query)
+    return query
+
+
 def monthly_expenses_query(
     *,
     project_id: str,

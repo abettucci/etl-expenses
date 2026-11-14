@@ -30,13 +30,14 @@ from botocore.exceptions import ClientError
 from botocore.config import Config
 
 from domain import allocations_from_items, expense_allocations, group_balances, money, normalize_payers, parse_amount_text, replace_ledger_user_id, simplify_debts
-from forecast import build_monthly_forecast, monthly_expenses_query
+from forecast import build_monthly_forecast, expense_days_query, monthly_expenses_query, payment_days_query
 from finance_balance import build_balance, build_gmail_balance, save_income
 from finance_balance import require_finance_owner
 from personal_workspace import overview as workspace_overview, question_body
 import user_integrations
 from insights import build_insights
 import data_explorer
+import fx as fx_rates
 import alert_settings
 import period_comparisons
 import payslip
@@ -274,19 +275,7 @@ def finance_forecast(identity: dict[str, str]) -> dict[str, Any]:
             print(f"forecast_mapping_schema_unavailable: {type(exc).__name__}")
             mapping_schema = set()
         use_mapping = {"flow", "comercio_raw", "comercio_depurado", "categoria", "activo"}.issubset(mapping_schema)
-        query = monthly_expenses_query(
-            project_id=FORECAST_GCP_PROJECT_ID,
-            dataset=FORECAST_BQ_DATASET,
-            gastos_view=FORECAST_GASTOS_VIEW,
-            mapping_table=FORECAST_MAPPING_TABLE,
-            has_monto_ars="monto_ars" in gastos_schema,
-            use_mapping=use_mapping,
-        )
-        config = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("start_date", "DATE", history_start),
-            bigquery.ScalarQueryParameter("end_date", "DATE", today),
-        ], use_query_cache=True)
-        rows = [dict(row.items()) for row in client.query(query, job_config=config).result()]
+        rows, fx_meta = _expense_months(client, bigquery, history_start, today, use_mapping=use_mapping)
     except ApiError:
         raise
     except Exception as exc:
@@ -296,11 +285,43 @@ def finance_forecast(identity: dict[str, str]) -> dict[str, Any]:
     result = build_monthly_forecast(rows, as_of=today, lookback_months=lookback_months)
     result["mode"] = "live"
     result["data_source"] = "etl_aggregated_read_only"
+    result["fx"] = fx_meta
     put_audit(identity["user_id"], "finance.forecast.read", result["period"]["forecast_month"])
     return result
 
 
-def _monthly_expense_rows(client, bigquery, start: date, end: date) -> list[dict[str, Any]]:
+def _fx_series() -> list:
+    try:
+        return fx_rates.official_series()
+    except fx_rates.FxError as exc:
+        print(f"fx_unavailable: {exc}")
+        raise ApiError(503, "No pudimos obtener el dólar oficial para convertir los gastos en dólares ahora") from exc
+
+
+def _month_start(day: date) -> date:
+    return date(day.year, day.month, 1)
+
+
+def _expense_months(client, bigquery, start: date, end: date, *, use_mapping: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Monthly ARS expenses by merchant and category. USD rows are converted with each day's official rate."""
+    sql = expense_days_query(project_id=FORECAST_GCP_PROJECT_ID, dataset=FORECAST_BQ_DATASET,
+                             gastos_view=FORECAST_GASTOS_VIEW, mapping_table=FORECAST_MAPPING_TABLE, use_mapping=use_mapping)
+    rows = [dict(row.items()) for row in client.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("start_date", "DATE", start),
+        bigquery.ScalarQueryParameter("end_date", "DATE", end),
+    ], use_query_cache=True)).result()]
+    converted = fx_rates.convert_rows(rows, _fx_series(), day_key="expense_date", currency_key="divisa", amount_key="amount")
+    monthly: dict[tuple, float] = {}
+    for row in converted["rows"]:
+        key = (_month_start(row["expense_date"]), row["merchant"], row["category"])
+        monthly[key] = monthly.get(key, 0.0) + row["amount_ars"]
+    out = [{"month_start": m, "merchant": mer, "category": cat, "amount": round(a, 2)} for (m, mer, cat), a in monthly.items()]
+    meta = {"usd_converted_ars": converted["usd_converted_ars"], "quotes_used": converted["quotes_used"],
+            "skipped_currencies": converted["skipped"], "source": converted["source"]}
+    return out, meta
+
+
+def _monthly_expense_rows(client, bigquery, start: date, end: date) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Monthly expenses by merchant and category, read-only, from the ETL view."""
     gastos_schema = {
         field.name.lower()
@@ -322,19 +343,7 @@ def _monthly_expense_rows(client, bigquery, start: date, end: date) -> list[dict
         print(f"insights_mapping_schema_unavailable: {type(exc).__name__}")
         mapping_schema = set()
     use_mapping = {"flow", "comercio_raw", "comercio_depurado", "categoria", "activo"}.issubset(mapping_schema)
-    query = monthly_expenses_query(
-        project_id=FORECAST_GCP_PROJECT_ID,
-        dataset=FORECAST_BQ_DATASET,
-        gastos_view=FORECAST_GASTOS_VIEW,
-        mapping_table=FORECAST_MAPPING_TABLE,
-        has_monto_ars="monto_ars" in gastos_schema,
-        use_mapping=use_mapping,
-    )
-    config = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("start_date", "DATE", start),
-        bigquery.ScalarQueryParameter("end_date", "DATE", end),
-    ], use_query_cache=True)
-    return [dict(row.items()) for row in client.query(query, job_config=config).result()]
+    return _expense_months(client, bigquery, start, end, use_mapping=use_mapping)
 
 
 def finance_insights(identity: dict[str, str]) -> dict[str, Any]:
@@ -351,7 +360,7 @@ def finance_insights(identity: dict[str, str]) -> dict[str, Any]:
     for _ in range(7):
         start = date(start.year - (start.month == 1), 12 if start.month == 1 else start.month - 1, 1)
     try:
-        rows = _monthly_expense_rows(client, bigquery, start, today)
+        rows, fx_meta = _monthly_expense_rows(client, bigquery, start, today)
     except ApiError:
         raise
     except Exception as exc:
@@ -360,6 +369,7 @@ def finance_insights(identity: dict[str, str]) -> dict[str, Any]:
 
     result = build_insights(rows, as_of=today)
     result["data_source"] = "etl_aggregated_read_only"
+    result["fx"] = fx_meta
     put_audit(identity["user_id"], "finance.insights.read", result["as_of"])
     return result
 
@@ -538,7 +548,7 @@ def finance_comparisons(identity: dict[str, str]) -> dict[str, Any]:
     for _ in range(12):
         start = date(start.year - (start.month == 1), 12 if start.month == 1 else start.month - 1, 1)
     try:
-        expense_rows = _monthly_expense_rows(client, bigquery, start, today)
+        expense_rows, fx_meta = _monthly_expense_rows(client, bigquery, start, today)
         gastos_schema = {
             field.name.lower()
             for field in client.get_table(f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_GASTOS_VIEW}").schema
@@ -547,13 +557,20 @@ def finance_comparisons(identity: dict[str, str]) -> dict[str, Any]:
             field.name.lower()
             for field in client.get_table(f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_MAPPING_TABLE}").schema
         }
-        payment_sql = payment_methods_query(
+        payment_sql = payment_days_query(
             project_id=FORECAST_GCP_PROJECT_ID, dataset=FORECAST_BQ_DATASET,
             gastos_view=FORECAST_GASTOS_VIEW, mapping_table=FORECAST_MAPPING_TABLE,
-            has_monto_ars="monto_ars" in gastos_schema,
             use_mapping={"flow", "comercio_raw", "comercio_depurado", "categoria", "activo"}.issubset(mapping_schema))
-        payment_rows = _run_bigquery(client, bigquery, payment_sql, [
-            ("start_date", "DATE", start), ("end_date", "DATE", today)])
+        payment_days = [dict(row.items()) for row in client.query(payment_sql, job_config=bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", start),
+            bigquery.ScalarQueryParameter("end_date", "DATE", today),
+        ], use_query_cache=True)).result()]
+        converted_payments = fx_rates.convert_rows(payment_days, _fx_series(), day_key="expense_date", currency_key="divisa", amount_key="amount")
+        by_method: dict[tuple, float] = {}
+        for row in converted_payments["rows"]:
+            key = (_month_start(row["expense_date"]), row["method"])
+            by_method[key] = by_method.get(key, 0.0) + row["amount_ars"]
+        payment_rows = [{"month_start": m, "method": method, "amount": round(amount, 2)} for (m, method), amount in by_method.items()]
     except ApiError:
         raise
     except Exception as exc:
@@ -564,6 +581,7 @@ def finance_comparisons(identity: dict[str, str]) -> dict[str, Any]:
         "evolution": period_comparisons.evolution(expense_rows, as_of=today),
         "payment_methods": period_comparisons.payment_share(payment_rows, as_of=today),
         "currency": "ARS",
+        "fx": fx_meta,
     }
     put_audit(identity["user_id"], "finance.comparisons.read", result["comparisons"]["partial_month"])
     return result

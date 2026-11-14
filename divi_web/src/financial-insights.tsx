@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import './financial-insights.css'
 import { ExportMenu } from './export-menu'
-import { FinancialComparisons } from './financial-comparisons'
+import { FinancialComparisons, FxNote } from './financial-comparisons'
 
 type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>
 type Movement = { name: string; current: number; previous: number; change_abs: number; change_pct: number | null; share: number; baseline: number; vs_baseline_pct: number | null }
 type Insight = { kind: 'total' | 'category_spike' | 'merchant_up' | 'new_merchant' | 'pace'; severity: 'up' | 'down' | 'info'; name?: string; current?: number; baseline?: number; change_abs?: number; change_pct?: number | null; projected?: number; month?: string }
 export type InsightsReport = {
+  fx?: { usd_converted_ars: number; quotes_used: { first: string; last: string } | null; skipped_currencies: number; source: { name: string; house: string; field: string } }
   currency: string; as_of: string; has_history: boolean
   months: { month: string; total: number; partial: boolean }[]
   current_month: { month: string; spent: number; days_elapsed: number; days_in_month: number; projected: number; vs_latest_closed_pct: number | null }
@@ -112,6 +113,7 @@ export function FinancialInsights({ authenticated, api, onLogin, onConnections }
 
     {!report.has_history || !latest ? <section className="insight-card"><h2>Todavía hay poco historial</h2>
       <p>Para comparar variaciones necesito al menos dos meses completos con gastos. Mes en curso: {cash(now.spent)} en {now.days_elapsed} días.</p></section> : <>
+      <FxNote fx={report.fx} />
       <div className="insight-kpis">
         <article className="insight-card"><span>{longMonth(latest.month)}</span><strong>{cash(latest.total)}</strong><Delta amount={latest.change_abs} percent={latest.change_pct} /><small>contra {longMonth(latest.previous_month)}</small></article>
         <article className="insight-card"><span>Contra tu promedio</span><strong>{pct(latest.vs_baseline_pct)}</strong><small>Promedio de los 3 meses anteriores: {cash(latest.baseline_total)}</small></article>

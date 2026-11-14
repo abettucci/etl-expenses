@@ -10,7 +10,15 @@ type Item = {
 }
 type Dimension = { items: Item[]; totals: { current: number; avg_3m: number; avg_6m: number } }
 type Named = { name: string; amount: number; share: number | null }
+type FxInfo = { usd_converted_ars: number; quotes_used: { first: string; last: string } | null; skipped_currencies: number; source: { name: string; house: string; field: string } }
+export function FxNote({ fx }: { fx?: FxInfo }) {
+  if (!fx) return null
+  const range = fx.quotes_used ? ` Cotizaciones del ${fx.quotes_used.first} al ${fx.quotes_used.last}.` : ''
+  const usd = fx.usd_converted_ars ? ` Gastos en dólares convertidos a pesos: ${new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(fx.usd_converted_ars)}.` : ''
+  return <small className="alert-note">Montos en pesos. Los gastos en dólares se convierten con el dólar oficial (venta) de {fx.source.name}, al tipo de cambio de cada día.{usd}{range}</small>
+}
 type Report = {
+  fx?: FxInfo
   comparisons: { as_of: string; partial_month: string; days_elapsed: number; days_in_month: number; projected_total: number;
     windows: { current: string; avg_3m: string[]; avg_6m: string[] }; categories: Dimension; merchants: Dimension }
   evolution: { window_total: number; months: { month: string; partial: boolean; total: number; share_of_window: number | null;
@@ -164,6 +172,7 @@ export function FinancialComparisons({ api }: { api: Api }) {
           <button className={`outline ${mode === 'nominal' ? 'active-chip' : ''}`} onClick={() => setMode('nominal')}>Pesos</button>
           <button className={`outline ${mode === 'share' ? 'active-chip' : ''}`} onClick={() => setMode('share')}>% share</button>
         </div></div>
+      <FxNote fx={report.fx} />
       <p className="alert-note">Mes actual: {monthLabel(c.partial_month)}, día {c.days_elapsed} de {c.days_in_month}. Proyección del mes: {cash(c.projected_total)}. Los promedios son mensuales sobre los meses cerrados ({c.windows.avg_3m.length} y {c.windows.avg_6m.length}).</p>
       <ComparisonTable dimension={active} mode={mode} />
       <ExportMenu title={`Comparaciones ${dimension === 'categories' ? 'categorías' : 'comercios'}`} filename={`comparaciones-${dimension}-${c.partial_month}`}
