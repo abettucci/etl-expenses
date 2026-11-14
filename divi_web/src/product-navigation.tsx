@@ -1,7 +1,7 @@
 import { useRef, type MouseEvent } from 'react'
 import { House, ChartNoAxesCombined, Users, Plug, Sparkles } from 'lucide-react'
 import './product-navigation.css'
-type Destination = 'welcome' | 'etl' | 'home' | 'insights' | 'balance' | 'profile' | 'groups' | 'connections' | 'settings' | 'splitter'
+type Destination = 'welcome' | 'etl' | 'home' | 'insights' | 'data' | 'balance' | 'profile' | 'groups' | 'connections' | 'settings' | 'splitter'
 export function ProductNavigation({ area, authenticated, onNavigate, onLogin, onLogout, onAssistant }: {
   area: string; authenticated: boolean; onNavigate: (destination: Destination) => void; onLogin: () => void; onLogout: () => void; onAssistant: () => void
 }) {

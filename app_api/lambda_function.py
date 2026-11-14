@@ -34,6 +34,7 @@ from finance_balance import require_finance_owner
 from personal_workspace import overview as workspace_overview, question_body
 import user_integrations
 from insights import build_insights
+import data_explorer
 from merchant_mappings import (
     FLOW_LABELS,
     SUPPORTED_FLOWS,
@@ -355,6 +356,113 @@ def finance_insights(identity: dict[str, str]) -> dict[str, Any]:
     result["data_source"] = "etl_aggregated_read_only"
     put_audit(identity["user_id"], "finance.insights.read", result["as_of"])
     return result
+
+
+DATA_MAX_BYTES = 200 * 1024 * 1024  # per-query billing cap for the data explorer
+
+
+def _owner_bigquery(identity: dict[str, str]):
+    enabled, owner_sub = finance_owner_config()
+    if not enabled or not owner_sub:
+        raise ApiError(503, "Los datos financieros todavía no están conectados")
+    if not hmac.compare_digest(identity["user_id"], owner_sub):
+        raise ApiError(403, "Tu cuenta todavía no tiene una fuente financiera vinculada")
+    return _forecast_bigquery_client()
+
+
+def _run_bigquery(client, bigquery, sql: str, params=()) -> list[dict[str, Any]]:
+    config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter(name, kind, value) for name, kind, value in params],
+        use_query_cache=True, maximum_bytes_billed=DATA_MAX_BYTES)
+    return [dict(row.items()) for row in client.query(sql, job_config=config).result()]
+
+
+def _shape(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return data_explorer.shape_rows(rows, list(rows[0].keys()) if rows else [])
+
+
+def _data_call(identity: dict[str, str], action: str, build):
+    """Owner-only, read-only BigQuery access with errors that never leak internals."""
+    client, bigquery = _owner_bigquery(identity)
+    try:
+        result = build(client, bigquery)
+    except ApiError:
+        raise
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from exc
+    except Exception as exc:
+        print(f"finance_data_{action}_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos leer tus datos de BigQuery ahora") from exc
+    put_audit(identity["user_id"], f"finance.data.{action}", action)
+    return result
+
+
+def finance_data_sources(identity: dict[str, str]) -> dict[str, Any]:
+    def build(client, bigquery):
+        rows = _run_bigquery(client, bigquery, data_explorer.sources_query(
+            FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET, FORECAST_GASTOS_VIEW))
+        categories = _run_bigquery(client, bigquery, data_explorer.facets_query(
+            FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET, FORECAST_GASTOS_VIEW))
+        result = data_explorer.summarize_sources(rows)
+        result["categories"] = [{"name": row["category"], "rows": int(row["rows_n"])} for row in categories]
+        result["dataset"], result["view"] = FORECAST_BQ_DATASET, FORECAST_GASTOS_VIEW
+        return result
+    return _data_call(identity, "sources", build)
+
+
+def finance_data_files(identity: dict[str, str]) -> dict[str, Any]:
+    def build(client, bigquery):
+        out: dict[str, Any] = {"errors": []}
+        for name, sql in data_explorer.files_queries(FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET).items():
+            try:
+                out[name] = _shape(_run_bigquery(client, bigquery, sql))
+            except Exception as exc:
+                print(f"finance_data_files_{name}_failed: {type(exc).__name__}")
+                out[name] = []
+                out["errors"].append(name)
+        summary = out.pop("batches_summary", [])
+        out["batches"] = {"summary": summary[0] if summary else None, "items": out.get("batches", [])}
+        return out
+    return _data_call(identity, "files", build)
+
+
+def _catalog(client, bigquery) -> list[dict[str, Any]]:
+    queries = data_explorer.catalog_queries(FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET)
+    return data_explorer.build_catalog(_run_bigquery(client, bigquery, queries["objects"]),
+                                       _run_bigquery(client, bigquery, queries["columns"]))
+
+
+def finance_data_catalog(identity: dict[str, str]) -> dict[str, Any]:
+    def build(client, bigquery):
+        return {"project": FORECAST_GCP_PROJECT_ID, "dataset": FORECAST_BQ_DATASET,
+                "objects": _catalog(client, bigquery)}
+    return _data_call(identity, "catalog", build)
+
+
+def finance_data_transactions(identity: dict[str, str], params: dict[str, Any]) -> dict[str, Any]:
+    def build(client, bigquery):
+        filters = data_explorer.parse_transaction_params(params)
+        sql, query_params = data_explorer.transactions_query(
+            FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET, FORECAST_GASTOS_VIEW, filters)
+        rows = _run_bigquery(client, bigquery, sql, query_params)
+        total = int(rows[0]["_total"]) if rows else (0 if filters["offset"] == 0 else None)
+        return {"columns": data_explorer.TX_COLUMNS, "rows": data_explorer.shape_rows(rows, data_explorer.TX_COLUMNS),
+                "total": total, "limit": filters["limit"], "offset": filters["offset"],
+                "sort": filters["sort"], "dir": filters["dir"]}
+    return _data_call(identity, "transactions", build)
+
+
+def finance_data_preview(identity: dict[str, str], params: dict[str, Any]) -> dict[str, Any]:
+    def build(client, bigquery):
+        catalog = _catalog(client, bigquery)
+        request = data_explorer.parse_preview_params(params, catalog)
+        sql, query_params = data_explorer.preview_query(FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET, request)
+        rows = _run_bigquery(client, bigquery, sql, query_params)
+        entry = next(item for item in catalog if item["name"] == request["name"])
+        return {"name": request["name"], "type": entry["type"], "rows_total": entry["rows"], "columns": entry["columns"],
+                "rows": data_explorer.shape_rows(rows, request["columns"]), "limit": request["limit"],
+                "offset": request["offset"], "sort": request["sort"], "dir": request["dir"]}
+    return _data_call(identity, "preview", build)
 
 
 def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
@@ -1538,6 +1646,16 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_forecast(identity))
     if path == "/v1/finance/insights" and method == "GET":
         return response(200, finance_insights(identity))
+    if path == "/v1/finance/data/sources" and method == "GET":
+        return response(200, finance_data_sources(identity))
+    if path == "/v1/finance/data/files" and method == "GET":
+        return response(200, finance_data_files(identity))
+    if path == "/v1/finance/data/catalog" and method == "GET":
+        return response(200, finance_data_catalog(identity))
+    if path == "/v1/finance/data/transactions" and method == "GET":
+        return response(200, finance_data_transactions(identity, event.get("queryStringParameters") or {}))
+    if path == "/v1/finance/data/preview" and method == "GET":
+        return response(200, finance_data_preview(identity, event.get("queryStringParameters") or {}))
     if path == '/v1/finance/balance' and method == 'GET':
         return response(200, finance_balance(identity))
     if len(segments) == 4 and segments[:3] == ['v1', 'finance', 'income'] and method == 'PUT':
