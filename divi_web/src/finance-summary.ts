@@ -1,5 +1,5 @@
 export type MonthlyActual = { month: string; income: number | null; expenses: number | null; savings: number | null; savings_rate: number | null; partial: boolean }
-export type BalanceReport = { currency: 'ARS'; as_of: string; mode: 'live'; months: MonthlyActual[] }
+export type BalanceReport = { currency: 'ARS'; as_of: string; mode: 'live'; months: MonthlyActual[]; notice?: string }
 export type Metric = 'income' | 'expenses' | 'savings'
 
 export function previousMonth(month: string) {
@@ -36,7 +36,7 @@ export function parseIncome(value: string): string | null {
 export function isBalanceReport(value: unknown): value is BalanceReport {
   if (!value || typeof value !== 'object') return false
   const report = value as BalanceReport
-  return report.mode === 'live' && report.currency === 'ARS' && typeof report.as_of === 'string' && Array.isArray(report.months)
+  return report.mode === 'live' && report.currency === 'ARS' && typeof report.as_of === 'string' && (report.notice === undefined || typeof report.notice === 'string' && report.notice.length <= 500) && Array.isArray(report.months)
     && report.months.length <= 13 && new Set(report.months.map(row => row?.month)).size === report.months.length
     && report.months.every(row => row && /^20\d{2}-(0[1-9]|1[0-2])$/.test(row.month)
       && typeof row.partial === 'boolean' && ['income', 'expenses', 'savings', 'savings_rate'].every(key => {

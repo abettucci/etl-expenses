@@ -1,5 +1,6 @@
 """Monthly actuals, never forecasts. No cloud calls or financial-data logging."""
 from decimal import Decimal
+from datetime import timedelta
 import hmac
 import re
 
@@ -57,3 +58,29 @@ def build_balance(forecast, incomes):
     return {'currency': 'ARS', 'as_of': forecast['as_of'], 'mode': 'live',
             'income_source': 'manual_monthly_total', 'expense_source': 'etl_aggregated_read_only',
             'months': months}
+
+
+def build_gmail_balance(expenses, incomes, *, today, incomplete=False):
+    """Report only imported ARS purchases, clearly marking limited coverage."""
+    start = today - timedelta(days=90)
+    month = start.replace(day=1)
+    amounts = {row['month']: Decimal(str(row['amount'])) for row in incomes}
+    totals = {}
+    for row in expenses:
+        value = row.get('date', '')
+        if row.get('currency') != 'ARS' or not isinstance(value, str) or not re.fullmatch(r'20\d{2}-\d{2}-\d{2}', value):
+            continue
+        if start.isoformat() <= value <= today.isoformat():
+            key = value[:7]
+            totals[key] = totals.get(key, Decimal('0')) + Decimal(str(row['amount']))
+    months = []
+    while month <= today:
+        key = month.strftime('%Y-%m')
+        income, spent = amounts.get(key), totals.get(key)
+        months.append({'month': key, 'income': float(income) if income is not None else None,
+                       'expenses': float(spent) if spent is not None else None,
+                       'savings': None, 'savings_rate': None, 'partial': True})
+        month = month.replace(year=month.year + (month.month == 12), month=1 if month.month == 12 else month.month + 1)
+    return {'currency': 'ARS', 'as_of': today.isoformat(), 'mode': 'live', 'income_source': 'manual_monthly_total',
+            'expense_source': 'gmail_santander', 'months': months,
+            'notice': 'Solo incluye compras Santander en pesos importadas de Gmail durante los últimos 90 días. Otros gastos y operaciones en dólares no están incluidos; por eso no se calcula ahorro.' + (' La importación todavía está en curso.' if incomplete else '')}

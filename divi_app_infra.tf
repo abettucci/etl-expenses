@@ -86,6 +86,23 @@ variable "divi_finance_forecast_owner_sub" {
   sensitive = true
 }
 
+variable "divi_gmail_oauth_client_id" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "divi_gmail_oauth_client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "divi_binance_regional_function_arn" {
+  type    = string
+  default = ""
+}
+
 # Separate token from the personal ETL bot. The group bot is intentionally a
 # distinct webhook so audio/photo ingestion keeps its current trust boundary.
 variable "divi_group_bot_token" {
@@ -137,6 +154,32 @@ resource "aws_dynamodb_table" "divi_application" {
   tags = {
     Name      = "divi-application"
     Component = "transactional-app"
+  }
+}
+
+resource "aws_dynamodb_table" "divi_user_connections" {
+  name         = "divi-user-connections"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pk"
+  range_key    = "sk"
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 }
 
@@ -237,6 +280,19 @@ resource "aws_secretsmanager_secret_version" "divi_group_bot" {
   })
 }
 
+resource "aws_secretsmanager_secret" "divi_gmail_oauth" {
+  name        = "divi/gmail-oauth"
+  description = "OAuth client used for per-user Gmail connections"
+}
+
+resource "aws_secretsmanager_secret_version" "divi_gmail_oauth" {
+  secret_id = aws_secretsmanager_secret.divi_gmail_oauth.id
+  secret_string = jsonencode({
+    client_id     = var.divi_gmail_oauth_client_id
+    client_secret = var.divi_gmail_oauth_client_secret
+  })
+}
+
 variable "divi_finance_bot_username" {
   type    = string
   default = ""
@@ -284,10 +340,68 @@ resource "aws_iam_role_policy" "divi_application" {
   })
 }
 
+# User connection credentials must not be readable by the legacy ETL's shared role.
+resource "aws_iam_role" "divi_api" {
+  name = "divi-app-api-execution"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "divi_api_logs" {
+  role       = aws_iam_role.divi_api.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "divi_api" {
+  name = "divi-api-user-connections"
+  role = aws_iam_role.divi_api.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = compact([aws_lambda_function.ai_agent.arn, var.divi_binance_regional_function_arn])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:TransactWriteItems"]
+        Resource = [aws_dynamodb_table.divi_application.arn, aws_dynamodb_table.divi_user_connections.arn]
+      },
+      {
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          aws_secretsmanager_secret.divi_mercadopago.arn,
+          aws_secretsmanager_secret.divi_group_bot.arn,
+          aws_secretsmanager_secret.divi_gmail_oauth.arn,
+          "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:gcp_sa_api_credentials-*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:CreateSecret", "secretsmanager:GetSecretValue", "secretsmanager:DeleteSecret"]
+        Resource = "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:divi/user-connections/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+        Resource = aws_ecr_repository.lambda_images.arn
+      }
+    ]
+  })
+}
+
 resource "aws_lambda_function" "divi_app_api" {
   function_name = "divi_app_api"
   description   = "Authenticated API for Divi groups, gifts, pools and Premium"
-  role          = aws_iam_role.lambda_exec.arn
+  role          = aws_iam_role.divi_api.arn
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.lambda_images.repository_url}:app_api-latest"
   timeout       = 30
@@ -296,6 +410,7 @@ resource "aws_lambda_function" "divi_app_api" {
   environment {
     variables = {
       APP_TABLE                      = aws_dynamodb_table.divi_application.name
+      CONNECTIONS_TABLE              = aws_dynamodb_table.divi_user_connections.name
       FRONTEND_ORIGIN                = var.divi_frontend_origin
       MP_SECRET_ARN                  = aws_secretsmanager_secret.divi_mercadopago.arn
       DIVI_GROUP_BOT_SECRET_ARN      = aws_secretsmanager_secret.divi_group_bot.arn
@@ -309,11 +424,15 @@ resource "aws_lambda_function" "divi_app_api" {
       GCP_PROJECT_ID                 = var.GCP_PROJECT_ID
       BQ_DATASET_PROD                = "PRD"
       BQ_LOCATION                    = "US"
+      GMAIL_OAUTH_SECRET_ARN         = aws_secretsmanager_secret.divi_gmail_oauth.arn
+      GMAIL_OAUTH_CALLBACK_URL       = "${aws_apigatewayv2_api.divi.api_endpoint}/v1/integrations/gmail/callback"
+      BINANCE_REGIONAL_FUNCTION_ARN  = var.divi_binance_regional_function_arn
     }
   }
 
   depends_on = [
-    aws_iam_role_policy.divi_application,
+    aws_iam_role_policy.divi_api,
+    aws_iam_role_policy_attachment.divi_api_logs,
     aws_secretsmanager_secret_version.divi_mercadopago,
     aws_secretsmanager_secret_version.divi_group_bot
   ]
@@ -385,6 +504,13 @@ resource "aws_apigatewayv2_route" "divi_subscription_webhook" {
 resource "aws_apigatewayv2_route" "divi_oauth_callback" {
   api_id             = aws_apigatewayv2_api.divi.id
   route_key          = "GET /v1/mercadopago/oauth/callback"
+  target             = "integrations/${aws_apigatewayv2_integration.divi.id}"
+  authorization_type = "NONE"
+}
+
+resource "aws_apigatewayv2_route" "divi_gmail_oauth_callback" {
+  api_id             = aws_apigatewayv2_api.divi.id
+  route_key          = "GET /v1/integrations/gmail/callback"
   target             = "integrations/${aws_apigatewayv2_integration.divi.id}"
   authorization_type = "NONE"
 }
