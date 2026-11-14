@@ -8,6 +8,8 @@ SQL text; it travels as query parameters, and identifiers come from allowlists.
 from __future__ import annotations
 
 import re
+
+import data_docs
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -42,9 +44,11 @@ QUALITY_FILTERS = {
     'no_currency': "(divisa IS NULL OR TRIM(CAST(divisa AS STRING)) = '')",
     'no_category': "(categoria IS NULL OR TRIM(CAST(categoria AS STRING)) = '')",
 }
-TX_SORTABLE = {'fecha', 'monto_total', 'comercio', 'categoria', 'extraido_de'}
+TX_SORTABLE = None  # set below: every column the movements grid shows can be sorted
 TX_COLUMNS = ['fecha', 'comercio', 'categoria', 'producto', 'monto_total', 'divisa', 'extraido_de',
               'metodo_pago', 'tarjeta', 'nro_tarjeta', 'cuotas', 'detalles', 'transaction_key']
+# Every movement column can be sorted, except the card number: ordering by it would reveal its order.
+TX_SORTABLE = set(TX_COLUMNS) - {'nro_tarjeta'}
 
 Param = tuple[str, str, Any]
 
@@ -153,14 +157,15 @@ def catalog_queries(project: str, dataset: str) -> dict[str, str]:
 def build_catalog(object_rows: list[dict[str, Any]], column_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     columns: dict[str, list[dict[str, str]]] = {}
     for row in column_rows:
-        columns.setdefault(str(row['table_name']), []).append(
-            {'name': str(row['column_name']), 'type': str(row['data_type'])})
+        table_name, column = str(row['table_name']), str(row['column_name'])
+        columns.setdefault(table_name, []).append(
+            {'name': column, 'type': str(row['data_type']), 'description': data_docs.describe_column(table_name, column)})
     catalog = []
     for row in object_rows:
         name = str(row['name'])
         is_view = str(row.get('type')) == 'VIEW'
         catalog.append({
-            'name': name, 'type': 'VIEW' if is_view else 'TABLE',
+            'name': name, 'type': 'VIEW' if is_view else 'TABLE', 'description': data_docs.describe_table(name),
             'rows': None if is_view or row.get('rows_n') is None else int(row['rows_n']),
             'size_bytes': None if is_view or row.get('size_bytes') is None else int(row['size_bytes']),
             'modified': jsonable(row.get('modified')), 'columns': columns.get(name, [])})

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import './financial-data.css'
 import { ExportMenu } from './export-menu'
 import { PayslipsTab } from './payslips'
@@ -9,7 +9,7 @@ type Flag = { kind: 'invalid_dates' | 'no_currency'; count: number }
 type SourceEntry = { source: string; label: string; rows: number; totals: { currency: string; amount: number; rows: number }[]; first_date: string | null; last_date: string | null; last_ingested_at: string | null; invalid_dates: number; flags: Flag[] }
 type SourcesReport = { sources: SourceEntry[]; total_rows: number; categories: { name: string; rows: number }[]; dataset: string; view: string }
 type Column = { name: string; type: string }
-type CatalogObject = { name: string; type: 'TABLE' | 'VIEW'; rows: number | null; size_bytes: number | null; modified: string | null; columns: Column[] }
+type CatalogObject = { name: string; type: 'TABLE' | 'VIEW'; description: string; rows: number | null; size_bytes: number | null; modified: string | null; columns: (Column & { description: string })[] }
 type Catalog = { project: string; dataset: string; objects: CatalogObject[] }
 type Grid = { columns: string[]; rows: Record<string, unknown>[]; total?: number | null; limit: number; offset: number; sort?: string; dir?: string }
 type TxResult = Grid & { columns: string[]; total: number | null }
@@ -90,18 +90,20 @@ function FilesTab({ api }: { api: Api }) {
 function CatalogTab({ api }: { api: Api }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [error, setError] = useState('')
-  const [open, setOpen] = useState<string | null>(null)
+  const [open, setOpen] = useState<CatalogObject | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewError, setPreviewError] = useState('')
   const [sort, setSort] = useState('')
   const [dir, setDir] = useState<'asc' | 'desc'>('asc')
   const [offset, setOffset] = useState(0)
+  const panel = useRef<HTMLElement | null>(null)
   const load = () => { setError(''); api('/v1/finance/data/catalog').then(r => setCatalog(r as Catalog)).catch(e => setError(e instanceof Error ? e.message : 'No pudimos cargar el catálogo.')) }
   useEffect(load, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function show(name: string, nextOffset = 0, nextSort = sort, nextDir = dir) {
-    setOpen(name); setPreviewError(''); setOffset(nextOffset); setSort(nextSort); setDir(nextDir)
-    const query = new URLSearchParams({ name, offset: String(nextOffset), limit: '50', dir: nextDir })
+  async function show(object: CatalogObject, nextOffset = 0, nextSort = sort, nextDir = dir) {
+    setOpen(object); setPreviewError(''); setOffset(nextOffset); setSort(nextSort); setDir(nextDir)
+    requestAnimationFrame(() => panel.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    const query = new URLSearchParams({ name: object.name, offset: String(nextOffset), limit: '50', dir: nextDir })
     if (nextSort) query.set('sort', nextSort)
     try { setPreview(await api(`/v1/finance/data/preview?${query}`) as Preview) }
     catch (e) { setPreview(null); setPreviewError(e instanceof Error ? e.message : 'No pudimos leer la tabla.') }
@@ -109,22 +111,28 @@ function CatalogTab({ api }: { api: Api }) {
   if (error) return <ErrorBox message={error} onRetry={load} />
   if (!catalog) return <p className="data-empty">Leyendo el catálogo…</p>
   return <div className="data-stack">
-    <p className="data-note">Proyecto <code>{catalog.project}</code>, dataset <code>{catalog.dataset}</code>. Las vistas no tienen filas propias: leen las tablas base.</p>
-    <div className="data-catalog">{catalog.objects.map(o => <button key={o.name} className={`data-object ${open === o.name ? 'active' : ''}`} onClick={() => show(o.name)}>
+    <p className="data-note">Proyecto <code>{catalog.project}</code>, dataset <code>{catalog.dataset}</code>. Tocá una tabla o vista para ver su esquema y su descripción.</p>
+    <div className="data-catalog">{catalog.objects.map(o => <button key={o.name} className={`data-object ${open?.name === o.name ? 'active' : ''}`} onClick={() => void show(o)}>
       <span className={`data-badge ${o.type.toLowerCase()}`}>{o.type === 'VIEW' ? 'vista' : 'tabla'}</span><strong>{o.name}</strong>
+      <small>{o.description}</small>
       <small>{o.rows === null ? 'sin filas propias' : `${o.rows.toLocaleString('es-AR')} filas`} · {bytes(o.size_bytes)} · {dateTime(o.modified)}</small>
       <small className="data-cols">{o.columns.length} columnas</small></button>)}</div>
-    {open && <section className="data-card">
-      <div className="data-section-head"><h3>{open}</h3><button className="text-link" onClick={() => setOpen(null)}>Cerrar</button></div>
-      {previewError && <ErrorBox message={previewError} onRetry={() => show(open, offset)} />}
+    {open && <section className="data-card" ref={panel}>
+      <div className="data-section-head"><h3>{open.name} <span className={`data-badge ${open.type.toLowerCase()}`}>{open.type === 'VIEW' ? 'vista' : 'tabla'}</span></h3>
+        <button className="text-link" onClick={() => setOpen(null)}>Cerrar</button></div>
+      <p className="alert-note">{open.description}</p>
+      <h4>Esquema</h4>
+      <div className="data-table-wrap"><table className="data-table">
+        <thead><tr><th>Campo</th><th>Tipo</th><th>Descripción</th></tr></thead>
+        <tbody>{open.columns.map(c => <tr key={c.name}><td><code>{c.name}</code></td><td>{c.type}</td><td className="data-wrap">{c.description}</td></tr>)}</tbody></table></div>
+      <h4>Vista previa</h4>
+      {previewError && <ErrorBox message={previewError} onRetry={() => void show(open, offset)} />}
       {preview && !previewError && <>
-        <details className="data-schema"><summary>Columnas ({preview.columns.length})</summary>
-          <ul>{preview.columns.map(c => <li key={c.name}><code>{c.name}</code> <small>{c.type}</small></li>)}</ul></details>
-        <p className="data-note">Vista previa de las primeras filas. Los números de tarjeta y CBU aparecen enmascarados.</p>
+        <p className="data-note">Primeras filas. Los números de tarjeta y CBU aparecen enmascarados.</p>
         <div className="data-table-wrap"><table className="data-table"><thead><tr>{preview.columns.map(c => <th key={c.name}>
-          <button className="data-sort" onClick={() => show(open, 0, c.name, sort === c.name && dir === 'asc' ? 'desc' : 'asc')}>{c.name}{sort === c.name ? (dir === 'asc' ? ' ▲' : ' ▼') : ''}</button></th>)}</tr></thead>
+          <button className="data-sort" onClick={() => void show(open, 0, c.name, sort === c.name && dir === 'asc' ? 'desc' : 'asc')}>{c.name}{sort === c.name ? (dir === 'asc' ? ' ▲' : ' ▼') : ''}</button></th>)}</tr></thead>
           <tbody>{preview.rows.map((row, i) => <tr key={i}>{preview.columns.map(c => <td key={c.name}>{cell(row[c.name])}</td>)}</tr>)}</tbody></table></div>
-        <Pager grid={{ ...preview, total: preview.rows_total, columns: preview.columns.map(c => c.name) }} onPage={next => show(open, next)} />
+        <Pager grid={{ ...preview, total: preview.rows_total, columns: preview.columns.map(c => c.name) }} onPage={next => void show(open, next)} />
       </>}
     </section>}
   </div>
@@ -203,7 +211,7 @@ function TransactionsTab({ api, categories }: { api: Api; categories: string[] }
         load={() => fetchAllMovements(api, applied, sort)} /></div>
       <Pager grid={grid} onPage={next => void run(applied, next, sort)} />
       <div className="data-table-wrap"><table className="data-table"><thead><tr>{grid.columns.map(c => <th key={c}>
-        <button className="data-sort" onClick={() => sortBy(c)} disabled={!['fecha', 'monto_total', 'comercio', 'categoria', 'extraido_de'].includes(c)}>
+        <button className="data-sort" onClick={() => sortBy(c)} disabled={c === 'nro_tarjeta'}>
           {c}{sort.by === c ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}</button></th>)}</tr></thead>
         <tbody>{grid.rows.map((row, i) => <tr key={i}>{grid.columns.map(c => <td key={c}>{c === 'fecha' ? dateTime(row[c]) : c === 'monto_total' ? cash(row[c] as number) : cell(row[c])}</td>)}</tr>)}</tbody></table></div>
       {grid.rows.length === 0 && <p className="data-empty">Ningún movimiento coincide con estos filtros.</p>}
