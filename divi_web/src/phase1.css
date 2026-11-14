@@ -38,3 +38,4 @@
 .data-wrap{white-space:normal!important;min-width:260px;max-width:520px}
 .data-object small:nth-child(2){white-space:normal;color:var(--ink-soft)}
 .data-badge.table{background:var(--moss-deep)}
+.data-current{color:var(--mint)!important;font-weight:600}

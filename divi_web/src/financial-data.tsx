@@ -6,7 +6,7 @@ import { PayslipsTab } from './payslips'
 type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>
 type Tab = 'sources' | 'files' | 'catalog' | 'transactions' | 'payslips'
 type Flag = { kind: 'invalid_dates' | 'no_currency'; count: number }
-type SourceEntry = { source: string; label: string; rows: number; totals: { currency: string; amount: number; rows: number }[]; first_date: string | null; last_date: string | null; last_ingested_at: string | null; invalid_dates: number; flags: Flag[] }
+type SourceEntry = { source: string; label: string; rows: number; totals: { currency: string; amount: number; rows: number }[]; current?: { currency: string; rows: number; amount: number }[]; first_date: string | null; last_date: string | null; last_ingested_at: string | null; invalid_dates: number; flags: Flag[] }
 type SourcesReport = { sources: SourceEntry[]; total_rows: number; categories: { name: string; rows: number }[]; dataset: string; view: string }
 type Column = { name: string; type: string }
 type CatalogObject = { name: string; type: 'TABLE' | 'VIEW'; description: string; rows: number | null; size_bytes: number | null; modified: string | null; columns: (Column & { description: string })[] }
@@ -59,7 +59,7 @@ function SourcesTab({ api }: { api: Api }) {
       <dl><div><dt>Filas</dt><dd>{s.rows.toLocaleString('es-AR')}</dd></div>
         <div><dt>Desde</dt><dd>{dateOf(s.first_date)}</dd></div><div><dt>Hasta</dt><dd>{dateOf(s.last_date)}</dd></div>
         <div><dt>Última carga</dt><dd>{dateTime(s.last_ingested_at)}</dd></div></dl>
-      <ul className="data-totals">{s.totals.map(t => <li key={t.currency}><span>{t.currency}</span><strong>{t.currency === 'ARS' ? cash(t.amount) : t.amount.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</strong><small>{t.rows} filas</small></li>)}</ul>
+      <ul className="data-totals">{s.totals.map(t => { const now = s.current?.find(c => c.currency === t.currency); return <li key={t.currency}><span>{t.currency}</span><strong>{t.currency === 'ARS' ? cash(t.amount) : t.amount.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</strong><small>{t.rows} filas en total</small><small className="data-current">Mes actual: {now ? `${now.currency === 'ARS' ? cash(now.amount) : now.amount.toLocaleString('es-AR', { maximumFractionDigits: 2 })} · ${now.rows} filas` : 'sin movimientos'}</small></li> })}</ul>
       {s.flags.map(f => <p className="data-flag" key={f.kind}>⚠ {f.count.toLocaleString('es-AR')} {FLAG_TEXT[f.kind]}</p>)}
     </article>)}</div>
     <section className="data-card"><h3>Categorías en el historial</h3>

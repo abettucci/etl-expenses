@@ -67,6 +67,11 @@ def _qualified(project: str, dataset: str, table: str) -> str:
 
 # ---------------------------------------------------------------- sources
 
+# Current calendar month in Argentina, for the "mes actual" figures per source.
+_CURRENT_MONTH = ("DATE(fecha, 'America/Argentina/Buenos_Aires') >= "
+                  "DATE_TRUNC(CURRENT_DATE('America/Argentina/Buenos_Aires'), MONTH)")
+
+
 def sources_query(project: str, dataset: str, view: str) -> str:
     return f"""
     SELECT
@@ -77,7 +82,9 @@ def sources_query(project: str, dataset: str, view: str) -> str:
       MIN(IF({_VALID_DATE}, fecha, NULL)) AS first_date,
       MAX(IF({_VALID_DATE}, fecha, NULL)) AS last_date,
       COUNTIF(fecha IS NULL OR NOT {_VALID_DATE}) AS invalid_dates,
-      MAX(extraido_en) AS last_ingested_at
+      MAX(extraido_en) AS last_ingested_at,
+      COUNTIF({_CURRENT_MONTH}) AS current_rows,
+      SUM(IF({_CURRENT_MONTH}, SAFE_CAST(monto_total AS FLOAT64), NULL)) AS current_total
     FROM {_qualified(project, dataset, view)}
     GROUP BY source, currency
     ORDER BY source, currency
@@ -106,6 +113,9 @@ def summarize_sources(rows: list[dict[str, Any]]) -> dict[str, Any]:
         entry['invalid_dates'] += int(row.get('invalid_dates') or 0)
         currency = str(row.get('currency') or '(sin divisa)')
         entry['totals'].append({'currency': currency, 'amount': round(float(row.get('total') or 0), 2), 'rows': count})
+        entry.setdefault('current', []).append({
+            'currency': currency, 'rows': int(row.get('current_rows') or 0),
+            'amount': round(float(row.get('current_total') or 0), 2)})
         for key, pick in (('first_date', min), ('last_date', max), ('last_ingested_at', max)):
             value = jsonable(row.get(key))
             if value:
