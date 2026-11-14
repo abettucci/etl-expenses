@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './financial-insights.css'
+import { ExportMenu } from './export-menu'
 
 type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>
 type Movement = { name: string; current: number; previous: number; change_abs: number; change_pct: number | null; share: number; baseline: number; vs_baseline_pct: number | null }
@@ -18,6 +19,13 @@ const cash = (value: number) => money.format(value)
 const pct = (value: number | null, signed = true) => value === null ? 'sin base' : `${signed && value > 0 ? '+' : ''}${value.toLocaleString('es-AR', { maximumFractionDigits: 1 })}%`
 const shortMonth = (month: string) => new Date(`${month}-01T12:00:00`).toLocaleDateString('es-AR', { month: 'short' }).replace('.', '')
 const longMonth = (month: string) => new Date(`${month}-01T12:00:00`).toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })
+
+const CATEGORY_EXPORT_COLUMNS = [
+  { key: 'name', label: 'Categoría' }, { key: 'current', label: 'Este mes' }, { key: 'previous', label: 'Mes anterior' },
+  { key: 'change_abs', label: 'Variación ARS' }, { key: 'change_pct', label: 'Variación %' },
+  { key: 'baseline', label: 'Promedio 3 meses' }, { key: 'vs_baseline_pct', label: 'Vs. promedio %' },
+  { key: 'share', label: 'Peso (fracción)' },
+]
 
 export function isInsightsReport(value: unknown): value is InsightsReport {
   const report = value as InsightsReport
@@ -118,6 +126,7 @@ export function FinancialInsights({ authenticated, api, onLogin, onConnections }
       <section className="insight-card"><h2>Gasto por mes</h2><MonthlyChart months={report.months} /><small>* Mes en curso, todavía incompleto.</small></section>
 
       <section className="insight-card"><h2>Categorías de {longMonth(latest.month)}</h2>
+        <ExportMenu title={`Categorías ${longMonth(latest.month)}`} filename={`categorias-${latest.month}`} columns={CATEGORY_EXPORT_COLUMNS} rows={report.categories} />
         <div className="insight-table-wrap"><table className="insight-table"><caption className="sr-only">Gasto y variación por categoría</caption>
           <thead><tr><th>Categoría</th><th>Este mes</th><th>Mes anterior</th><th>Variación</th><th>Contra tu promedio</th><th>Peso</th></tr></thead>
           <tbody>{report.categories.map(c => <tr key={c.name}><td>{c.name}</td><td>{cash(c.current)}</td><td>{cash(c.previous)}</td>

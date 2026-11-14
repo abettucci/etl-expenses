@@ -12,17 +12,20 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
+    "jspdf": "^2.5.2",
+    "jspdf-autotable": "^3.8.4",
+    "lucide-react": "0.462.0",
     "react": "latest",
     "react-dom": "latest",
-    "lucide-react": "0.462.0"
+    "typescript": "latest",
+    "vite": "latest",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "tailwindcss": "3.4.17",
-    "postcss": "8.5.6"
+    "postcss": "8.5.6",
+    "tailwindcss": "3.4.17"
   }
 }

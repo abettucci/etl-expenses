@@ -4006,8 +4006,26 @@ def _format_historical_variation_alert(row) -> str:
     )
 
 
+def _alert_channel_enabled(channel: str) -> bool:
+    """Owner switch saved by the web settings. Missing or unreadable means on, as before the switch existed."""
+    table_name = os.environ.get("FINANCE_LINK_TABLE", "").strip()
+    if not table_name:
+        return True
+    try:
+        item = boto3.resource("dynamodb").Table(table_name).get_item(
+            Key={"pk": "NOTIFICATIONS#PRIMARY", "sk": "PREFS"}, ConsistentRead=True).get("Item") or {}
+    except Exception as exc:
+        print(f"alert_channel_read_failed: {type(exc).__name__}")
+        return True
+    return item.get(f"{channel}_enabled") is not False
+
+
 def _deliver_variation_alert(key: str, message: str) -> bool:
     """Deliver one variation alert through Telegram, idempotently."""
+    if not _alert_channel_enabled("telegram"):
+        # Not reserved, so the alert is still delivered if the channel is switched back on.
+        print("variation_alert_telegram_skipped reason=channel_disabled")
+        return False
     delivery = _reserve_variation_alert(key)
     if delivery["telegram_sent"]:
         print("variation_alert_telegram_skipped reason=already_delivered")

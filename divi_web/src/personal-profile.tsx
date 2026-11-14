@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import './personal-workspace.css'
 import { FinanceSetup, TelegramLink } from './connection-setup'
 import { ProviderConnections } from './provider-connections'
+import { AlertSettingsPanel } from './alert-settings'
 type Api = (path: string, method?: string, body?: unknown) => Promise<any>
 type Overview = { profile: { display_name: string; email: string }; finance_linked: boolean; sources: { id: string; name: string; status: string; detail: string }[]; telegram: { finance_url: string | null; groups_url: string | null; personal_access: boolean; detail: string } }
 const safeBot = (url: string | null) => url && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(url) ? url : null
@@ -36,6 +37,7 @@ export function PersonalProfile({ section = 'account', authenticated, api, onLog
   if (!authenticated) return <section className="workspace-card"><h1>Tu espacio personal</h1><p>Ingresá para ver tu dashboard, tus conexiones y el asistente.</p><button className="primary" onClick={onLogin}>Ingresar</button></section>
   return <div className="personal-workspace"><header className="workspace-heading"><div><span className="kicker">TU ESPACIO · CONFIGURACIÓN</span><h1>{section === 'account' ? 'Mi perfil' : 'Conexiones'}</h1><p>{section === 'account' ? 'Tus datos de cuenta. El resumen de tus gastos está en Inicio y Mis finanzas.' : 'Revisá cómo llegan tus gastos y cómo acceder a los bots de Telegram.'}</p></div><button className="outline" onClick={onAssistant}>✦ Preguntar al asistente</button></header>
     {error && <div role="alert" className="balance-error">{error}<button onClick={() => setRetry(value => value + 1)}>Reintentar</button></div>}{loading && <p role="status">Cargando tu perfil…</p>}{notice && <p role="status">{notice}</p>}
+    {section === 'account' && <AlertSettingsPanel api={api} />}
     {data && <>{section === 'account' ? <section className="workspace-account"><form onSubmit={event => void save(event)}><label>Nombre<input value={name} onChange={event => setName(event.target.value)} maxLength={80} required /></label><button className="outline" disabled={saving}>{saving ? 'Guardando…' : 'Guardar nombre'}</button></form><div><small>Correo de tu cuenta</small><b>{data.profile.email}</b></div><button className="outline" onClick={onGroups}>Mis grupos →</button></section> : <>
       <nav className="workspace-tabs" aria-label="Conexiones">{([['connections', 'Fuentes y carga'], ['telegram', 'Telegram y alertas']] as const).map(([key, label]) => <button key={key} aria-current={tab === key ? 'page' : undefined} onClick={() => setTab(key)}>{label}</button>)}</nav>
       {!data.finance_linked && <aside className="workspace-hint"><b>Tu historial financiero todavía no está vinculado.</b> Conectalo con el bot financiero que ya usás. <button onClick={() => { setTab('connections'); requestAnimationFrame(() => document.getElementById('vincular-historial')?.scrollIntoView({ behavior: 'smooth' })) }}>Vincular historial →</button></aside>}

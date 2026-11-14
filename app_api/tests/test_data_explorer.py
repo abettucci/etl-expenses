@@ -78,10 +78,10 @@ class TransactionQueryTests(unittest.TestCase):
                 dx.parse_transaction_params(bad)
 
     def test_limit_and_offset_are_capped(self):
-        for bad in ({'limit': '0'}, {'limit': '201'}, {'limit': 'abc'}, {'offset': '-1'}, {'offset': '100001'}):
+        for bad in ({'limit': '0'}, {'limit': '5001'}, {'limit': 'abc'}, {'offset': '-1'}, {'offset': '100001'}):
             with self.assertRaises(ValueError, msg=str(bad)):
                 dx.parse_transaction_params(bad)
-        self.assertEqual(dx.parse_transaction_params({'limit': '200'})['limit'], 200)
+        self.assertEqual(dx.parse_transaction_params({'limit': '5000'})['limit'], 5000)
 
     def test_only_allowlisted_sort_columns_reach_the_sql(self):
         sql, _ = self.build(sort='monto_total', dir='asc')

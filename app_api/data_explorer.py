@@ -18,6 +18,7 @@ _FREE_TEXT = re.compile(r"^[\w .,()\-/&*+#@%':]{0,80}$", re.UNICODE)
 _CODE = re.compile(r'^[A-Za-z0-9_ ()\-]{1,60}$')
 
 MAX_LIMIT = 200
+MAX_EXPORT_LIMIT = 5000  # full downloads of the movements grid
 DEFAULT_LIMIT = 50
 MAX_OFFSET = 100_000
 FACET_LIMIT = 100
@@ -229,7 +230,7 @@ def parse_transaction_params(params: dict[str, Any]) -> dict[str, Any]:
     if direction not in ('asc', 'desc'):
         raise ValueError('"dir" debe ser asc o desc')
     parsed['sort'], parsed['dir'] = sort, direction
-    parsed['limit'] = _int(params, 'limit', DEFAULT_LIMIT, 1, MAX_LIMIT)
+    parsed['limit'] = _int(params, 'limit', DEFAULT_LIMIT, 1, MAX_EXPORT_LIMIT)
     parsed['offset'] = _int(params, 'offset', 0, 0, MAX_OFFSET)
     return parsed
 

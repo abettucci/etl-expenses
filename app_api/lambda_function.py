@@ -35,6 +35,7 @@ from personal_workspace import overview as workspace_overview, question_body
 import user_integrations
 from insights import build_insights
 import data_explorer
+import alert_settings
 from merchant_mappings import (
     FLOW_LABELS,
     SUPPORTED_FLOWS,
@@ -358,7 +359,66 @@ def finance_insights(identity: dict[str, str]) -> dict[str, Any]:
     return result
 
 
+ALERT_VARIATION_PERCENT_DEFAULT = float(os.environ.get("ALERT_VARIATION_PERCENT", "10"))
+ALERT_VARIATION_ARS_DEFAULT = float(os.environ.get("ALERT_VARIATION_ARS", "5000"))
+
+
 DATA_MAX_BYTES = 200 * 1024 * 1024  # per-query billing cap for the data explorer
+
+
+def alert_settings_get(identity: dict[str, str]) -> dict[str, Any]:
+    client, bigquery = _owner_bigquery(identity)
+    try:
+        rows = _run_bigquery(client, bigquery, alert_settings.read_thresholds_sql(
+            FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET))
+    except Exception as exc:
+        print(f"alert_settings_read_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos leer los umbrales de alerta") from exc
+    row = rows[0] if rows else None
+    try:
+        prefs = table.get_item(Key={"pk": alert_settings.PREFS_PK, "sk": alert_settings.PREFS_SK}, ConsistentRead=True).get("Item")
+    except Exception as exc:
+        print(f"alert_channels_read_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos leer los canales de alerta") from exc
+    thresholds = alert_settings.thresholds_from_row(row, (ALERT_VARIATION_PERCENT_DEFAULT, ALERT_VARIATION_ARS_DEFAULT))
+    return {
+        "thresholds": thresholds,
+        "updated_at": jsonable_value(row.get("updated_at")) if row else None,
+        "updated_by": row.get("updated_by") if row else None,
+        "channels": alert_settings.channels_from_item(prefs),
+        "whatsapp_sender_available": False,
+    }
+
+
+def alert_settings_put(identity: dict[str, str], payload: Any) -> dict[str, Any]:
+    try:
+        update = alert_settings.validate_update(payload)
+    except ValueError as exc:
+        raise ApiError(400, str(exc)) from exc
+    client, bigquery = _owner_bigquery(identity)
+    try:
+        _run_bigquery(client, bigquery, alert_settings.upsert_thresholds_sql(FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET), [
+            ("percent", "FLOAT64", update["percent_threshold"]),
+            ("absolute", "FLOAT64", update["absolute_threshold"]),
+            ("updated_by", "STRING", f"web:{identity['user_id']}"),
+        ])
+        table.put_item(Item={
+            "pk": alert_settings.PREFS_PK, "sk": alert_settings.PREFS_SK,
+            "telegram_enabled": update["channels"]["telegram"],
+            "whatsapp_enabled": update["channels"]["whatsapp"],
+            "updated_by": identity["user_id"], "updated_at": now(),
+        })
+    except ApiError:
+        raise
+    except Exception as exc:
+        print(f"alert_settings_save_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos guardar la configuración de alertas") from exc
+    put_audit(identity["user_id"], "alerts.settings.updated", "variation")
+    return alert_settings_get(identity)
+
+
+def jsonable_value(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
 
 
 def _owner_bigquery(identity: dict[str, str]):
@@ -1654,6 +1714,10 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_data_catalog(identity))
     if path == "/v1/finance/data/transactions" and method == "GET":
         return response(200, finance_data_transactions(identity, event.get("queryStringParameters") or {}))
+    if path == "/v1/alerts/settings" and method == "GET":
+        return response(200, alert_settings_get(identity))
+    if path == "/v1/alerts/settings" and method == "PUT":
+        return response(200, alert_settings_put(identity, payload))
     if path == "/v1/finance/data/preview" and method == "GET":
         return response(200, finance_data_preview(identity, event.get("queryStringParameters") or {}))
     if path == '/v1/finance/balance' and method == 'GET':
