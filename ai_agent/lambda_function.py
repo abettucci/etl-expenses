@@ -1059,9 +1059,6 @@ def _claim_finance_link(event: dict, message: dict, code: str) -> str:
         return 'Este historial ya tiene una configuración de acceso. No se pudo vincular.'
     if not re.fullmatch(r'[A-F0-9]{48}', code):
         return 'El código no es válido. Generá uno nuevo desde Conexiones.'
-    from boto3.dynamodb.types import TypeSerializer
-    serializer = TypeSerializer()
-    marshal = lambda value: serializer.serialize(value)['M']
     key = {'pk': 'FINANCE_LINK#' + hashlib.sha256(code.encode('ascii')).hexdigest(), 'sk': 'META'}
     dynamo = boto3.resource('dynamodb')
     item = dynamo.Table(table_name).get_item(Key=key, ConsistentRead=True).get('Item') or {}
@@ -1070,15 +1067,18 @@ def _claim_finance_link(event: dict, message: dict, code: str) -> str:
         return 'El código venció o ya fue utilizado. Generá uno nuevo desde Conexiones.'
     try:
         dynamo.meta.client.transact_write_items(TransactItems=[
-            {'Put': {'TableName': table_name, 'Item': marshal({'pk': 'FINANCE_SOURCE#PRIMARY', 'sk': 'OWNER', 'user_id': owner}),
+            {'Put': {'TableName': table_name, 'Item': {'pk': 'FINANCE_SOURCE#PRIMARY', 'sk': 'OWNER', 'user_id': owner},
                      'ConditionExpression': 'attribute_not_exists(pk) OR user_id = :owner',
-                     'ExpressionAttributeValues': marshal({':owner': owner})}},
-            {'Delete': {'TableName': table_name, 'Key': marshal(key),
+                     'ExpressionAttributeValues': {':owner': owner}}},
+            {'Delete': {'TableName': table_name, 'Key': key,
                         'ConditionExpression': 'user_id = :owner AND #ttl > :now',
                         'ExpressionAttributeNames': {'#ttl': 'ttl'},
-                        'ExpressionAttributeValues': marshal({':owner': owner, ':now': int(time.time())})}},
+                        'ExpressionAttributeValues': {':owner': owner, ':now': int(time.time())}}},
         ])
-    except Exception:
+    except Exception as exc:
+        # The resource client already serializes native Python values. Passing
+        # pre-typed values nests them as maps and DynamoDB rejects the request.
+        print(f'finance_link_claim_failed: {type(exc).__name__}')
         return 'No se pudo completar la vinculación. Revisá que el código siga vigente y que el historial no esté vinculado a otra cuenta.'
     return '✅ Historial vinculado. Volvé a Conexiones y actualizá el estado.'
 
