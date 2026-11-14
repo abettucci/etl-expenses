@@ -33,6 +33,7 @@ from finance_balance import build_balance, build_gmail_balance, save_income
 from finance_balance import require_finance_owner
 from personal_workspace import overview as workspace_overview, question_body
 import user_integrations
+from insights import build_insights
 from merchant_mappings import (
     FLOW_LABELS,
     SUPPORTED_FLOWS,
@@ -289,6 +290,70 @@ def finance_forecast(identity: dict[str, str]) -> dict[str, Any]:
     result["mode"] = "live"
     result["data_source"] = "etl_aggregated_read_only"
     put_audit(identity["user_id"], "finance.forecast.read", result["period"]["forecast_month"])
+    return result
+
+
+def _monthly_expense_rows(client, bigquery, start: date, end: date) -> list[dict[str, Any]]:
+    """Monthly expenses by merchant and category, read-only, from the ETL view."""
+    gastos_schema = {
+        field.name.lower()
+        for field in client.get_table(
+            f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_GASTOS_VIEW}"
+        ).schema
+    }
+    required_columns = {"fecha", "comercio", "categoria", "monto_total", "divisa", "extraido_de"}
+    if not required_columns.issubset(gastos_schema):
+        raise ValueError("gastos view lacks insight columns")
+    try:
+        mapping_schema = {
+            field.name.lower()
+            for field in client.get_table(
+                f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_MAPPING_TABLE}"
+            ).schema
+        }
+    except Exception as exc:
+        print(f"insights_mapping_schema_unavailable: {type(exc).__name__}")
+        mapping_schema = set()
+    use_mapping = {"flow", "comercio_raw", "comercio_depurado", "categoria", "activo"}.issubset(mapping_schema)
+    query = monthly_expenses_query(
+        project_id=FORECAST_GCP_PROJECT_ID,
+        dataset=FORECAST_BQ_DATASET,
+        gastos_view=FORECAST_GASTOS_VIEW,
+        mapping_table=FORECAST_MAPPING_TABLE,
+        has_monto_ars="monto_ars" in gastos_schema,
+        use_mapping=use_mapping,
+    )
+    config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("start_date", "DATE", start),
+        bigquery.ScalarQueryParameter("end_date", "DATE", end),
+    ], use_query_cache=True)
+    return [dict(row.items()) for row in client.query(query, job_config=config).result()]
+
+
+def finance_insights(identity: dict[str, str]) -> dict[str, Any]:
+    """Spending analysis and month-over-month variations for the linked owner."""
+    enabled, owner_sub = finance_owner_config()
+    if not enabled or not owner_sub:
+        raise ApiError(503, "El análisis financiero todavía no está conectado")
+    if not hmac.compare_digest(identity["user_id"], owner_sub):
+        raise ApiError(403, "Tu cuenta todavía no tiene una fuente financiera vinculada")
+
+    client, bigquery = _forecast_bigquery_client()
+    today = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+    start = date(today.year, today.month, 1)
+    for _ in range(7):
+        start = date(start.year - (start.month == 1), 12 if start.month == 1 else start.month - 1, 1)
+    try:
+        rows = _monthly_expense_rows(client, bigquery, start, today)
+    except ApiError:
+        raise
+    except Exception as exc:
+        print(f"insights_query_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos calcular el análisis de gastos ahora") from exc
+
+    result = build_insights(rows, as_of=today)
+    result["data_source"] = "etl_aggregated_read_only"
+    put_audit(identity["user_id"], "finance.insights.read", result["as_of"])
     return result
 
 
@@ -1471,6 +1536,8 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_question(identity, payload))
     if path == "/v1/finance/forecast" and method == "GET":
         return response(200, finance_forecast(identity))
+    if path == "/v1/finance/insights" and method == "GET":
+        return response(200, finance_insights(identity))
     if path == '/v1/finance/balance' and method == 'GET':
         return response(200, finance_balance(identity))
     if len(segments) == 4 and segments[:3] == ['v1', 'finance', 'income'] and method == 'PUT':

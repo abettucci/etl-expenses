@@ -1,7 +1,7 @@
 import { useRef, type MouseEvent } from 'react'
 import { House, ChartNoAxesCombined, Users, Plug, Sparkles } from 'lucide-react'
 import './product-navigation.css'
-type Destination = 'welcome' | 'etl' | 'home' | 'balance' | 'profile' | 'groups' | 'connections' | 'settings' | 'splitter'
+type Destination = 'welcome' | 'etl' | 'home' | 'insights' | 'balance' | 'profile' | 'groups' | 'connections' | 'settings' | 'splitter'
 export function ProductNavigation({ area, authenticated, onNavigate, onLogin, onLogout, onAssistant }: {
   area: string; authenticated: boolean; onNavigate: (destination: Destination) => void; onLogin: () => void; onLogout: () => void; onAssistant: () => void
 }) {
@@ -13,7 +13,7 @@ export function ProductNavigation({ area, authenticated, onNavigate, onLogin, on
   }
   const primary = [
     { to: 'home', href: '/inicio', label: 'Inicio', icon: House, active: area === 'home' },
-    { to: 'balance', href: '/finanzas/balance', label: 'Mis finanzas', icon: ChartNoAxesCombined, active: area === 'balance' || area === 'personal' },
+    { to: 'insights', href: '/finanzas/analisis', label: 'Mis finanzas', icon: ChartNoAxesCombined, active: area === 'balance' || area === 'personal' },
     { to: 'groups', href: '/grupos', label: 'Grupos', icon: Users, active: area === 'groups' || area === 'shared' },
   ] as const
   return <header className={`product-nav ${authenticated ? 'workspace-nav' : 'public-nav'}`}>
