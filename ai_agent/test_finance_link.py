@@ -36,6 +36,25 @@ class FinanceLinkTests(unittest.TestCase):
         self.assertIn('attribute_not_exists(pk)', ops[0]['Put']['ConditionExpression'])
         self.assertIn('#ttl > :now', ops[1]['Delete']['ConditionExpression'])
 
+    def test_transaction_sends_native_python_values_not_pre_typed_attributes(self):
+        # boto3's resource client serializes values itself; pre-typed values such
+        # as {'S': ...} are nested as maps and DynamoDB rejects the transaction.
+        self.agent._claim_finance_link(self.event, self.message, self.code)
+        ops = self.dynamo.meta.client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertEqual(ops[0]['Put']['Item']['user_id'], 'owner')
+        self.assertEqual(ops[0]['Put']['ExpressionAttributeValues'], {':owner': 'owner'})
+        self.assertEqual(ops[1]['Delete']['Key']['sk'], 'META')
+        self.assertIsInstance(ops[1]['Delete']['ExpressionAttributeValues'][':now'], int)
+
+    def test_failed_transaction_is_reported_and_logs_only_the_error_type(self):
+        self.dynamo.meta.client.transact_write_items.side_effect = RuntimeError('detail with owner id')
+        with patch('builtins.print') as log:
+            reply = self.agent._claim_finance_link(self.event, self.message, self.code)
+        self.assertIn('No se pudo completar', reply)
+        logged = ' '.join(str(call) for call in log.call_args_list)
+        self.assertIn('finance_link_claim_failed: RuntimeError', logged)
+        self.assertNotIn('owner id', logged)
+
     def test_unauthorized_or_expired_code_never_grants_access(self):
         for msg in [{'chat': {'id': 123, 'type': 'group'}, 'from': {'id': 123}},
                     {'chat': {'id': 123, 'type': 'private'}, 'from': {'id': 456}}]:
