@@ -543,9 +543,15 @@ def finance_comparisons(identity: dict[str, str]) -> dict[str, Any]:
             field.name.lower()
             for field in client.get_table(f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_GASTOS_VIEW}").schema
         }
+        mapping_schema = {
+            field.name.lower()
+            for field in client.get_table(f"{FORECAST_GCP_PROJECT_ID}.{FORECAST_BQ_DATASET}.{FORECAST_MAPPING_TABLE}").schema
+        }
         payment_sql = payment_methods_query(
             project_id=FORECAST_GCP_PROJECT_ID, dataset=FORECAST_BQ_DATASET,
-            gastos_view=FORECAST_GASTOS_VIEW, has_monto_ars="monto_ars" in gastos_schema)
+            gastos_view=FORECAST_GASTOS_VIEW, mapping_table=FORECAST_MAPPING_TABLE,
+            has_monto_ars="monto_ars" in gastos_schema,
+            use_mapping={"flow", "comercio_raw", "comercio_depurado", "categoria", "activo"}.issubset(mapping_schema))
         payment_rows = _run_bigquery(client, bigquery, payment_sql, [
             ("start_date", "DATE", start), ("end_date", "DATE", today)])
     except ApiError:
