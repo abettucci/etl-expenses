@@ -280,14 +280,11 @@ resource "aws_secretsmanager_secret_version" "divi_group_bot" {
   })
 }
 
-resource "aws_secretsmanager_secret" "divi_gmail_oauth" {
-  name        = "divi/gmail-oauth"
+resource "aws_ssm_parameter" "divi_gmail_oauth" {
+  name        = "/divi/gmail-oauth"
   description = "OAuth client used for per-user Gmail connections"
-}
-
-resource "aws_secretsmanager_secret_version" "divi_gmail_oauth" {
-  secret_id = aws_secretsmanager_secret.divi_gmail_oauth.id
-  secret_string = jsonencode({
+  type        = "SecureString"
+  value = jsonencode({
     client_id     = var.divi_gmail_oauth_client_id
     client_secret = var.divi_gmail_oauth_client_secret
   })
@@ -380,14 +377,22 @@ resource "aws_iam_role_policy" "divi_api" {
         Resource = [
           aws_secretsmanager_secret.divi_mercadopago.arn,
           aws_secretsmanager_secret.divi_group_bot.arn,
-          aws_secretsmanager_secret.divi_gmail_oauth.arn,
           "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:gcp_sa_api_credentials-*"
         ]
       },
       {
         Effect   = "Allow"
-        Action   = ["secretsmanager:CreateSecret", "secretsmanager:GetSecretValue", "secretsmanager:DeleteSecret"]
-        Resource = "arn:aws:secretsmanager:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:secret:divi/user-connections/*"
+        Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
+        Resource = [
+          "arn:aws:ssm:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:parameter/divi/user-connections/*",
+          "arn:aws:ssm:${var.AWS_REGION}:${var.AWS_ACCOUNT_ID}:parameter/divi/gmail-oauth",
+        ]
+      },
+      {
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt", "kms:Encrypt"]
+        Resource  = "*"
+        Condition = { StringEquals = { "kms:ViaService" = "ssm.${var.AWS_REGION}.amazonaws.com" } }
       },
       {
         Effect   = "Allow"
@@ -424,7 +429,7 @@ resource "aws_lambda_function" "divi_app_api" {
       GCP_PROJECT_ID                 = var.GCP_PROJECT_ID
       BQ_DATASET_PROD                = "PRD"
       BQ_LOCATION                    = "US"
-      GMAIL_OAUTH_SECRET_ARN         = aws_secretsmanager_secret.divi_gmail_oauth.arn
+      GMAIL_OAUTH_SECRET_ARN         = aws_ssm_parameter.divi_gmail_oauth.name
       GMAIL_OAUTH_CALLBACK_URL       = "${aws_apigatewayv2_api.divi.api_endpoint}/v1/integrations/gmail/callback"
       BINANCE_REGIONAL_FUNCTION_ARN  = var.divi_binance_regional_function_arn
       FINANCE_MERCHANT_MAPPING_ENABLED       = tostring(var.divi_finance_forecast_enabled)

@@ -68,29 +68,29 @@ def _connection(table, user_id, provider):
     return item if isinstance(item, dict) else {}
 
 
-def _secret_client():
-    return boto3.client('secretsmanager')
+def _ssm_client():
+    return boto3.client('ssm')
 
 
 def _new_secret(provider, data):
-    name = f'divi/user-connections/{provider}/{secrets.token_hex(24)}'
-    return _secret_client().create_secret(Name=name, SecretString=json.dumps(data), Description='Split user connection')['ARN']
+    # SSM Parameter Store SecureString (standard tier, no monthly fee per secret).
+    name = f'/divi/user-connections/{provider}/{secrets.token_hex(24)}'
+    _ssm_client().put_parameter(Name=name, Value=json.dumps(data), Type='SecureString',
+                                Overwrite=False, Description='Split user connection')
+    return name
 
 
-def _delete_secret(arn):
-    if arn:
+def _delete_secret(name):
+    if name:
         try:
-            _secret_client().delete_secret(SecretId=arn, RecoveryWindowInDays=7)
+            _ssm_client().delete_parameter(Name=name)
         except ClientError as exc:
-            error = exc.response.get('Error', {})
-            if error.get('Code') == 'InvalidRequestException' and 'marked for deletion' in error.get('Message', '').lower():
-                return
-            if error.get('Code') != 'ResourceNotFoundException':
+            if exc.response.get('Error', {}).get('Code') != 'ParameterNotFound':
                 raise
 
 
-def _read_secret(arn):
-    return json.loads(_secret_client().get_secret_value(SecretId=arn)['SecretString'])
+def _read_secret(name):
+    return json.loads(_ssm_client().get_parameter(Name=name, WithDecryption=True)['Parameter']['Value'])
 
 
 def _config():
