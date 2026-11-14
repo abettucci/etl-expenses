@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import './financial-insights.css'
 import { ExportMenu } from './export-menu'
+import { FinancialComparisons } from './financial-comparisons'
 
 type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>
 type Movement = { name: string; current: number; previous: number; change_abs: number; change_pct: number | null; share: number; baseline: number; vs_baseline_pct: number | null }
@@ -144,5 +145,6 @@ export function FinancialInsights({ authenticated, api, onLogin, onConnections }
         <ul className="insight-trends">{Object.entries(report.category_trend).map(([name, values]) => <li key={name}><span>{name}</span><Sparkline values={values} /><strong>{cash(values[values.length - 1] ?? 0)}</strong></li>)}</ul>
       </section>}
     </>}
+    <FinancialComparisons api={api} />
   </section>
 }

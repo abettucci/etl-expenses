@@ -16,3 +16,5 @@
 .alert-warn{color:var(--coral-deep);font-size:.82rem}
 .alert-message{color:var(--mint);margin:0;font-size:.9rem}
 .balance-error{color:var(--danger)}
+
+.active-chip{background:var(--moss-deep)!important;border-color:var(--mint)!important;color:var(--ink)!important}

@@ -32,6 +32,47 @@ def assert_read_only_query(query: str) -> None:
         raise ValueError("forecast queries must be predefined read-only SELECT/WITH statements")
 
 
+def payment_methods_query(
+    *,
+    project_id: str,
+    dataset: str,
+    gastos_view: str,
+    has_monto_ars: bool,
+) -> str:
+    """Monthly ARS spending by payment method. Same date and amount rules as monthly_expenses_query."""
+    project_id = _safe_identifier(project_id, "project", project=True)
+    dataset = _safe_identifier(dataset, "dataset")
+    gastos_view = _safe_identifier(gastos_view, "gastos view")
+    gastos_fqn = f"`{project_id}.{dataset}.{gastos_view}`"
+    expense_date = """
+      COALESCE(
+        SAFE_CAST(NULLIF(TRIM(CAST(g.fecha AS STRING)), '') AS DATE),
+        DATE(SAFE_CAST(NULLIF(TRIM(CAST(g.fecha AS STRING)), '') AS TIMESTAMP)),
+        SAFE.PARSE_DATE('%d/%m/%Y', NULLIF(TRIM(CAST(g.fecha AS STRING)), ''))
+      )
+    """
+    amount = (
+        "COALESCE(SAFE_CAST(g.monto_ars AS FLOAT64), "
+        "IF(UPPER(TRIM(CAST(g.divisa AS STRING))) = 'ARS', SAFE_CAST(g.monto_total AS FLOAT64), NULL))"
+        if has_monto_ars
+        else "IF(UPPER(TRIM(CAST(g.divisa AS STRING))) = 'ARS', SAFE_CAST(g.monto_total AS FLOAT64), NULL)"
+    )
+    method = "COALESCE(NULLIF(TRIM(CAST(g.metodo_pago AS STRING)), ''), 'Sin dato')"
+    query = f"""
+    WITH normalized AS (
+      SELECT {expense_date} AS expense_date, {method} AS method, {amount} AS amount
+      FROM {gastos_fqn} AS g
+    )
+    SELECT DATE_TRUNC(expense_date, MONTH) AS month_start, method, SUM(amount) AS amount
+    FROM normalized
+    WHERE expense_date BETWEEN @start_date AND @end_date AND amount > 0
+    GROUP BY month_start, method
+    ORDER BY month_start ASC
+    """
+    assert_read_only_query(query)
+    return query
+
+
 def monthly_expenses_query(
     *,
     project_id: str,
