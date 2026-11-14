@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import './personal-workspace.css'
 import { FinanceSetup, TelegramLink } from './connection-setup'
+import { ProviderConnections } from './provider-connections'
 type Api = (path: string, method?: string, body?: unknown) => Promise<any>
 type Overview = { profile: { display_name: string; email: string }; finance_linked: boolean; sources: { id: string; name: string; status: string; detail: string }[]; telegram: { finance_url: string | null; groups_url: string | null; personal_access: boolean; detail: string } }
 const safeBot = (url: string | null) => url && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(url) ? url : null
