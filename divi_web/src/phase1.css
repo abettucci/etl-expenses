@@ -1,0 +1,18 @@
+.export-menu{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.export-label{color:var(--muted);font-size:.85rem}
+.export-btn{padding:6px 12px;font-size:.82rem;min-width:52px}
+.export-btn:disabled{opacity:.4;cursor:not-allowed}
+.export-note{color:var(--muted);font-size:.8rem;width:100%}
+.data-toolbar{display:flex;justify-content:flex-end}
+.alert-settings{display:grid;gap:12px;max-width:640px}
+.alert-settings h2{margin:0}
+.alert-note,.alert-current{color:var(--muted);margin:0;font-size:.9rem}
+.alert-form{display:grid;gap:12px}
+.alert-form label{display:grid;gap:6px;font-size:.9rem}
+.alert-form input{background:var(--paper-deep);border:1px solid var(--line);border-radius:10px;padding:9px 10px;color:var(--ink);font:inherit;max-width:260px}
+.alert-channels{border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:8px}
+.alert-channels legend{color:var(--muted);padding:0 6px;font-size:.85rem}
+.alert-switch{display:flex;align-items:center;gap:8px;cursor:pointer}
+.alert-warn{color:var(--coral-deep);font-size:.82rem}
+.alert-message{color:var(--mint);margin:0;font-size:.9rem}
+.balance-error{color:var(--danger)}

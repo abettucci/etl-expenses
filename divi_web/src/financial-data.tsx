@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import './financial-data.css'
+import { ExportMenu } from './export-menu'
 
 type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>
 type Tab = 'sources' | 'files' | 'catalog' | 'transactions'
@@ -133,6 +134,23 @@ const SOURCE_OPTIONS = [['', 'Todas'], ['bank_payments', 'Tarjetas y débitos'],
 const QUALITY_OPTIONS = [['', 'Todos los movimientos'], ['invalid_dates', 'Solo fechas inválidas'], ['no_currency', 'Solo sin divisa'], ['no_category', 'Solo sin categoría']] as const
 const EMPTY_FILTERS = { source: '', q: '', category: '', date_from: '', date_to: '', min_amount: '', max_amount: '', quality: '' }
 
+// Columns and order of the movements download. Card and account numbers are
+// already masked by the API, so the file carries no more than the screen does.
+const MOVEMENT_EXPORT_COLUMNS = [
+  { key: 'fecha', label: 'Fecha' }, { key: 'comercio', label: 'Comercio' }, { key: 'categoria', label: 'Categoría' },
+  { key: 'producto', label: 'Producto' }, { key: 'monto_total', label: 'Monto' }, { key: 'divisa', label: 'Divisa' },
+  { key: 'extraido_de', label: 'Fuente' }, { key: 'metodo_pago', label: 'Medio de pago' }, { key: 'tarjeta', label: 'Tarjeta' },
+  { key: 'nro_tarjeta', label: 'Nro. tarjeta' }, { key: 'cuotas', label: 'Cuotas' }, { key: 'detalles', label: 'Detalles' },
+]
+const EXPORT_LIMIT = 5000
+
+async function fetchAllMovements(api: Api, filters: typeof EMPTY_FILTERS, sort: { by: string; dir: 'asc' | 'desc' }): Promise<Record<string, unknown>[]> {
+  const query = new URLSearchParams({ limit: String(EXPORT_LIMIT), offset: '0', sort: sort.by, dir: sort.dir })
+  Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value) })
+  const result = await api(`/v1/finance/data/transactions?${query}`) as TxResult
+  return result.rows
+}
+
 function TransactionsTab({ api, categories }: { api: Api; categories: string[] }) {
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [applied, setApplied] = useState(EMPTY_FILTERS)
@@ -180,6 +198,8 @@ function TransactionsTab({ api, categories }: { api: Api; categories: string[] }
     </form>
     {error && <ErrorBox message={error} onRetry={() => void run(applied, offset, sort)} />}
     {grid && !error && <section className="data-card">
+      <div className="data-toolbar"><ExportMenu title="Movimientos" filename="movimientos" columns={MOVEMENT_EXPORT_COLUMNS}
+        load={() => fetchAllMovements(api, applied, sort)} /></div>
       <Pager grid={grid} onPage={next => void run(applied, next, sort)} />
       <div className="data-table-wrap"><table className="data-table"><thead><tr>{grid.columns.map(c => <th key={c}>
         <button className="data-sort" onClick={() => sortBy(c)} disabled={!['fecha', 'monto_total', 'comercio', 'categoria', 'extraido_de'].includes(c)}>
