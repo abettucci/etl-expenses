@@ -10,7 +10,15 @@ type Item = {
 }
 type Dimension = { items: Item[]; totals: { current: number; avg_3m: number; avg_6m: number } }
 type Named = { name: string; amount: number; share: number | null }
+type FxInfo = { usd_converted_ars: number; quotes_used: { first: string; last: string } | null; skipped_currencies: number; source: { name: string; house: string; field: string } }
+export function FxNote({ fx }: { fx?: FxInfo }) {
+  if (!fx) return null
+  const range = fx.quotes_used ? ` Cotizaciones del ${fx.quotes_used.first} al ${fx.quotes_used.last}.` : ''
+  const usd = fx.usd_converted_ars ? ` Gastos en dólares convertidos a pesos: ${new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(fx.usd_converted_ars)}.` : ''
+  return <small className="alert-note">Montos en pesos. Los gastos en dólares se convierten con el dólar oficial (venta) de {fx.source.name}, al tipo de cambio de cada día.{usd}{range}</small>
+}
 type Report = {
+  fx?: FxInfo
   comparisons: { as_of: string; partial_month: string; days_elapsed: number; days_in_month: number; projected_total: number;
     windows: { current: string; avg_3m: string[]; avg_6m: string[] }; categories: Dimension; merchants: Dimension }
   evolution: { window_total: number; months: { month: string; partial: boolean; total: number; share_of_window: number | null;
@@ -31,21 +39,50 @@ const TABLE_COLUMNS: ExportColumn[] = [
   { key: 'share_avg_3m', label: 'Share 3 meses %' }, { key: 'share_avg_6m', label: 'Share 6 meses %' }, { key: 'share_vs_avg_3m_pp', label: 'Share vs 3 meses (pp)' },
 ]
 
+type CompareKey = keyof Item
+const NOMINAL_COLUMNS: { key: CompareKey; label: string }[] = [
+  { key: 'name', label: 'Nombre' }, { key: 'current', label: 'Mes actual' }, { key: 'avg_3m', label: 'Prom. 3 meses' },
+  { key: 'vs_avg_3m_abs', label: 'Vs 3 meses' }, { key: 'avg_6m', label: 'Prom. 6 meses' }, { key: 'vs_avg_6m_pct', label: 'Vs 6 meses' },
+]
+const SHARE_COLUMNS: { key: CompareKey; label: string }[] = [
+  { key: 'name', label: 'Nombre' }, { key: 'share_current', label: 'Share actual' }, { key: 'share_avg_3m', label: 'Share 3 meses' },
+  { key: 'share_vs_avg_3m_pp', label: 'Vs 3 meses' }, { key: 'share_avg_6m', label: 'Share 6 meses' },
+]
+
+// Numbers sort numerically, text alphabetically, and missing values always go last.
+function compareValues(a: unknown, b: unknown, dir: 1 | -1): number {
+  const missing = (v: unknown) => v === null || v === undefined
+  if (missing(a) && missing(b)) return 0
+  if (missing(a)) return 1
+  if (missing(b)) return -1
+  if (typeof a === 'number' && typeof b === 'number') return (a - b) * dir
+  return String(a).localeCompare(String(b), 'es-AR') * dir
+}
+
 function ComparisonTable({ dimension, mode }: { dimension: Dimension; mode: 'nominal' | 'share' }) {
+  const [sort, setSort] = useState<{ key: CompareKey; dir: 'asc' | 'desc' } | null>(null)
   if (!dimension.items.length) return <p className="alert-note">Sin movimientos para comparar.</p>
+  const columns = mode === 'nominal' ? NOMINAL_COLUMNS : SHARE_COLUMNS
+  const rows = sort ? [...dimension.items].sort((a, b) => compareValues(a[sort.key], b[sort.key], sort.dir === 'asc' ? 1 : -1)) : dimension.items
+  function toggle(key: CompareKey) {
+    setSort(prev => prev && prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' })
+  }
+  function cell(item: Item, key: CompareKey) {
+    switch (key) {
+      case 'name': return item.name
+      case 'current': case 'avg_3m': case 'avg_6m': return cash(item[key])
+      case 'vs_avg_3m_abs': return <span className={item.vs_avg_3m_abs > 0 ? 'insight-delta up' : item.vs_avg_3m_abs < 0 ? 'insight-delta down' : ''}>{cash(item.vs_avg_3m_abs)} · {pct(item.vs_avg_3m_pct, true)}</span>
+      case 'vs_avg_6m_pct': return pct(item.vs_avg_6m_pct, true)
+      case 'share_current': case 'share_avg_3m': case 'share_avg_6m': return pct(item[key])
+      case 'share_vs_avg_3m_pp': return pp(item.share_vs_avg_3m_pp)
+      default: return ''
+    }
+  }
   return <div className="data-table-wrap"><table className="data-table">
-    <thead><tr><th>Nombre</th>
-      {mode === 'nominal' ? <><th>Mes actual</th><th>Prom. 3 meses</th><th>Vs 3 meses</th><th>Prom. 6 meses</th><th>Vs 6 meses</th></>
-        : <><th>Share actual</th><th>Share 3 meses</th><th>Vs 3 meses</th><th>Share 6 meses</th></>}</tr></thead>
-    <tbody>{dimension.items.map(item => <tr key={item.name}>
-      <td>{item.name}</td>
-      {mode === 'nominal' ? <>
-        <td>{cash(item.current)}</td><td>{cash(item.avg_3m)}</td>
-        <td><span className={item.vs_avg_3m_abs > 0 ? 'insight-delta up' : item.vs_avg_3m_abs < 0 ? 'insight-delta down' : ''}>{cash(item.vs_avg_3m_abs)} · {pct(item.vs_avg_3m_pct, true)}</span></td>
-        <td>{cash(item.avg_6m)}</td><td>{pct(item.vs_avg_6m_pct, true)}</td></>
-        : <>
-          <td>{pct(item.share_current)}</td><td>{pct(item.share_avg_3m)}</td><td>{pp(item.share_vs_avg_3m_pp)}</td><td>{pct(item.share_avg_6m)}</td></>}
-    </tr>)}</tbody></table></div>
+    <thead><tr>{columns.map(c => <th key={c.key}>
+      <button className="data-sort" onClick={() => toggle(c.key)} aria-label={`Ordenar por ${c.label}`}>
+        {c.label}{sort?.key === c.key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ' ↕'}</button></th>)}</tr></thead>
+    <tbody>{rows.map(item => <tr key={item.name}>{columns.map(c => <td key={c.key}>{cell(item, c.key)}</td>)}</tr>)}</tbody></table></div>
 }
 
 const PALETTE = ['#a1ffd0', '#4fbf8f', '#ffb494', '#8fb8ff', '#e6d27a', '#c6a0ff', '#7fd1d1']
@@ -135,6 +172,7 @@ export function FinancialComparisons({ api }: { api: Api }) {
           <button className={`outline ${mode === 'nominal' ? 'active-chip' : ''}`} onClick={() => setMode('nominal')}>Pesos</button>
           <button className={`outline ${mode === 'share' ? 'active-chip' : ''}`} onClick={() => setMode('share')}>% share</button>
         </div></div>
+      <FxNote fx={report.fx} />
       <p className="alert-note">Mes actual: {monthLabel(c.partial_month)}, día {c.days_elapsed} de {c.days_in_month}. Proyección del mes: {cash(c.projected_total)}. Los promedios son mensuales sobre los meses cerrados ({c.windows.avg_3m.length} y {c.windows.avg_6m.length}).</p>
       <ComparisonTable dimension={active} mode={mode} />
       <ExportMenu title={`Comparaciones ${dimension === 'categories' ? 'categorías' : 'comercios'}`} filename={`comparaciones-${dimension}-${c.partial_month}`}

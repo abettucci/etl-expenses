@@ -127,3 +127,16 @@ test('logout durante refresh no restaura credenciales; tokens legados no dan ses
   const fresh = createAuthSession({ config, storage: storage(), legacyStorage: old })
   assert.equal(old.getItem('split_access_token'), null); assert.equal(fresh.hasSession(), false)
 })
+
+test('la query de la API llega completa: filtros, orden y paginación', async () => {
+  const seen = []
+  const { client } = setup(async url => { seen.push(url); return json({ rows: [] }) })
+  await client.request('/v1/finance/data/transactions?date_from=2026-10-01&date_to=2026-10-31&offset=50&sort=monto_total&dir=asc')
+  const sent = new URL(seen[0])
+  assert.equal(sent.pathname.endsWith('/v1/finance/data/transactions'), true)
+  assert.equal(sent.searchParams.get('date_from'), '2026-10-01')
+  assert.equal(sent.searchParams.get('date_to'), '2026-10-31')
+  assert.equal(sent.searchParams.get('offset'), '50')
+  assert.equal(sent.searchParams.get('sort'), 'monto_total')
+  assert.equal(sent.hash, '')
+})

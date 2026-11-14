@@ -127,7 +127,9 @@ class CatalogAndPreviewTests(unittest.TestCase):
         view = self.catalog[-1]
         self.assertEqual((view['type'], view['rows']), ('VIEW', None))
         self.assertEqual(self.catalog[1]['rows'], 2498)
-        self.assertEqual(self.catalog[1]['columns'], [{'name': 'SOURCE_ID', 'type': 'STRING'}])
+        self.assertEqual(self.catalog[1]['columns'][0]['name'], 'SOURCE_ID')
+        self.assertIn('description', self.catalog[1]['columns'][0])
+        self.assertIn('description', self.catalog[1])
 
     def test_preview_only_accepts_objects_and_columns_from_the_catalog(self):
         ok = dx.parse_preview_params({'name': 'mp_data', 'sort': 'SOURCE_ID', 'dir': 'desc', 'limit': '25'}, self.catalog)

@@ -119,9 +119,12 @@ export function createAuthSession({ config, storage, legacyStorage, fetcher = fe
     try { return await operation } finally { if (refreshing === operation) refreshing = null }
   }
   async function request(path: string, method = 'GET', body?: unknown): Promise<any> {
-    if (!path.startsWith('/v1/') || path.includes('\\') || path.includes('#') || path.includes('..')) throw new Error('Ruta de API inválida')
+    // The query string carries filters, sorting and paging. It must reach the API as sent.
+    const [pathOnly, ...rest] = path.split('?')
+    const query = rest.join('?')
+    if (!pathOnly.startsWith('/v1/') || path.includes('\\') || path.includes('#') || path.includes('..')) throw new Error('Ruta de API inválida')
     const target = new URL(config.apiBase)
-    target.pathname = target.pathname.replace(/\/$/, '') + path; target.search = ''; target.hash = ''
+    target.pathname = target.pathname.replace(/\/$/, '') + pathOnly; target.search = query ? `?${query}` : ''; target.hash = ''
     let currentToken = await token()
     const send = () => fetchBounded(target.href, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${currentToken}` }, body: body === undefined ? undefined : JSON.stringify(body) }, 30000)
     let result = await send()
