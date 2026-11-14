@@ -1035,6 +1035,54 @@ def _telegram_webhook_is_authorized(event: dict, chat_id) -> bool:
     )
 
 
+def _finance_web_owner():
+    configured = os.environ.get('WEB_FINANCE_OWNER_SUB', '').strip()
+    if configured:
+        return os.environ.get('WEB_FINANCE_ENABLED', 'false').lower() == 'true', configured
+    table_name = os.environ.get('FINANCE_LINK_TABLE', '').strip()
+    if not table_name:
+        return False, ''
+    item = boto3.resource('dynamodb').Table(table_name).get_item(
+        Key={'pk': 'FINANCE_SOURCE#PRIMARY', 'sk': 'OWNER'}, ConsistentRead=True).get('Item') or {}
+    owner = item.get('user_id', '')
+    return bool(isinstance(owner, str) and owner), owner if isinstance(owner, str) else ''
+
+
+def _claim_finance_link(event: dict, message: dict, code: str) -> str:
+    chat = message.get('chat') or {}
+    chat_id = chat.get('id')
+    sender_id = (message.get('from') or {}).get('id')
+    if chat.get('type') != 'private' or sender_id != chat_id or not _telegram_webhook_is_authorized(event, chat_id):
+        return 'No se pudo autorizar la vinculación desde este chat.'
+    table_name = os.environ.get('FINANCE_LINK_TABLE', '').strip()
+    if not table_name or os.environ.get('WEB_FINANCE_OWNER_SUB', '').strip():
+        return 'Este historial ya tiene una configuración de acceso. No se pudo vincular.'
+    if not re.fullmatch(r'[A-F0-9]{48}', code):
+        return 'El código no es válido. Generá uno nuevo desde Conexiones.'
+    from boto3.dynamodb.types import TypeSerializer
+    serializer = TypeSerializer()
+    marshal = lambda value: serializer.serialize(value)['M']
+    key = {'pk': 'FINANCE_LINK#' + hashlib.sha256(code.encode('ascii')).hexdigest(), 'sk': 'META'}
+    dynamo = boto3.resource('dynamodb')
+    item = dynamo.Table(table_name).get_item(Key=key, ConsistentRead=True).get('Item') or {}
+    owner = item.get('user_id')
+    if not isinstance(owner, str) or not owner or int(item.get('ttl', 0)) <= int(time.time()):
+        return 'El código venció o ya fue utilizado. Generá uno nuevo desde Conexiones.'
+    try:
+        dynamo.meta.client.transact_write_items(TransactItems=[
+            {'Put': {'TableName': table_name, 'Item': marshal({'pk': 'FINANCE_SOURCE#PRIMARY', 'sk': 'OWNER', 'user_id': owner}),
+                     'ConditionExpression': 'attribute_not_exists(pk) OR user_id = :owner',
+                     'ExpressionAttributeValues': marshal({':owner': owner})}},
+            {'Delete': {'TableName': table_name, 'Key': marshal(key),
+                        'ConditionExpression': 'user_id = :owner AND #ttl > :now',
+                        'ExpressionAttributeNames': {'#ttl': 'ttl'},
+                        'ExpressionAttributeValues': marshal({':owner': owner, ':now': int(time.time())})}},
+        ])
+    except Exception:
+        return 'No se pudo completar la vinculación. Revisá que el código siga vigente y que el historial no esté vinculado a otra cuenta.'
+    return '✅ Historial vinculado. Volvé a Conexiones y actualizá el estado.'
+
+
 def _download_telegram_voice(voice: TelegramVoice) -> bytes:
     """Download only Telegram OGG voice notes through fixed HTTPS endpoints."""
     file_id = voice.file_id
@@ -5366,9 +5414,10 @@ def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
         if isinstance(event, dict) and event.get('action') == 'finance_web_question':
+            enabled, owner = _finance_web_owner()
             return run_web_question(event,
-                enabled=os.environ.get('WEB_FINANCE_ENABLED', 'false').lower() == 'true',
-                owner_sub=os.environ.get('WEB_FINANCE_OWNER_SUB', ''),
+                enabled=enabled,
+                owner_sub=owner,
                 generate=lambda question: generate_sql_with_openai2(question, None, for_web=True),
                 execute=lambda sql: query_bigquery(get_bigquery_client(), sql, timeout=10))
 
@@ -5514,6 +5563,14 @@ def lambda_handler(event, context):
                 parse_mode=False,
             )
             return {"statusCode": 200}
+
+        text = message.get('text', '')
+        if isinstance(text, str) and text.startswith('/conectar_historial'):
+            parts = text.split()
+            reply = _claim_finance_link(event, message, parts[1] if len(parts) == 2 else '')
+            if _telegram_webhook_is_authorized(event, chat_id):
+                send_telegram_message(chat_id, reply, TELEGRAM_BOT_TOKEN, parse_mode=False)
+            return {'statusCode': 200}
 
         bq_client = get_bigquery_client()
 

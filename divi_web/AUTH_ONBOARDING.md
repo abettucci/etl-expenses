@@ -9,7 +9,7 @@
 - El token se renueva con `refresh_token` al expirar o ante un 401, con una renovación compartida entre llamadas concurrentes y un único reintento. Un 403 de permisos **no** cierra la sesión. Una caída de red permite reintentar; un refresh revocado obliga a ingresar.
 - Cerrar sesión elimina los tokens locales y abre el logout de Cognito para terminar también su sesión alojada. No es una función de revocación de todas las sesiones/dispositivos.
 - Decodificar el JWT en el navegador solo orienta expiración/UX. No verifica su firma ni concede permisos: API Gateway valida emisor, audiencia y firma; el backend mantiene el control del dueño financiero.
-- Conexiones permite identificar **tu propia cuenta** mediante `/v1/me` y preparar su habilitación. No hay botón que otorgue acceso a un warehouse ajeno.
+- Conexiones permite asociar el historial ETL existente mediante un código de un solo uso confirmado en el chat privado autorizado del bot financiero. El código vence en 15 minutos; se almacena solo su hash y el alta del dueño y consumo del código son atómicos. El historial conserva un solo dueño.
 - Telegram de grupos permite generar el código real mediante `POST /v1/identity-links`. Los nuevos códigos tienen 192 bits aleatorios, vencen a los 15 minutos y no se registran en la auditoría. La vinculación de cuentas nuevas sin grupos legados es atómica y rechaza un Telegram previamente vinculado a otra cuenta. El comando se acepta solo por chat privado.
 
 ## Configuración pendiente de producción
@@ -23,13 +23,13 @@ Estos cambios no habilitan servicios ni publican infraestructura por sí solos. 
 | Variable | `DIVI_FINANCE_BOT_USERNAME` | Usuario público del bot financiero, sin `@` |
 | Variable | `DIVI_GROUPS_BOT_USERNAME` | Usuario público del bot de grupos, sin `@` |
 
-El ID se obtiene desde Conexiones → Preparar vinculación. No es una contraseña. Solo un administrador debe configurarlo como dueño. No inferirlo del primer usuario registrado ni desactivar el control de ownership para resolver un 403.
+Si el dueño se configura manualmente con `DIVI_FINANCE_FORECAST_OWNER_SUB`, esa configuración tiene prioridad y el enlace por Telegram queda deshabilitado. Sin dueño configurado, el propietario del chat financiero autorizado puede confirmar su propia cuenta desde Conexiones. El bot necesita `TELEGRAM_ALLOWED_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET` y la tabla de aplicación configurados.
 
 Los usernames no reemplazan los tokens/webhooks existentes ni autorizan un chat financiero. El bot de grupos requiere que su webhook esté desplegado y configurado. Sus códigos se envían en privado y no deben compartirse ni aparecer en capturas públicas.
 
 ## Límites que siguen vigentes
 
-- Gmail por cuenta, bancos nuevos, Balanz y Binance aún no tienen un conector autoservicio. Preparar el acceso al ETL **no implementa** esos conectores.
+- Gmail por cuenta, bancos nuevos, Balanz y Binance aún no tienen un conector autoservicio. Vincular el historial existente **no implementa** esos conectores.
 - El bot de finanzas personales sigue separado del bot de grupos. La vinculación Telegram de grupos no habilita BigQuery ni destinos de alertas financieras.
 - `lang=es` solicita español en Cognito **managed login**. La Hosted UI clásica puede seguir en inglés; no se cambió de plan/tier ni se contrataron servicios para localizarla.
 - El almacenamiento en el navegador sigue expuesto ante XSS en ese origen. Para una solución con cookies HttpOnly hace falta un BFF; no se presenta este cambio como sustituto de esa arquitectura.
