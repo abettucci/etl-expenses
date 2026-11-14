@@ -15,6 +15,7 @@ import { landingArea, personalFinanceAnchor } from './landing-navigation'
 import './unified-theme.css'
 import { createAuthSession } from './auth-session'
 import { argentinaDate, expenseDate, householdMonth } from './household'
+import { MerchantMappings } from './merchant-mappings'
 
 if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
@@ -28,7 +29,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => { /* The app still works without offline caching. */ }) })
 }
 
-type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance' | 'profile' | 'connections'
+type View = 'welcome' | 'splitter' | 'home' | 'groups' | 'activity' | 'wallet' | 'settings' | 'gifts' | 'panorama' | 'etl' | 'balance' | 'profile' | 'connections' | 'mappings'
 type Gift = { id: string; title: string; price: number; available: boolean; link?: string }
 type Expense = { title: string; category: string; amount: number; payer: string; date: string }
 type GroupSummary = { group_id: string; name: string; currency: string; role?: string; kind?: 'general' | 'household'; legacy_source_key?: string }
@@ -98,7 +99,7 @@ function Action({ icon, title, caption, onClick }: { icon: string; title: string
 const viewPaths: Record<View, string> = {
   welcome: '/', splitter: '/dividir', ...workspacePaths,
   activity: '/actividad', wallet: '/billetera', settings: '/ajustes',
-  gifts: '/regalos', etl: '/como-funciona',
+  gifts: '/regalos', etl: '/como-funciona', mappings: '/mapeos',
 }
 function viewFromLocation(): View {
   const legacy = legacyWorkspaceView(window.location.pathname)
@@ -256,6 +257,7 @@ function App() {
         {view === 'home' && <UnifiedDashboard authenticated={authenticated} api={api} groups={groups} groupsStatus={groupsStatus} onLogin={() => void authenticate('home')} onFinance={() => navigate('balance')} onIncome={() => navigate('balance')} onGroups={id => { if (id) setActiveGroupId(id); navigate('groups') }} onExpense={() => openExpense()} onAssistant={() => setOverlay('assistant')} onConnections={() => navigate('connections')} />}
         {(view === 'profile' || view === 'connections' || view === 'settings') && <PersonalProfile section={view === 'connections' ? 'connections' : 'account'} authenticated={authenticated} api={api} onLogin={() => void authenticate(view)} onGroups={() => navigate('groups')} onAssistant={() => setOverlay('assistant')} />}
         {view === 'settings' && authenticated && <Settings notify={notify} onPremium={openPremium} />}
+        {view === 'mappings' && <MerchantMappings authenticated={authenticated} onLogin={() => void authenticate('mappings')} api={api} notify={notify} onBack={() => navigate('etl')} />}
         {view === 'groups' && <Groups initialGroupId={activeGroupId} authenticated={authenticated} onLogin={() => void authenticate('groups')} groups={groups} groupsStatus={groupsStatus} refreshSignal={groupRefresh} onRefresh={() => { setGroupsStatus('loading'); void api('/v1/groups').then(result => { if (!Array.isArray(result)) throw new Error('Respuesta inválida'); setGroups(result as GroupSummary[]); setGroupsStatus('ready'); setGroupRefresh(value => value + 1) }).catch(() => { setGroupsStatus('error'); notify('No pudimos actualizar tus grupos.') }) }} onSelectGroup={setActiveGroupId} onExpense={openExpense} />}
         {view === 'panorama' && (authenticated ? <Panorama onConnections={() => navigate('connections')} /> : <section className="workspace-card"><h1>Proyección y recurrentes</h1><p>Ingresá para consultar tu historial.</p><button className="primary" onClick={() => void authenticate('panorama')}>Ingresar</button></section>)}
       </section>

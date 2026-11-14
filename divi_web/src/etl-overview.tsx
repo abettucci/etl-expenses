@@ -1,7 +1,7 @@
 import { ArrowDownRight, ArrowRight, AudioLines, BellRing, Bot, Boxes, Braces, Database, FileImage, Mail, MessageCircle, ReceiptText, Search, Sparkles, WalletCards } from 'lucide-react'
 import './etl-overview.css'
 
-export function EtlOverview({ onNavigate, onHome, embedded = false }: { onNavigate: (destination: 'panorama' | 'balance') => void; onHome: () => void; embedded?: boolean }) {
+export function EtlOverview({ onNavigate, onHome, embedded = false }: { onNavigate: (destination: 'panorama' | 'balance' | 'mappings') => void; onHome: () => void; embedded?: boolean }) {
   return <div className="etl-page">
     <header className="etl-topline">
       <div className="etl-wordmark"><span className="etl-wave">∿</span><span>ETL<span> expenses</span></span></div>
@@ -75,7 +75,7 @@ export function EtlOverview({ onNavigate, onHome, embedded = false }: { onNaviga
     <section className="etl-data-cta">
       <div className="etl-data-icon"><Search size={23} /></div>
       <div><span className="etl-kicker">TUS DATOS, TU CRITERIO</span><h2>Consultas a demanda. Reglas que podés revisar.</h2><p>Explorá el panorama personal o ajustá las reglas que clasifican tus comercios.</p></div>
-      <div className="etl-data-actions"><button onClick={() => onNavigate('panorama')}>Abrir panorama <ArrowRight size={16} /></button></div>
+      <div className="etl-data-actions"><button onClick={() => onNavigate('panorama')}>Abrir panorama <ArrowRight size={16} /></button><button onClick={() => onNavigate('mappings')}>Ver mapeos <ArrowRight size={16} /></button></div>
     </section>
     <footer className="etl-footer"><span>ETL EXPENSES · PERSONAL FINANCE</span><span>Fuentes → BigQuery → Conversación y alertas</span></footer>
   </div>

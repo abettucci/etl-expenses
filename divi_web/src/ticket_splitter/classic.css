@@ -40,8 +40,9 @@
 #ticket-splitter .classic-eyebrow { color: #0f766e; font-size: 12px; font-weight: 750; letter-spacing: .15em; }
 #ticket-splitter .classic-spaces h2 { margin: 16px 0 32px; font-size: clamp(30px, 4vw, 46px); line-height: 1.15; font-weight: 750; letter-spacing: -.04em; }
 #ticket-splitter .classic-spaces h2 span { color: #0f766e; }
-#ticket-splitter .classic-space-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+#ticket-splitter .classic-space-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 #ticket-splitter .classic-space-grid article { display: flex; flex-direction: column; align-items: flex-start; padding: 32px; border: 1px solid #d7e7e2; border-radius: 24px; background: #fff; }
+@media (max-width: 1050px) and (min-width: 769px) { #ticket-splitter .classic-space-grid { grid-template-columns: 1fr 1fr; } #ticket-splitter .classic-space-grid article:last-child { grid-column: 1 / -1; } }
 #ticket-splitter .classic-space-grid article > svg { width: 32px; height: 32px; margin-bottom: 24px; color: #0f766e; }
 #ticket-splitter .classic-space-label { color: #4a7067; font-size: 11px; font-weight: 700; letter-spacing: .1em; }
 #ticket-splitter .classic-space-grid h3 { margin: 8px 0 14px; font-size: 27px; font-weight: 750; letter-spacing: -.03em; }

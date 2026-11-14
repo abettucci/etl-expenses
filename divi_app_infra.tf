@@ -427,6 +427,12 @@ resource "aws_lambda_function" "divi_app_api" {
       GMAIL_OAUTH_SECRET_ARN         = aws_secretsmanager_secret.divi_gmail_oauth.arn
       GMAIL_OAUTH_CALLBACK_URL       = "${aws_apigatewayv2_api.divi.api_endpoint}/v1/integrations/gmail/callback"
       BINANCE_REGIONAL_FUNCTION_ARN  = var.divi_binance_regional_function_arn
+      FINANCE_MERCHANT_MAPPING_ENABLED       = tostring(var.divi_finance_forecast_enabled)
+      FINANCE_MERCHANT_MAPPING_OWNER_SUB    = var.divi_finance_forecast_owner_sub
+      FINANCE_MERCHANT_MAPPING_REVIEW_TABLE = "comercio_mapping_review_queue"
+      FINANCE_MERCHANT_MAPPING_UNMAPPED_TABLE = "comercio_unmapped_queue"
+      MERCHANT_PLACES_ENABLED               = tostring(var.GOOGLE_PLACES_API_KEY != "")
+      GOOGLE_PLACES_API_KEY                 = var.GOOGLE_PLACES_API_KEY
     }
   }
 
