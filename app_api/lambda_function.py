@@ -684,6 +684,100 @@ def payslips_delete(identity: dict[str, str], period: str) -> dict[str, Any]:
     return payslips_list(identity)
 
 
+CAPTURE_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+CAPTURE_AUDIO_MAX_BYTES = 2 * 1024 * 1024
+CAPTURE_AUDIO_MAX_SECONDS = 60
+
+
+def _decode_upload(value: Any, max_bytes: int, label: str) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise ApiError(400, f"Falta {label}")
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError):
+        raise ApiError(400, f"No pude leer {label}")
+    if len(raw) > max_bytes:
+        raise ApiError(413, f"{label[0].upper() + label[1:]} supera el tamaño permitido")
+    return raw
+
+
+def _is_image(raw: bytes) -> bool:
+    return raw.startswith(b"\xff\xd8\xff") or raw.startswith(b"\x89PNG\r\n\x1a\n") or (raw[:4] == b"RIFF" and raw[8:12] == b"WEBP")
+
+
+def _is_audio(raw: bytes) -> tuple[bool, str]:
+    if raw.startswith(b"\x1a\x45\xdf\xa3"):
+        return True, "webm"
+    if raw.startswith(b"OggS"):
+        return True, "ogg"
+    return False, ""
+
+
+def _invoke_agent(action: str, identity: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+    function = os.environ.get("FINANCE_AGENT_FUNCTION_NAME", "")
+    if not function:
+        raise ApiError(503, "La carga desde la web todavía no está conectada")
+    try:
+        result = boto3.client("lambda", config=Config(connect_timeout=3, read_timeout=24, retries={"max_attempts": 0})).invoke(
+            FunctionName=function, InvocationType="RequestResponse",
+            Payload=json.dumps({"action": action, "user_id": identity["user_id"], **body}).encode())
+        if result.get("FunctionError"):
+            raise ValueError("agent failure")
+        raw = result["Payload"].read(65537)
+        if len(raw) > 65536:
+            raise ValueError("oversized")
+        answer = json.loads(raw)
+    except Exception as exc:
+        print(f"finance_capture_failed type={type(exc).__name__}")
+        raise ApiError(503, "No pudimos procesar la carga ahora. Probá de nuevo en unos minutos.") from None
+    if answer.get("statusCode") != 200:
+        raise ApiError(int(answer.get("statusCode") or 400), str(answer.get("error") or "No pudimos procesar la carga."))
+    return answer
+
+
+def finance_capture_receipt(identity: dict[str, str], payload: Any) -> dict[str, Any]:
+    _owner_only(identity)
+    if not isinstance(payload, dict):
+        raise ApiError(400, "Enviá la foto del ticket")
+    raw = _decode_upload(payload.get("image_base64"), CAPTURE_IMAGE_MAX_BYTES, "la foto")
+    if not _is_image(raw):
+        raise ApiError(400, "El archivo no es una imagen (JPG, PNG o WEBP)")
+    filename = str(payload.get("filename") or "ticket.jpg")[:120]
+    answer = _invoke_agent("finance_web_receipt", identity, {"image_base64": payload["image_base64"], "filename": filename})
+    put_audit(identity["user_id"], "finance.capture.receipt", "web")
+    return {"message": answer.get("message", "")}
+
+
+def finance_capture_voice(identity: dict[str, str], payload: Any) -> dict[str, Any]:
+    _owner_only(identity)
+    if not isinstance(payload, dict):
+        raise ApiError(400, "Enviá el audio")
+    raw = _decode_upload(payload.get("audio_base64"), CAPTURE_AUDIO_MAX_BYTES, "el audio")
+    ok, mime = _is_audio(raw)
+    if not ok:
+        raise ApiError(400, "El audio no tiene un formato compatible (WebM u OGG)")
+    try:
+        seconds = int(payload.get("duration_seconds") or 0)
+    except (TypeError, ValueError):
+        raise ApiError(400, "La duración del audio no es válida")
+    if not 0 < seconds <= CAPTURE_AUDIO_MAX_SECONDS:
+        raise ApiError(400, "El audio debe durar hasta 60 segundos")
+    answer = _invoke_agent("finance_web_voice", identity, {"audio_base64": payload["audio_base64"], "mime": mime,
+                                                           "duration_seconds": seconds})
+    put_audit(identity["user_id"], "finance.capture.voice", "web")
+    return {"transcript": answer.get("transcript", ""), "expense": answer.get("expense", {})}
+
+
+def finance_capture_voice_save(identity: dict[str, str], payload: Any) -> dict[str, Any]:
+    _owner_only(identity)
+    if not isinstance(payload, dict):
+        raise ApiError(400, "Revisá el gasto antes de guardarlo")
+    fields = {key: payload.get(key) for key in ("amount", "merchant", "expense_date", "category", "subcategory")}
+    answer = _invoke_agent("finance_web_voice_save", identity, {**fields, "source": "web_voice"})
+    put_audit(identity["user_id"], "finance.capture.saved", "web")
+    return {"saved": bool(answer.get("saved")), "expense_id": answer.get("expense_id")}
+
+
 def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
     if not (FORECAST_ENABLED and FORECAST_OWNER_SUB and hmac.compare_digest(identity['user_id'], FORECAST_OWNER_SUB)):
         try:
@@ -1863,6 +1957,12 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_question(identity, payload))
     if path == "/v1/finance/forecast" and method == "GET":
         return response(200, finance_forecast(identity))
+    if path == "/v1/finance/capture/receipt" and method == "POST":
+        return response(200, finance_capture_receipt(identity, payload))
+    if path == "/v1/finance/capture/voice" and method == "POST":
+        return response(200, finance_capture_voice(identity, payload))
+    if path == "/v1/finance/capture/voice/save" and method == "POST":
+        return response(201, finance_capture_voice_save(identity, payload))
     if path == "/v1/finance/payslips" and method == "GET":
         return response(200, payslips_list(identity))
     if path == "/v1/finance/payslips" and method == "POST":

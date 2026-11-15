@@ -1142,11 +1142,11 @@ def _get_gcp_access_token() -> str:
     return credentials.token
 
 
-def _transcribe_voice_google(audio_bytes: bytes) -> str:
+def _transcribe_voice_google(audio_bytes: bytes, encoding: str = "OGG_OPUS") -> str:
     token = _get_gcp_access_token()
     payload = {
         "config": {
-            "encoding": "OGG_OPUS",
+            "encoding": encoding,
             "sampleRateHertz": 48000,
             "languageCode": "es-AR",
         },
@@ -1168,9 +1168,9 @@ def _transcribe_voice_google(audio_bytes: bytes) -> str:
     return transcript
 
 
-def _transcribe_voice_openai(audio_bytes: bytes) -> str:
+def _transcribe_voice_openai(audio_bytes: bytes, filename: str = "voice.ogg") -> str:
     audio_file = io.BytesIO(audio_bytes)
-    audio_file.name = "voice.ogg"
+    audio_file.name = filename
     result = openai_client.audio.transcriptions.create(
         model="gpt-4o-mini-transcribe",
         file=audio_file,
@@ -5428,9 +5428,54 @@ def _process_telegram_receipt_queue_job(payload: dict, bq_client) -> str:
     raise ValueError("Tipo de trabajo de recibo desconocido")
 
 
+def _plain_text(value: str) -> str:
+    return re.sub(r'<[^>]+>', '', str(value or '')).strip()
+
+
+def _expense_preview(expense) -> dict:
+    return {"amount": str(expense.amount), "merchant": expense.merchant,
+            "expense_date": expense.expense_date.isoformat(), "category": expense.category,
+            "subcategory": expense.subcategory or ""}
+
+
+def _handle_finance_web_capture(event: dict) -> dict:
+    enabled, owner = _finance_web_owner()
+    if not enabled or not owner or event.get('user_id') != owner:
+        return {'statusCode': 403, 'error': 'No autorizado'}
+    action = event.get('action')
+    bq_client = get_bigquery_client()
+    if action == 'finance_web_receipt':
+        image = base64.b64decode(event.get('image_base64') or '', validate=True)
+        key = upload_image_to_s3(image, event.get('filename') or 'ticket.jpg')
+        text, _ = process_single_photo_ticket(key, bq_client)
+        return {'statusCode': 200, 'message': _plain_text(text)}
+    if action == 'finance_web_voice':
+        audio = base64.b64decode(event.get('audio_base64') or '', validate=True)
+        fmt = 'WEBM_OPUS' if event.get('mime') == 'webm' else 'OGG_OPUS'
+        try:
+            transcript = _transcribe_voice_google(audio, encoding=fmt)
+        except Exception as exc:
+            print(f"web_voice_google_failed: {type(exc).__name__}")
+            transcript = _transcribe_voice_openai(audio, filename='voice.webm' if fmt == 'WEBM_OPUS' else 'voice.ogg')
+        expense = _extract_manual_expense(transcript)
+        return {'statusCode': 200, 'transcript': transcript, 'expense': _expense_preview(expense)}
+    if action == 'finance_web_voice_save':
+        expense = ManualExpenseIntent.model_validate({
+            'intent': 'create_manual_expense', 'currency': 'ARS',
+            'amount': event.get('amount'), 'merchant': event.get('merchant'),
+            'expense_date': event.get('expense_date'), 'category': event.get('category'),
+            'subcategory': event.get('subcategory') or None,
+        })
+        expense_id = _store_manual_expense(bq_client, f"web:{uuid.uuid4()}", expense, source=event.get('source') or 'web_voice')
+        return {'statusCode': 200, 'saved': True, 'expense_id': expense_id}
+    return {'statusCode': 400, 'error': 'Acción no válida'}
+
+
 def lambda_handler(event, context):
     try:
         print("📥 Evento recibido por Lambda")
+        if isinstance(event, dict) and str(event.get('action', '')).startswith('finance_web_') and event.get('action') != 'finance_web_question':
+            return _handle_finance_web_capture(event)
         if isinstance(event, dict) and event.get('action') == 'finance_web_question':
             enabled, owner = _finance_web_owner()
             return run_web_question(event,
