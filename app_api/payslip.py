@@ -49,8 +49,8 @@ def _search(pattern: str, text: str, flags: int = re.I | re.M) -> str | None:
 
 
 def _period(text: str) -> tuple[str, str] | None:
-    raw = _search(r'Periodo\s+abonado\s+([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(\d{4})', text)
-    year = re.search(r'Periodo\s+abonado\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+(\d{4})', text, re.I | re.M)
+    raw = _search(r'Per.{1,2}odo\s+abonado\s+([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+(\d{4})', text)
+    year = re.search(r'Per.{1,2}odo\s+abonado\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+(\d{4})', text, re.I | re.M)
     if not raw or not year:
         return None
     month = MONTHS.get(raw.lower())
@@ -68,12 +68,16 @@ def _pay_date(text: str) -> str | None:
 
 def _concept_lines(text: str) -> list[tuple[str, list[float]]]:
     """Lines of the concept table: the label, then the money and unit values printed on the line."""
-    start = re.search(r'Concepto\s+Unidad', text, re.I)
-    end = re.search(r'^\s*Totales', text, re.I | re.M)
-    if not start or not end or end.start() < start.end():
+    start = re.search(r'Concepto\s+Unidad\s+Haberes', text, re.I)
+    if not start:
         raise PayslipError('No encontré la tabla de conceptos')
+    # The table ends at the first total line after its header. Earlier tables print their own totals.
+    end = re.search(r'^\s*(?:Totales|TOTAL)\b', text[start.end():], re.I | re.M)
+    if not end:
+        raise PayslipError('No encontré la tabla de conceptos')
+    body = text[start.end():start.end() + end.start()]
     lines = []
-    for raw in text[start.end():end.start()].splitlines():
+    for raw in body.splitlines():
         line = raw.strip()
         if not line or re.match(r'(Haberes|Con aporte|Sin aporte|Descuentos)$', line, re.I):
             continue
@@ -115,11 +119,21 @@ def parse_payslip(text: str) -> dict[str, Any]:
         else:
             haberes.append({'concept': label, 'amount': amount})
 
-    totals = re.search(rf'^\s*Totales\s+({MONEY})\s+({MONEY})', text, re.I | re.M)
-    net = re.search(rf'Total\s+Neto\s+({MONEY})', text, re.I)
+    # The income table's own total. Contribution totals printed earlier on the page are not used.
+    income_header = re.search(r'Concepto\s+Unidad\s+Haberes', text, re.I)
+    income_text = text[income_header.end():] if income_header else text
+    totals = re.search(rf'^\s*(?:Totales|TOTAL)\s+({MONEY})(?:\s+({MONEY}))?(?:\s+({MONEY}))?', income_text, re.I | re.M)
+    net = re.search(rf'TOTAL\s+NETO\s*\$?\s*({MONEY})', text, re.I)
     if not totals or not net:
         raise PayslipError('No encontré los totales del recibo')
-    printed_gross, printed_deductions, printed_net = _money(totals.group(1)), _money(totals.group(2)), _money(net.group(1))
+    values = [v for v in totals.groups() if v]
+    if len(values) == 3:
+        printed_gross, printed_deductions = _money(values[0]), _money(values[2])
+    elif len(values) == 2:
+        printed_gross, printed_deductions = _money(values[0]), _money(values[1])
+    else:
+        raise PayslipError('No encontré los totales del recibo')
+    printed_net = _money(net.group(1))
 
     # The payslip prints one line per base (for example SIJP on salary and on the SAC bonus).
     # Show each concept once, with the sum.
@@ -149,7 +163,7 @@ def parse_payslip(text: str) -> dict[str, Any]:
         'period_label': period_label,
         'pay_date': _pay_date(text),
         'employer': _search(r'^(.+?S\.R\.L\.)\s*$', text),
-        'position': _search(r'Posici[oó]n\s*\n\s*(.+)', text),
+        'position': _search(r'Posici.n\s*\n\s*(.+)', text),
         'level': _search(r'Nivel\s*\n\s*(.+)', text),
         'bank': _search(r'Banco:\s*(.+?)\s{2,}', text) or _search(r'Banco:\s*(.+)', text),
         'identifiers': identifiers,
