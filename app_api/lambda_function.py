@@ -40,6 +40,8 @@ import data_explorer
 import fx as fx_rates
 import alert_settings
 import period_comparisons
+import salary_analysis
+import inflation as inflation_rates
 import payslip
 from forecast import payment_methods_query
 from merchant_mappings import (
@@ -776,6 +778,31 @@ def finance_capture_voice_save(identity: dict[str, str], payload: Any) -> dict[s
     answer = _invoke_agent("finance_web_voice_save", identity, {**fields, "source": "web_voice"})
     put_audit(identity["user_id"], "finance.capture.saved", "web")
     return {"saved": bool(answer.get("saved")), "expense_id": answer.get("expense_id")}
+
+
+def finance_income_analysis(identity: dict[str, str], params: dict[str, Any]) -> dict[str, Any]:
+    """Salary history from payslips, compared with monthly inflation."""
+    _owner_only(identity)
+    raw_year = str((params or {}).get("year") or "").strip()
+    year = None
+    if raw_year:
+        if not raw_year.isdigit() or not 2000 <= int(raw_year) <= 2100:
+            raise ApiError(400, "El año no es válido")
+        year = int(raw_year)
+    try:
+        items = _payslip_items(identity)
+    except Exception as exc:
+        print(f"income_payslips_read_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos leer tus recibos ahora") from exc
+    try:
+        series = inflation_rates.monthly_series()
+    except inflation_rates.InflationError as exc:
+        print(f"inflation_unavailable: {exc}")
+        raise ApiError(503, "No pudimos obtener la inflación mensual ahora") from exc
+    result = salary_analysis.analyze(items, series, year=year)
+    result["inflation_source"] = {"name": "Argentina Datos", "series": "IPC mensual"}
+    put_audit(identity["user_id"], "finance.income.read", str(year or "all"))
+    return result
 
 
 def finance_balance(identity: dict[str, str]) -> dict[str, Any]:
@@ -1963,6 +1990,8 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(200, finance_capture_voice(identity, payload))
     if path == "/v1/finance/capture/voice/save" and method == "POST":
         return response(201, finance_capture_voice_save(identity, payload))
+    if path == "/v1/finance/income/analysis" and method == "GET":
+        return response(200, finance_income_analysis(identity, event.get("queryStringParameters") or {}))
     if path == "/v1/finance/payslips" and method == "GET":
         return response(200, payslips_list(identity))
     if path == "/v1/finance/payslips" and method == "POST":

@@ -1,5 +1,6 @@
 import { useEffect, useState, type ChangeEvent } from 'react'
 import { ExportMenu, type ExportColumn } from './export-menu'
+import { IncomeAnalysis } from './income'
 import './phase1.css'
 
 type Api = (path: string, method?: string, body?: unknown) => Promise<unknown>
@@ -89,6 +90,8 @@ export function PayslipsTab({ api }: { api: Api }) {
       {message && <p role="status" className="alert-message">{message}</p>}
       {error && <p role="alert" className="balance-error">{error}</p>}
     </section>
+
+    <IncomeAnalysis api={api} hasPayslips={!!report && report.payslips.length > 0} />
 
     {report && report.payslips.length === 0 && <section className="data-card"><p className="data-empty">Todavía no cargaste recibos.</p></section>}
 
