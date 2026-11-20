@@ -479,6 +479,16 @@ def finance_data_sources(identity: dict[str, str]) -> dict[str, Any]:
         categories = _run_bigquery(client, bigquery, data_explorer.facets_query(
             FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET, FORECAST_GASTOS_VIEW))
         result = data_explorer.summarize_sources(rows)
+        daily = _run_bigquery(client, bigquery, data_explorer.sources_daily_query(
+            FORECAST_GCP_PROJECT_ID, FORECAST_BQ_DATASET, FORECAST_GASTOS_VIEW))
+        converted = fx_rates.convert_rows(daily, _fx_series(), day_key="day", currency_key="currency", amount_key="amount")
+        ars_by_source: dict[str, float] = {}
+        for row in converted["rows"]:
+            ars_by_source[str(row["source"])] = ars_by_source.get(str(row["source"]), 0.0) + row["amount_ars"]
+        for entry in result["sources"]:
+            entry["ars_equivalent"] = round(ars_by_source.get(entry["source"], 0.0), 2)
+        result["fx"] = {"usd_converted_ars": converted["usd_converted_ars"], "quotes_used": converted["quotes_used"],
+                        "skipped_currencies": converted["skipped"], "source": converted["source"]}
         result["categories"] = [{"name": row["category"], "rows": int(row["rows_n"])} for row in categories]
         result["dataset"], result["view"] = FORECAST_BQ_DATASET, FORECAST_GASTOS_VIEW
         return result
