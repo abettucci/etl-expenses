@@ -91,6 +91,20 @@ def sources_query(project: str, dataset: str, view: str) -> str:
     """
 
 
+def sources_daily_query(project: str, dataset: str, view: str) -> str:
+    """Daily totals per source and currency, so dollar amounts can be converted with each day's rate."""
+    return f"""
+    SELECT
+      DATE(fecha) AS day,
+      COALESCE(NULLIF(TRIM(CAST(extraido_de AS STRING)), ''), '(sin fuente)') AS source,
+      UPPER(TRIM(CAST(divisa AS STRING))) AS currency,
+      SUM(SAFE_CAST(monto_total AS FLOAT64)) AS amount
+    FROM {_qualified(project, dataset, view)}
+    WHERE fecha IS NOT NULL AND {_VALID_DATE}
+    GROUP BY day, source, currency
+    """
+
+
 def facets_query(project: str, dataset: str, view: str) -> str:
     return f"""
     SELECT COALESCE(NULLIF(TRIM(CAST(categoria AS STRING)), ''), '(sin categoría)') AS category, COUNT(*) AS rows_n

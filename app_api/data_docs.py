@@ -153,6 +153,43 @@ COLUMN_DOCS = {
         'id': 'Identificador del lote o archivo procesado.',
         'ins_dttm': 'Momento en que se registró el procesamiento.',
     },
+    # Mercado Pago report fields. Descriptions follow the field names of the report;
+    # check them against the report before relying on a figure.
+    'mp_data': {
+        'EXTERNAL_REFERENCE': 'Referencia externa de la operación, la que asigna el comercio.',
+        'SOURCE_ID': 'Identificador de la operación en Mercado Pago.',
+        'USER_ID': 'Identificador del usuario de Mercado Pago.',
+        'PAYMENT_METHOD_TYPE': 'Tipo de medio de pago: tarjeta de crédito, débito, cuenta de Mercado Pago, etc.',
+        'PAYMENT_METHOD': 'Medio de pago concreto usado.',
+        'SITE': 'País o sitio de la operación.',
+        'TRANSACTION_TYPE': 'Tipo de transacción: pago, reembolso, contracargo, etc.',
+        'TRANSACTION_AMOUNT': 'Importe bruto de la transacción.',
+        'TRANSACTION_CURRENCY': 'Moneda de la transacción.',
+        'SELLER_AMOUNT': 'Importe que corresponde al vendedor, después de comisiones.',
+        'TRANSACTION_DATE': 'Fecha de la transacción.',
+        'FEE_AMOUNT': 'Comisión cobrada por Mercado Pago.',
+        'SETTLEMENT_NET_AMOUNT': 'Importe neto acreditado en la liquidación.',
+        'SETTLEMENT_CURRENCY': 'Moneda de la liquidación.',
+        'SETTLEMENT_DATE': 'Fecha de liquidación, cuando se acredita el dinero.',
+        'REAL_AMOUNT': 'Importe que pagó el comprador.',
+        'COUPON_AMOUNT': 'Descuento por cupón aplicado.',
+        'INSTALLMENTS': 'Cantidad de cuotas.',
+        'STORE_NAME': 'Nombre de la tienda o del punto de venta.',
+        'PAYER_NAME': 'Nombre del pagador.',
+        'MONEY_RELEASE_DATE': 'Fecha en que el dinero queda disponible.',
+        'LAST_FOUR_DIGITS': 'Últimos cuatro dígitos de la tarjeta.',
+        'COMERCIO': 'Comercio asignado por el ETL, con el texto normalizado.',
+    },
+    'mp_transfer_data': {
+        'ID': 'Identificador de la transferencia.',
+        'MESSAGE_ID': 'Mensaje de Gmail del que se extrajo la transferencia.',
+        'NRO_CUENTA': 'Número de cuenta de destino. Se muestra enmascarado.',
+        'RECEPTOR': 'Nombre de quien recibe el dinero.',
+        'ENTIDAD': 'Banco o entidad de destino.',
+        'MONTO': 'Importe transferido.',
+        'DATE': 'Fecha de la transferencia.',
+        'EXTRAIDO_EN': 'Momento en que se extrajo el aviso.',
+    },
 }
 
 
