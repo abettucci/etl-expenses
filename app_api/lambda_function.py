@@ -41,6 +41,7 @@ import fx as fx_rates
 import alert_settings
 import period_comparisons
 import payslip
+import balanz
 from forecast import payment_methods_query
 from merchant_mappings import (
     FLOW_LABELS,
@@ -682,6 +683,75 @@ def payslips_delete(identity: dict[str, str], period: str) -> dict[str, Any]:
     table.delete_item(Key={"pk": f"USER#{identity['user_id']}", "sk": f"PAYSLIP#{period}"})
     put_audit(identity["user_id"], "finance.payslip.deleted", period)
     return payslips_list(identity)
+
+
+BALANZ_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _investment_items(identity: dict[str, str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    kwargs: dict[str, Any] = {
+        "KeyConditionExpression": Key("pk").eq(f"USER#{identity['user_id']}") & Key("sk").begins_with("INVEST#"),
+        "ConsistentRead": True,
+    }
+    while True:
+        result = table.query(**kwargs)
+        items.extend(_from_dynamo(item) for item in result.get("Items", []))
+        if "LastEvaluatedKey" not in result:
+            return items
+        kwargs["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+
+def investments_import(identity: dict[str, str], payload: Any) -> dict[str, Any]:
+    _owner_only(identity)
+    raw = _decode_upload(payload.get("file_base64") if isinstance(payload, dict) else None, BALANZ_MAX_BYTES, "el archivo")
+    try:
+        parsed = balanz.read_upload(raw)
+    except balanz.BalanzError as exc:
+        raise ApiError(400, str(exc)) from exc
+    except Exception as exc:
+        print(f"balanz_read_failed: {type(exc).__name__}")
+        raise ApiError(400, "No pude leer el archivo de Balanz") from exc
+    # Only parsed figures are stored. Identifiers (comitente, CUIT, names) are never copied from the file.
+    user_pk = f"USER#{identity['user_id']}"
+    kind, data = parsed["kind"], parsed["data"]
+    if kind == "holdings":
+        table.put_item(Item=_to_dynamo({"pk": user_pk, "sk": f"INVEST#HOLDINGS#{data['as_of']}", "item_type": "holdings",
+                                        **data, "uploaded_at": now()}))
+    else:
+        prefix = "MOV" if kind == "movements" else "TRADE"
+        with table.batch_writer() as batch:
+            for row in data if kind == "movements" else data["trades"]:
+                batch.put_item(Item=_to_dynamo({"pk": user_pk, "sk": f"INVEST#{prefix}#{row['id']}", "item_type": kind,
+                                                **row, "uploaded_at": now()}))
+    put_audit(identity["user_id"], "finance.investments.imported", kind)
+    return investments_summary(identity)
+
+
+def investments_summary(identity: dict[str, str]) -> dict[str, Any]:
+    _owner_only(identity)
+    try:
+        items = _investment_items(identity)
+    except Exception as exc:
+        print(f"investments_read_failed: {type(exc).__name__}")
+        raise ApiError(503, "No pudimos leer las inversiones ahora") from exc
+    for item in items:
+        item.pop("pk", None)
+        item.pop("sk", None)
+        item.pop("uploaded_at", None)
+    snapshots = sorted((i for i in items if i.get("item_type") == "holdings"), key=lambda i: i["as_of"], reverse=True)
+    movements = sorted((i for i in items if i.get("item_type") == "movements"), key=lambda i: i["date"], reverse=True)
+    trades = sorted((i for i in items if i.get("item_type") == "trades"), key=lambda i: i["trade_date"], reverse=True)
+    for item in snapshots + movements + trades:
+        item.pop("item_type", None)
+    return {
+        "holdings": snapshots[0] if snapshots else None,
+        "holdings_history": [{"as_of": s["as_of"], "holdings_total": s["holdings_total"]} for s in snapshots],
+        "income_by_month": balanz.income_by_month(movements),
+        "movements": movements,
+        "trades": trades,
+        "currency": "ARS",
+    }
 
 
 CAPTURE_IMAGE_MAX_BYTES = 4 * 1024 * 1024
@@ -1969,6 +2039,10 @@ def route(event: dict[str, Any]) -> dict[str, Any]:
         return response(201, payslips_upload(identity, payload))
     if len(segments) == 4 and segments[:3] == ["v1", "finance", "payslips"] and method == "DELETE":
         return response(200, payslips_delete(identity, segments[3]))
+    if path == "/v1/finance/investments" and method == "GET":
+        return response(200, investments_summary(identity))
+    if path == "/v1/finance/investments/import" and method == "POST":
+        return response(201, investments_import(identity, payload))
     if path == "/v1/finance/comparisons" and method == "GET":
         return response(200, finance_comparisons(identity))
     if path == "/v1/finance/insights" and method == "GET":
